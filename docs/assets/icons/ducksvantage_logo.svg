@@ -1,0 +1,89 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Fundo Escuro Metálico Estilo Lenovo Vantage -->
+    <linearGradient id="bgCardGrad" x1="28" y1="20" x2="228" y2="236" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1b2640"/>
+      <stop offset="100%" stop-color="#0d1324"/>
+    </linearGradient>
+
+    <!-- Anel Circular de Telemetria (Ciano -> Azul -> Magenta Neon) -->
+    <linearGradient id="gaugeRingGrad" x1="36" y1="40" x2="220" y2="196" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00faf3"/>
+      <stop offset="50%" stop-color="#2d58de"/>
+      <stop offset="100%" stop-color="#9e3dff"/>
+    </linearGradient>
+
+    <!-- Corpo Amarelo Dourado do Patinho -->
+    <linearGradient id="duckBodyGrad" x1="88" y1="62" x2="168" y2="188" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffe566"/>
+      <stop offset="55%" stop-color="#ffcc19"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+
+    <!-- Bico Laranja Vibrante -->
+    <linearGradient id="beakGrad" x1="112" y1="132" x2="144" y2="156" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ff8a1f"/>
+      <stop offset="100%" stop-color="#ea580c"/>
+    </linearGradient>
+
+    <!-- Base Estilizada de Chassi de Notebook / Painel de Hardware -->
+    <linearGradient id="chassisGrad" x1="32" y1="172" x2="224" y2="232" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#253352"/>
+      <stop offset="100%" stop-color="#141d33"/>
+    </linearGradient>
+
+    <!-- Barra LED Ciano do Chassi -->
+    <linearGradient id="ledBarGrad" x1="64" y1="204" x2="192" y2="204" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00d2ff"/>
+      <stop offset="50%" stop-color="#00faf3"/>
+      <stop offset="100%" stop-color="#9e3dff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Escudo / Base Arredondada do Ícone -->
+  <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#bgCardGrad)" stroke="#30415a" stroke-width="4"/>
+
+  <!-- Anel Circular de Fundo (Gauge de Hardware do Dashboard) -->
+  <circle cx="128" cy="118" r="78" stroke="#1e293b" stroke-width="14" fill="none"/>
+  <path d="M72.8 173.2 A 78 78 0 1 1 183.2 173.2" stroke="url(#gaugeRingGrad)" stroke-width="14" stroke-linecap="round" fill="none"/>
+  <!-- Marcações Internas de Telemetria do Anel -->
+  <circle cx="128" cy="118" r="62" stroke="#00d2ff" stroke-width="2" stroke-dasharray="6 8" stroke-opacity="0.45" fill="none"/>
+
+  <!-- Topete / Peninhas no Topo da Cabeça do Patinho -->
+  <path d="M124 66 C118 50, 132 46, 132 62 C138 48, 150 54, 138 68 Z" fill="#ffcc19"/>
+
+  <!-- Cabeça e Torso do Patinho Espiando -->
+  <path d="M78 140 C78 96, 98 68, 128 68 C158 68, 178 96, 178 140 L178 178 L78 178 Z" fill="url(#duckBodyGrad)" stroke="#11192c" stroke-width="4" stroke-linejoin="round"/>
+
+  <!-- Bochechas Rosadas Fofas -->
+  <ellipse cx="94" cy="138" rx="11" ry="7.5" fill="#ff6b8b" fill-opacity="0.78"/>
+  <ellipse cx="162" cy="138" rx="11" ry="7.5" fill="#ff6b8b" fill-opacity="0.78"/>
+
+  <!-- Olhos Expressivos com Brilho Duplo -->
+  <circle cx="104" cy="122" r="9.5" fill="#0f172a"/>
+  <circle cx="101" cy="119" r="3.5" fill="#ffffff"/>
+  <circle cx="107" cy="125" r="1.6" fill="#00faf3"/>
+
+  <circle cx="152" cy="122" r="9.5" fill="#0f172a"/>
+  <circle cx="149" cy="119" r="3.5" fill="#ffffff"/>
+  <circle cx="155" cy="125" r="1.6" fill="#00faf3"/>
+
+  <!-- Bico Arredondado Central -->
+  <path d="M111 134 C111 128, 145 128, 145 134 C149 144, 140 153, 128 153 C116 153, 107 144, 111 134 Z" fill="url(#beakGrad)" stroke="#11192c" stroke-width="3"/>
+  <path d="M117 139 Q128 145 139 139" stroke="#7c2d12" stroke-width="2.2" stroke-linecap="round" fill="none"/>
+
+  <!-- Base Estilizada de Chassi de Notebook / Painel de Hardware -->
+  <path d="M36 174 H220 C225 174, 228 178, 226 184 L214 216 C211 223, 204 226, 196 226 H60 C52 226, 45 223, 42 216 L30 184 C28 178, 31 174, 36 174 Z" fill="url(#chassisGrad)" stroke="#00d2ff" stroke-width="3"/>
+
+  <!-- Entalhe Frontal de Abertura do Notebook -->
+  <path d="M104 174 L110 183 H146 L152 174 Z" fill="#0d1324" stroke="#30415a" stroke-width="1.5"/>
+
+  <!-- Asinhas / Patinhas do Patinho Apoiadas na Borda do Painel de Hardware -->
+  <ellipse cx="82" cy="175" rx="15" ry="9" fill="#ffbe0b" stroke="#11192c" stroke-width="3.5"/>
+  <ellipse cx="174" cy="175" rx="15" ry="9" fill="#ffbe0b" stroke="#11192c" stroke-width="3.5"/>
+
+  <!-- Indicadores de Telemetria e Barra LED RGB/Ciano no Chassi -->
+  <rect x="64" y="198" width="128" height="8" rx="4" fill="url(#ledBarGrad)"/>
+  <circle cx="52" cy="202" r="4" fill="#2cd283"/>
+  <circle cx="204" cy="202" r="4" fill="#ff3b30"/>
+</svg>

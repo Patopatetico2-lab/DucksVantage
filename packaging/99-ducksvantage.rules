@@ -1,0 +1,38 @@
+# =============================================================================
+# Regras UDEV Universais do Ducksvantage (/etc/udev/rules.d/99-ducksvantage.rules)
+# Garante leitura e escrita direta sem senha root (sudo/pkexec) em qualquer
+# distribuição Linux para toda a linha Lenovo (Legion, LOQ, IdeaPad Gaming,
+# IdeaPad e Yoga - Intel e AMD).
+# =============================================================================
+
+# 1. Perfis Térmicos ACPI (Quiet/Low-Power, Balanced, Performance, Max-Power)
+SUBSYSTEM=="platform-profile", ACTION=="add|change", RUN+="/bin/chmod 0666 /sys/firmware/acpi/platform_profile"
+SUBSYSTEM=="acpi", ACTION=="add|change", TEST=="/sys/firmware/acpi/platform_profile", RUN+="/bin/chmod 0666 /sys/firmware/acpi/platform_profile"
+
+# 2. Driver ideapad_acpi / ideapad_laptop (Modo de Conservação ~80%, Fn-Lock, Camera E-Shutter, USB Charging, Fan Mode)
+SUBSYSTEM=="platform", DRIVER=="ideapad_acpi", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/conservation_mode /sys/bus/platform/drivers/ideapad_acpi/VPC*/fn_lock /sys/bus/platform/drivers/ideapad_acpi/VPC*/camera_power /sys/bus/platform/drivers/ideapad_acpi/VPC*/usb_charging /sys/bus/platform/drivers/ideapad_acpi/VPC*/fan_mode 2>/dev/null || true'"
+
+# 3. Retroiluminação do Teclado (LEDs platform::kbd_backlight)
+SUBSYSTEM=="leds", KERNEL=="*kbd_backlight*", ACTION=="add|change", RUN+="/bin/chmod 0666 /sys/class/leds/%k/brightness"
+
+# 4. Controle de CPU Turbo Boost (Intel P-State / AMD CPUFreq) e Scaling Governor
+SUBSYSTEM=="cpu", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo /sys/devices/system/cpu/cpufreq/boost /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null || true'"
+
+# 5. Limites de Potência Custom TDP (Intel RAPL PL1 / PL2)
+SUBSYSTEM=="powercap", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/class/powercap/intel-rapl*/constraint_*_power_limit_uw 2>/dev/null || true'"
+
+# 6. Bateria (Rapid Charge / Standard charge_types) e PCI Runtime PM (NVIDIA D3cold)
+SUBSYSTEM=="power_supply", KERNEL=="BAT*", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/class/power_supply/%k/charge_types 2>/dev/null || true'"
+SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys%p/power/control 2>/dev/null || true'"
+
+# 7. Dispositivos de Entrada de Teclado (Mapeamento da Tecla Copilot F23 / Teclas Especiais)
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", MODE="0664", GROUP="input"
+
+# 8. Atributos Térmicos Lenovo WMI Other (CPU/GPU Temp Limits, AC Offset) e Curva PWM Hwmon
+SUBSYSTEM=="firmware-attributes", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/class/firmware-attributes/lenovo-wmi-other-*/attributes/*/current_value 2>/dev/null || true'"
+SUBSYSTEM=="hwmon", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null || true'"
+
+# 9. Controle de Economia de Energia de Rede (Wi-Fi / Ethernet Runtime PM)
+SUBSYSTEM=="net", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/class/net/*/device/power/control 2>/dev/null || true'"
+
+

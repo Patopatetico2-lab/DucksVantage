@@ -1,0 +1,36 @@
+# Maintainer: Ducksvantage Project
+pkgname=ducksvantage
+pkgver=2.0.0
+pkgrel=1
+pkgdesc="Universal Lenovo Vantage replacement for Linux (Legion, LOQ, IdeaPad Gaming, IdeaPad & Yoga)"
+arch=('any')
+url="https://github.com/ducksvantage/ducksvantage"
+license=('MIT')
+depends=('python' 'python-pyqt6' 'python-psutil')
+optdepends=('python-pynvml: Low-latency NVIDIA GPU telemetry')
+install=ducksvantage.install
+
+package() {
+    cd "$startdir/.."
+
+    # 1. Instalar código-fonte e assets em /opt/ducksvantage
+    install -dm755 "$pkgdir/opt/ducksvantage"
+    cp -r main.py ui_main.py test_backend.py styles.qss core ui assets packaging "$pkgdir/opt/ducksvantage/"
+
+    # 2. Lançador global /usr/bin/ducksvantage
+    install -dm755 "$pkgdir/usr/bin"
+    cat << 'EOF' > "$pkgdir/usr/bin/ducksvantage"
+#!/usr/bin/env bash
+cd /opt/ducksvantage
+exec python3 /opt/ducksvantage/main.py "$@"
+EOF
+    chmod 0755 "$pkgdir/usr/bin/ducksvantage"
+
+    # 3. Ícone vetorial e atalho .desktop
+    install -Dm644 "assets/app_icon.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/ducksvantage.svg"
+    install -Dm644 "packaging/ducksvantage.desktop" "$pkgdir/usr/share/applications/ducksvantage.desktop"
+
+    # 4. Regras UDEV para escrita direta sem sudo no kernel
+    install -Dm644 "packaging/99-ducksvantage.rules" "$pkgdir/etc/udev/rules.d/99-ducksvantage.rules"
+}
+

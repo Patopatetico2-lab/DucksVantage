@@ -1,0 +1,21 @@
+# ====================================================================
+# Ducksvantage - Regras UDEV Universais Lenovo (Legion, LOQ, IdeaPad, Yoga)
+# Permite escrita nos nós de ACPI, CPU, Teclado e Bateria sem sudo manual
+# ====================================================================
+
+# 1. Perfil de Plataforma ACPI (Quiet, Balanced, Performance)
+ACTION=="add|change", SUBSYSTEM=="acpi", RUN+="/bin/sh -c 'chmod 0666 /sys/firmware/acpi/platform_profile 2>/dev/null || true'"
+ACTION=="add|change", SUBSYSTEM=="platform", RUN+="/bin/sh -c 'chmod 0666 /sys/firmware/acpi/platform_profile 2>/dev/null || true'"
+
+# 2. Driver Universal Lenovo Ideapad ACPI (VPC*)
+ACTION=="add|change", SUBSYSTEM=="platform", KERNEL=="VPC*", RUN+="/bin/sh -c 'chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/conservation_mode /sys/bus/platform/drivers/ideapad_acpi/VPC*/fn_lock /sys/bus/platform/drivers/ideapad_acpi/VPC*/camera_power /sys/bus/platform/drivers/ideapad_acpi/VPC*/usb_charging /sys/bus/platform/drivers/ideapad_acpi/VPC*/fan_mode 2>/dev/null || true'"
+
+# 3. Modos de Carregamento da Bateria (Rapid Charge / Long Life)
+ACTION=="add|change", SUBSYSTEM=="power_supply", RUN+="/bin/sh -c 'chmod 0666 /sys/class/power_supply/BAT*/charge_types 2>/dev/null || true'"
+
+# 4. Retroiluminação do Teclado (Kbd Backlight)
+ACTION=="add|change", SUBSYSTEM=="leds", RUN+="/bin/sh -c 'chmod 0666 /sys/class/leds/*kbd_backlight*/brightness 2>/dev/null || true'"
+
+# 5. Controle de CPU Turbo Boost (Intel P-State / AMD CPUFreq) e Scaling Governor
+ACTION=="add|change", SUBSYSTEM=="cpu", RUN+="/bin/sh -c 'chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo /sys/devices/system/cpu/cpufreq/boost /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null || true'"
+

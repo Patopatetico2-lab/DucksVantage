@@ -1,0 +1,135 @@
+/* ====================================================================
+   Ducksvantage - Stylesheet Oficial Lenovo Vantage (styles.qss)
+   Extraído e reconstruído a partir dos pacotes de interface do Lenovo Vantage
+   (VAN-11517, app.theme.scss, font-styles.scss, widget-legion-edge)
+   ==================================================================== */
+
+QMainWindow, QWidget#centralWidget {
+    background-color: #11192c;
+    color: #fbfdff;
+    font-family: "Segoe UI", "Inter", "Roboto", "Noto Sans", sans-serif;
+}
+
+/* ====================================================================
+   Barra Superior (Header Bar)
+   ==================================================================== */
+QFrame#headerBar {
+    background-color: #151f36;
+    border-bottom: 1px solid #30415a;
+    padding: 10px 20px;
+}
+
+QLabel#headerTitle {
+    color: #fbfdff;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+}
+
+QLabel#headerSubtitle {
+    color: #00d2ff;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+/* ====================================================================
+   Barra Lateral (Sidebar de Navegação - 4 Abas Essenciais)
+   ==================================================================== */
+QFrame#sidebar {
+    background-color: #151f36;
+    border-right: 1px solid #30415a;
+    min-width: 220px;
+    max-width: 220px;
+}
+
+QPushButton#navButton {
+    background-color: transparent;
+    color: #cbd5e1;
+    border: none;
+    border-left: 3px solid transparent;
+    text-align: left;
+    padding: 14px 20px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QPushButton#navButton:hover {
+    background-color: #253048;
+    color: #fbfdff;
+}
+
+QPushButton#navButton:checked, QPushButton#navButton[active="true"] {
+    background-color: #1f2a42;
+    color: #00d2ff;
+    border-left: 3px solid #00d2ff;
+    font-weight: 700;
+}
+
+/* ====================================================================
+   Cartões Modulares (Vantage Cards / Legion & LOQ Edge)
+   ==================================================================== */
+QFrame.vantageCard, QFrame.card {
+    background-color: #1f2a42;
+    border: 1px solid #30415a;
+    border-radius: 9px;
+}
+
+QFrame.vantageCard:hover, QFrame.card:hover {
+    border: 1px solid #425067;
+}
+
+/* ====================================================================
+   Botões de Ação Primários e Secundários
+   ==================================================================== */
+QPushButton.primaryButton {
+    background-color: #0160d6;
+    color: #fbfdff;
+    border: none;
+    border-radius: 6px;
+    padding: 9px 18px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+QPushButton.primaryButton:hover {
+    background-color: #257eff;
+}
+
+QPushButton.secondaryButton {
+    background-color: #253048;
+    color: #cbd5e1;
+    border: 1px solid #30415a;
+    border-radius: 6px;
+    padding: 9px 18px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QPushButton.secondaryButton:hover {
+    background-color: #293c4f;
+    color: #fbfdff;
+    border-color: #00d2ff;
+}
+
+/* ====================================================================
+   Scrollbars Finas e Discretas
+   ==================================================================== */
+QScrollBar:vertical {
+    background: #11192c;
+    width: 8px;
+    margin: 0px;
+}
+
+QScrollBar::handle:vertical {
+    background: #30415a;
+    min-height: 24px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #00d2ff;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}

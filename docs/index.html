@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DucksVantage - O Lenovo Vantage que o Linux Merece</title>
+  
+  <!-- Metadados de SEO & Redes Sociais -->
+  <meta name="description" content="Controle de hardware, energia e ventoinhas para Lenovo Legion, LOQ, IdeaPad e Yoga no Linux. Feito em Python + PyQt6, 100% nativo, sem Electron e sem telemetria.">
+  <meta name="keywords" content="Lenovo, Vantage, Legion, LOQ, IdeaPad, Linux, ACPI, PyQt6, CachyOS, Arch Linux, max-power, OSD, Fn+Q">
+  <meta name="author" content="DucksVantage Project">
+  <meta property="og:title" content="DucksVantage - O Lenovo Vantage que o Linux Merece">
+  <meta property="og:description" content="Controle térmico de precisão, limite de carga em 80%, pop-up OSD do Fn+Q e perfil Max-Power no Linux sem Electron.">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="assets/icons/ducksvantage_logo.svg">
+  
+  <!-- Favicon com o Patinho Oficial -->
+  <link rel="icon" type="image/svg+xml" href="assets/icons/ducksvantage_logo.svg">
+  
+  <!-- Fontes do Google (Inter & JetBrains Mono) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Estilos da Landing Page -->
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Gradientes Globais SVG para os Gauges e Ícones -->
+  <svg width="0" height="0" style="position: absolute;">
+    <defs>
+      <linearGradient id="cpuGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#2D58DE"/>
+        <stop offset="100%" stop-color="#00FAF3"/>
+      </linearGradient>
+      <linearGradient id="gpuGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#FF9F00"/>
+        <stop offset="100%" stop-color="#FF2815"/>
+      </linearGradient>
+      <linearGradient id="ramGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#7800BF"/>
+        <stop offset="100%" stop-color="#FF2AE8"/>
+      </linearGradient>
+    </defs>
+  </svg>
+
+  <!-- ====================================================================
+       NAVBAR
+       ==================================================================== -->
+  <nav class="navbar">
+    <div class="container nav-container">
+      <a href="#" class="brand">
+        <img src="assets/icons/ducksvantage_logo.svg" alt="DucksVantage Logo" class="brand-icon">
+        <span class="brand-text">DUCKS<span>VANTAGE</span></span>
+        <span class="brand-badge">v2.0</span>
+      </a>
+
+      <ul class="nav-links">
+        <li><a href="#simulador">Simulador Vivo</a></li>
+        <li><a href="#por-que">Por Que o Ducks?</a></li>
+        <li><a href="#recursos">Recursos</a></li>
+        <li><a href="#comparativo">Comparativo</a></li>
+        <li><a href="#terminal">Terminal CLI</a></li>
+        <li><a href="#instalacao">Instalação</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+
+      <div class="nav-actions">
+        <a href="https://github.com" target="_blank" class="btn-github" id="nav-github-link">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+          </svg>
+          <span>Star no GitHub</span>
+        </a>
+        <a href="#instalacao" class="btn-cta">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          <span>Instalar Agora</span>
+        </a>
+        <button class="mobile-toggle" aria-label="Abrir Menu">☰</button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ====================================================================
+       HERO SECTION
+       ==================================================================== -->
+  <header class="hero">
+    <div class="hero-glow"></div>
+    <div class="container">
+      
+      <div class="hero-pill">
+        <span class="hero-pill-dot"></span>
+        <span>DucksVantage 2.0 • 100% Nativo no Linux • Zero Telemetria</span>
+      </div>
+
+      <h1 class="hero-title">
+        O Lenovo Vantage que o seu Linux<br>
+        <span class="gradient-text">sempre teve direito.</span>
+      </h1>
+
+      <p class="hero-subtitle">
+        Controle térmico de precisão com suporte ao <b>Max-Power</b>, limite de carga em <b>80%</b> para salvar a bateria, curva de ventoinhas, pop-up <b>OSD no Fn + Q</b> e remapeador da tecla Copilot — sem Electron e gastando míseros <b>35 MB de RAM</b>.
+      </p>
+
+      <div class="hero-actions">
+        <a href="#simulador" class="btn-hero-primary">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          <span>Testar Simulador Interativo</span>
+        </a>
+        <a href="#instalacao" class="btn-hero-secondary">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 17l6-6-6-6"/>
+            <path d="M12 19h8"/>
+          </svg>
+          <span>Ver Comandos de Instalação</span>
+        </a>
+      </div>
+
+      <!-- Quick Install Box (Copiar em 1 Clique) -->
+      <div class="install-command-box">
+        <span class="prefix">bash &gt;</span>
+        <code>git clone https://github.com/SEU-USUARIO/DucksVantage.git &amp;&amp; cd DucksVantage &amp;&amp; sudo ./install.sh</code>
+        <button class="btn-copy" data-clipboard="git clone https://github.com/SEU-USUARIO/DucksVantage.git && cd DucksVantage && sudo ./install.sh">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          <span>Copiar</span>
+        </button>
+      </div>
+
+      <!-- Stats Grid -->
+      <div class="hero-stats">
+        <div class="stat-card">
+          <div class="stat-val accent-cyan">~35 MB</div>
+          <div class="stat-label">RAM em Uso (Vs 800MB+ no Windows)</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val accent-purple">Max-Power</div>
+          <div class="stat-label">Desbloqueio de Potência Máxima do EC</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val accent-green">80% Limit</div>
+          <div class="stat-label">Modo Conservação que Duplica Vida Útil</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val accent-red">Fn + Q</div>
+          <div class="stat-label">OSD Flutuante sem Minimizar Jogos</div>
+        </div>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- ====================================================================
+       INTERACTIVE SIMULATOR (DASHBOARD AO VIVO)
+       ==================================================================== -->
+  <section class="simulator-section" id="simulador">
+    <div class="container">
+      
+      <div class="section-header">
+        <span class="section-tag">SIMULADOR VIVO</span>
+        <h2 class="section-title">Experimente o DucksVantage Agora</h2>
+        <p class="section-desc">
+          Clique nos perfis térmicos, ative os switches do painel Edge e veja os medidores circulares e o pop-up OSD reagindo exatamente como no seu notebook Lenovo com Linux.
+        </p>
+      </div>
+
+      <!-- Janela do App DucksVantage -->
+      <div class="app-window">
+        <!-- Titlebar -->
+        <div class="window-titlebar">
+          <div class="window-controls">
+            <span class="win-dot dot-red"></span>
+            <span class="win-dot dot-yellow"></span>
+            <span class="win-dot dot-green"></span>
+          </div>
+          <div class="window-title">
+            <img src="assets/icons/ducksvantage_logo.svg" width="16" height="16" alt="Duck icon">
+            <span>DucksVantage 2.0 • Lenovo Legion Pro 5 16ARX8</span>
+            <span class="window-chip">Linux 6.12 (CachyOS)</span>
+          </div>
+          <div style="width: 50px;"></div>
+        </div>
+
+        <div class="app-body">
+          <!-- Sidebar -->
+          <aside class="app-sidebar">
+            <ul class="app-nav-list">
+              <li class="app-nav-item active">
+                <img src="assets/icons/nav_dashboard_active.svg" alt="Dashboard">
+                <span>Dashboard</span>
+              </li>
+              <li class="app-nav-item">
+                <img src="assets/icons/nav_performance.svg" alt="Performance">
+                <span>Desempenho</span>
+              </li>
+              <li class="app-nav-item">
+                <img src="assets/icons/nav_battery.svg" alt="Bateria">
+                <span>Bateria &amp; Energia</span>
+              </li>
+              <li class="app-nav-item">
+                <img src="assets/icons/nav_about.svg" alt="Sobre">
+                <span>Sobre o App</span>
+              </li>
+            </ul>
+
+            <div class="sidebar-brand-box">
+              <span class="lenovo-red-badge">LEGION</span>
+              <p style="font-size: 0.7rem; color: #8b949e; margin-top: 6px;">Zero Telemetria • Open Source</p>
+            </div>
+          </aside>
+
+          <!-- Dashboard Content -->
+          <main class="app-content">
+
+            <!-- 1. Gauges Circulares QPainter -->
+            <div class="gauges-row">
+              <!-- CPU Gauge -->
+              <div class="gauge-card">
+                <div class="gauge-header">
+                  <span class="gauge-label">CPU (Ryzen 7)</span>
+                  <span class="gauge-badge" style="color: #00FAF3;">Turbo ON</span>
+                </div>
+                <div class="gauge-svg-container">
+                  <svg class="gauge-svg" viewBox="0 0 100 100">
+                    <circle class="gauge-bg-circle" cx="50" cy="50" r="45"></circle>
+                    <circle id="sim-cpu-circle" class="gauge-progress-circle circle-cpu" cx="50" cy="50" r="45"></circle>
+                  </svg>
+                  <div class="gauge-center-text">
+                    <div class="gauge-val" id="sim-cpu-val">24%</div>
+                    <div class="gauge-unit">USO TOTAL</div>
+                  </div>
+                </div>
+                <div class="gauge-footer-meta">
+                  <span id="sim-cpu-clock">3.8 GHz</span>
+                  <span id="sim-cpu-temp" style="color: #00FAF3;">52°C</span>
+                </div>
+              </div>
+
+              <!-- GPU Gauge -->
+              <div class="gauge-card">
+                <div class="gauge-header">
+                  <span class="gauge-label">GPU (RTX 4060)</span>
+                  <span class="gauge-badge" style="color: #FF9F00;">115W TGP</span>
+                </div>
+                <div class="gauge-svg-container">
+                  <svg class="gauge-svg" viewBox="0 0 100 100">
+                    <circle class="gauge-bg-circle" cx="50" cy="50" r="45"></circle>
+                    <circle id="sim-gpu-circle" class="gauge-progress-circle circle-gpu" cx="50" cy="50" r="45"></circle>
+                  </svg>
+                  <div class="gauge-center-text">
+                    <div class="gauge-val" id="sim-gpu-val">32%</div>
+                    <div class="gauge-unit">VRAM 8GB</div>
+                  </div>
+                </div>
+                <div class="gauge-footer-meta">
+                  <span id="sim-gpu-watt">45W</span>
+                  <span id="sim-gpu-temp" style="color: #FF9F00;">54°C</span>
+                </div>
+              </div>
+
+              <!-- RAM Gauge -->
+              <div class="gauge-card">
+                <div class="gauge-header">
+                  <span class="gauge-label">RAM DDR5</span>
+                  <span class="gauge-badge" style="color: #FF2AE8;">16 GB 4800MHz</span>
+                </div>
+                <div class="gauge-svg-container">
+                  <svg class="gauge-svg" viewBox="0 0 100 100">
+                    <circle class="gauge-bg-circle" cx="50" cy="50" r="45"></circle>
+                    <circle id="sim-ram-circle" class="gauge-progress-circle circle-ram" cx="50" cy="50" r="45"></circle>
+                  </svg>
+                  <div class="gauge-center-text">
+                    <div class="gauge-val" id="sim-ram-val">6.2 GB</div>
+                    <div class="gauge-unit">LIVRE 9.8 GB</div>
+                  </div>
+                </div>
+                <div class="gauge-footer-meta">
+                  <span>SPD Temp: 41°C</span>
+                  <span style="color: #FF2AE8;">Dual-Channel</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 2. Thermal Profiles (Perfis Térmicos) -->
+            <div class="thermal-section-card">
+              <div class="card-title-row">
+                <h4>
+                  <img src="assets/icons/fan.svg" width="18" height="18" alt="Fan icon">
+                  Perfis Térmicos do Kernel &amp; ACPI (Atalho Fn + Q)
+                </h4>
+                <span class="hint-pill">Clique em um modo para testar o OSD!</span>
+              </div>
+
+              <div class="thermal-modes-grid">
+                <!-- Modo Silencioso -->
+                <div class="thermal-btn" data-mode="quiet">
+                  <img src="assets/icons/thermal_quiet.svg" class="mode-icon" alt="Quiet">
+                  <div class="mode-name">Silencioso</div>
+                  <div class="mode-desc">Ventoinhas quase inaudíveis</div>
+                </div>
+
+                <!-- Modo Equilibrado -->
+                <div class="thermal-btn active-balanced" data-mode="balanced">
+                  <img src="assets/icons/thermal_balanced.svg" class="mode-icon" alt="Balanced">
+                  <div class="mode-name">Equilibrado</div>
+                  <div class="mode-desc">Ajuste dinâmico inteligente</div>
+                </div>
+
+                <!-- Modo Desempenho -->
+                <div class="thermal-btn" data-mode="performance">
+                  <img src="assets/icons/thermal_performance.svg" class="mode-icon" alt="Performance">
+                  <div class="mode-name">Desempenho</div>
+                  <div class="mode-desc">Alta potência para jogos</div>
+                </div>
+
+                <!-- Modo Max-Power -->
+                <div class="thermal-btn" data-mode="max-power">
+                  <span class="badge-special">EXCLUSIVO</span>
+                  <img src="assets/icons/thermal_max_power.svg" class="mode-icon" alt="Max Power">
+                  <div class="mode-name">Max-Power</div>
+                  <div class="mode-desc">Teto EC + Fans a 100%</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 3. Painel Rápido Edge (Switches) -->
+            <div class="thermal-section-card" style="margin-bottom: 0;">
+              <div class="card-title-row">
+                <h4>
+                  <img src="assets/icons/tools.svg" width="18" height="18" alt="Tools icon">
+                  Painel Rápido Edge (Controles de Hardware)
+                </h4>
+                <span style="font-size: 0.75rem; color: #8b949e;">Interaja com os switches</span>
+              </div>
+
+              <div class="edge-switches-grid">
+                <!-- Modo Conservação -->
+                <div class="switch-card">
+                  <div class="switch-info">
+                    <img src="assets/icons/edge_conservation.svg" class="switch-icon" alt="Conservation">
+                    <div class="switch-text">
+                      <h5>Modo Conservação</h5>
+                      <small>Trava carga em 80%</small>
+                    </div>
+                  </div>
+                  <label class="toggle-control">
+                    <input type="checkbox" id="toggle-conservation" checked>
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+
+                <!-- Rapid Charge -->
+                <div class="switch-card">
+                  <div class="switch-info">
+                    <img src="assets/icons/edge_rapid_charge.svg" class="switch-icon" alt="Rapid Charge">
+                    <div class="switch-text">
+                      <h5>Carga Rápida</h5>
+                      <small>Carga acelerada na tomada</small>
+                    </div>
+                  </div>
+                  <label class="toggle-control">
+                    <input type="checkbox" id="toggle-rapid">
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+
+                <!-- Obturador E-Shutter -->
+                <div class="switch-card">
+                  <div class="switch-info">
+                    <img src="assets/icons/edge_camera.svg" class="switch-icon" alt="Camera">
+                    <div class="switch-text">
+                      <h5>E-Shutter Webcam</h5>
+                      <small>Corte físico via ACPI</small>
+                    </div>
+                  </div>
+                  <label class="toggle-control">
+                    <input type="checkbox" id="toggle-camera" checked>
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+
+                <!-- Trava de Touchpad -->
+                <div class="switch-card">
+                  <div class="switch-info">
+                    <img src="assets/icons/edge_touchpad.svg" class="switch-icon" alt="Touchpad">
+                    <div class="switch-text">
+                      <h5>Trava do Touchpad</h5>
+                      <small>Evita toques em jogos</small>
+                    </div>
+                  </div>
+                  <label class="toggle-control">
+                    <input type="checkbox" id="toggle-touchpad">
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+
+                <!-- Tecla Copilot F23 -->
+                <div class="switch-card">
+                  <div class="switch-info">
+                    <img src="assets/icons/copilot_key.svg" class="switch-icon" alt="Copilot">
+                    <div class="switch-text">
+                      <h5>Remapear Copilot</h5>
+                      <small>Transforma F23 em Mute</small>
+                    </div>
+                  </div>
+                  <label class="toggle-control">
+                    <input type="checkbox" id="toggle-copilot" checked>
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+
+                <!-- Modo Viagem -->
+                <div class="switch-card">
+                  <div class="switch-info">
+                    <img src="assets/icons/eco_travel.svg" class="switch-icon" alt="Travel">
+                    <div class="switch-text">
+                      <h5>Modo Viagem (1-Click)</h5>
+                      <small>Eco extremo fora da tomada</small>
+                    </div>
+                  </div>
+                  <label class="toggle-control">
+                    <input type="checkbox" id="toggle-eco">
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <!-- 4. Pop-up OSD Flutuante (Simulação do Fn + Q) -->
+            <div class="live-osd-overlay" id="sim-osd">
+              <img src="assets/icons/thermal_balanced.svg" id="osd-icon" class="osd-icon" alt="OSD Icon">
+              <div class="osd-text-block">
+                <h4 id="osd-title">Modo Equilibrado</h4>
+                <p id="osd-desc">Ajuste dinâmico inteligente (Balanced)</p>
+              </div>
+              <span class="osd-tag">Fn + Q</span>
+            </div>
+
+          </main>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       POR QUE O DUCKSVANTAGE? (COMPARAÇÃO REAL)
+       ==================================================================== -->
+  <section class="problem-solution-section" id="por-que">
+    <div class="container">
+      
+      <div class="section-header">
+        <span class="section-tag">A VERDADE SEM FILTRO</span>
+        <h2 class="section-title">Por que você precisa do DucksVantage?</h2>
+        <p class="section-desc">
+          Quem usa Lenovo Legion, LOQ ou IdeaPad no Linux conhece o dilema: ficar sem controle de ventoinhas e bateria ou sofrer com gambiarras.
+        </p>
+      </div>
+
+      <div class="comparison-cards-grid">
+        <!-- Card 1: Lenovo Vantage no Windows -->
+        <div class="comp-card">
+          <span class="comp-badge badge-bad">O PESADELO NO WINDOWS</span>
+          <h3>Lenovo Vantage Oficial</h3>
+          <p>Feito para empurrar assinaturas, anúncios de antivírus e telemetria pesada.</p>
+          <ul class="comp-list">
+            <li class="comp-item"><span class="icon-bad">✕</span> Consome 700MB a 1.2 GB de RAM</li>
+            <li class="comp-item"><span class="icon-bad">✕</span> 6 daemons rodando em background</li>
+            <li class="comp-item"><span class="icon-bad">✕</span> Banners de propaganda e garantia</li>
+            <li class="comp-item"><span class="icon-bad">✕</span> Incompatível com distribuições Linux</li>
+          </ul>
+        </div>
+
+        <!-- Card 2: Scripts Soltos no Terminal -->
+        <div class="comp-card">
+          <span class="comp-badge badge-mid">A GAMBIARRA TRADICIONAL</span>
+          <h3>Scripts Soltos no GitHub</h3>
+          <p>Comandos bash avulsos que exigem senha sudo toda hora e quebram no primeiro update.</p>
+          <ul class="comp-list">
+            <li class="comp-item"><span class="icon-bad">✕</span> Sem interface gráfica nem medidores</li>
+            <li class="comp-item"><span class="icon-bad">✕</span> Sem feedback visual do Fn + Q (OSD)</li>
+            <li class="comp-item"><span class="icon-bad">✕</span> Pede senha root a cada troca de modo</li>
+            <li class="comp-item"><span class="icon-bad">✕</span> Não detecta estado de repouso da GPU</li>
+          </ul>
+        </div>
+
+        <!-- Card 3: DucksVantage (O Vencedor) -->
+        <div class="comp-card highlight">
+          <span class="comp-badge badge-winner">A SOLUÇÃO DEFINITIVA</span>
+          <h3>DucksVantage 2.0</h3>
+          <p>Engenharia reversa limpa em Python + PyQt6 conversando direto com o kernel Linux.</p>
+          <ul class="comp-list">
+            <li class="comp-item"><span class="icon-good">✔</span> Apenas ~35 MB de consumo de memória</li>
+            <li class="comp-item"><span class="icon-good">✔</span> OSD flutuante translúcido para Fn + Q</li>
+            <li class="comp-item"><span class="icon-good">✔</span> Suporte nativo ao 4º perfil: <b>Max-Power</b></li>
+            <li class="comp-item"><span class="icon-good">✔</span> Regras UDEV automáticas (Zero Sudo)</li>
+            <li class="comp-item"><span class="icon-good">✔</span> 100% Código Aberto e Zero Telemetria</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       BENTO GRID DE FEATURES PODEROSAS
+       ==================================================================== -->
+  <section class="features-section" id="recursos">
+    <div class="container">
+      
+      <div class="section-header">
+        <span class="section-tag">ENGENHARIA DE PONTA</span>
+        <h2 class="section-title">Construído para Entusiastas de Linux</h2>
+        <p class="section-desc">
+          Sem invencionice. Cada linha de código do DucksVantage foi pensada para extrair o máximo do hardware com a menor pegada de recursos possível.
+        </p>
+      </div>
+
+      <div class="bento-grid">
+        <!-- Feature 1: Max-Power (Span 2) -->
+        <div class="bento-item col-span-2">
+          <div class="bento-icon-wrapper purple">
+            <img src="assets/icons/thermal_max_power.svg" alt="Max Power">
+          </div>
+          <h3>Destravamento do Perfil Oculto "Max-Power"</h3>
+          <p>
+            No Windows, o Vantage libera um quarto nível de rotação de ventoinhas e watts de EC no Legion Zone. No Linux, a maioria das ferramentas ignora isso. O DucksVantage detecta automaticamente o suporte no driver <code>lenovo-wmi-gamezone</code> e no CachyOS / Linux 6.12+, inserindo o modo Max-Power na rotação direta do <code>Fn + Q</code>.
+          </p>
+          <div class="bento-mini-demo">
+            <code>/sys/firmware/acpi/platform_profile_choices -&gt; [low-power balanced performance max-power]</code>
+          </div>
+        </div>
+
+        <!-- Feature 2: OSD sem Roubar Foco -->
+        <div class="bento-item">
+          <div class="bento-icon-wrapper">
+            <img src="assets/icons/game_controller.svg" alt="Gaming OSD">
+          </div>
+          <h3>Pop-up OSD sem Roubar Foco</h3>
+          <p>
+            Construído com flags especiais de janela Qt (<code>WindowDoesNotAcceptFocus</code>). Ao apertar <code>Fn + Q</code> no meio de uma partida de CS2, Dota 2 ou Cyberpunk, o pop-up aparece e desvanece sem minimizar o jogo e sem roubar o mouse.
+          </p>
+        </div>
+
+        <!-- Feature 3: Game Auto-Switching -->
+        <div class="bento-item">
+          <div class="bento-icon-wrapper red">
+            <img src="assets/icons/turbo.svg" alt="Auto switch">
+          </div>
+          <h3>Auto-Switching por Jogo</h3>
+          <p>
+            Monitora processos ativos do <b>Steam Proton</b>, <b>Heroic Games Launcher</b>, <b>Lutris</b> e <b>Gamescope</b>. Abriu o jogo: ativa Max-Power e governor <code>performance</code>. Fechou o jogo: devolve para <code>balanced</code> ou <code>low-power</code>.
+          </p>
+        </div>
+
+        <!-- Feature 4: Battery Historian -->
+        <div class="bento-item">
+          <div class="bento-icon-wrapper green">
+            <img src="assets/icons/chart_health.svg" alt="Battery Chart">
+          </div>
+          <h3>Battery Health Historian</h3>
+          <p>
+            Não fique no escuro quanto à saúde das células. O DucksVantage grava snapshots da capacidade máxima real (<code>energy_full</code>) comparada à capacidade de projeto de fábrica (<code>energy_full_design</code> em Wh) e plota gráficos de degradação.
+          </p>
+        </div>
+
+        <!-- Feature 5: Remapeador da Tecla Copilot -->
+        <div class="bento-item">
+          <div class="bento-icon-wrapper">
+            <img src="assets/icons/copilot_key.svg" alt="Copilot key">
+          </div>
+          <h3>Aproveitamento da Tecla Copilot (F23)</h3>
+          <p>
+            A Lenovo colocou uma tecla Copilot inútil no seu teclado? O DucksVantage intercepta o sinal de hardware <code>F23</code> e permite que você a transforme em: Mudo do Microfone no PipeWire, Gatilho do Modo Viagem ou Atalho para Max-Power.
+          </p>
+        </div>
+
+        <!-- Feature 6: Eco-Travel Mode (Span 2) -->
+        <div class="bento-item col-span-2">
+          <div class="bento-icon-wrapper green">
+            <img src="assets/icons/eco_travel.svg" alt="Eco travel">
+          </div>
+          <h3>Modo Viagem em 1 Clique (Até +4 Horas de Bateria)</h3>
+          <p>
+            Vai desconectar da tomada e precisa que a bateria dure a viagem toda? O botão Modo Viagem aciona em sequência: trava a carga em 80%, força suspensão <code>D3cold</code> na GPU NVIDIA, corta o Turbo Boost da CPU, define o governor para <code>powersave</code>, limita TDP PL1 para 15W e apaga o LED do teclado.
+          </p>
+          <div class="bento-mini-demo">
+            <code>GPU NVIDIA -&gt; D3cold | CPU Turbo -&gt; Disabled | RAPL PL1 -&gt; 15W | Backlight -&gt; OFF</code>
+          </div>
+        </div>
+
+        <!-- Feature 7: Zero Sudo -->
+        <div class="bento-item">
+          <div class="bento-icon-wrapper">
+            <img src="assets/icons/shield.svg" alt="Security Shield">
+          </div>
+          <h3>Zero Sudo / UDEV Automatizado</h3>
+          <p>
+            Chega de digitar sua senha de administrador para trocar o modo da ventoinha. Nosso instalador configura regras seguras em <code>/etc/udev/rules.d/99-ducksvantage.rules</code> concedendo permissão de escrita ao seu usuário nos caminhos ACPI.
+          </p>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       TABELA COMPARATIVA DETALHADA
+       ==================================================================== -->
+  <section class="comparison-table-section" id="comparativo">
+    <div class="container">
+      
+      <div class="section-header">
+        <span class="section-tag">COMPARAÇÃO DIRETA</span>
+        <h2 class="section-title">DucksVantage vs O Resto do Mundo</h2>
+        <p class="section-desc">
+          Compare lado a lado os recursos oferecidos e veja a diferença na prática.
+        </p>
+      </div>
+
+      <div class="table-wrapper">
+        <table class="modern-table">
+          <thead>
+            <tr>
+              <th>Recurso / Capacidade</th>
+              <th>Lenovo Vantage (Windows)</th>
+              <th>Scripts Avulsos (Linux)</th>
+              <th class="th-highlight">DUCKSVANTAGE (Linux)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Consumo de Memória RAM</strong></td>
+              <td>700 MB – 1.2 GB</td>
+              <td>~10 MB (Sem GUI)</td>
+              <td class="td-highlight">~35 MB (Com GUI e Gauges)</td>
+            </tr>
+            <tr>
+              <td><strong>Suporte ao Perfil "Max-Power"</strong></td>
+              <td>Sim (Apenas Legion)</td>
+              <td>Raro / Incompleto</td>
+              <td class="td-highlight">Sim, Nativo (Auto-detectado)</td>
+            </tr>
+            <tr>
+              <td><strong>Pop-up OSD no Fn + Q</strong></td>
+              <td>Sim (Pesado)</td>
+              <td>Não possui</td>
+              <td class="td-highlight">Sim (Leve, Wayland &amp; X11)</td>
+            </tr>
+            <tr>
+              <td><strong>Limite de Carga em 80% (Conservação)</strong></td>
+              <td>Sim</td>
+              <td>Apenas via terminal</td>
+              <td class="td-highlight">Sim (1-Click na GUI ou CLI)</td>
+            </tr>
+            <tr>
+              <td><strong>Troca Automática por Jogo (Steam)</strong></td>
+              <td>Apenas com Legion Arena</td>
+              <td>Não possui</td>
+              <td class="td-highlight">Sim (Steam, Heroic, Lutris)</td>
+            </tr>
+            <tr>
+              <td><strong>Detecção NVIDIA D3cold (Runtime PM)</strong></td>
+              <td>Proprietário</td>
+              <td>Acorda a GPU à toa</td>
+              <td class="td-highlight">Verifica antes de consultar</td>
+            </tr>
+            <tr>
+              <td><strong>Remapeador Tecla Copilot (F23)</strong></td>
+              <td>Bloqueado para MS Copilot</td>
+              <td>Não possui</td>
+              <td class="td-highlight">Sim (Ações customizadas)</td>
+            </tr>
+            <tr>
+              <td><strong>Telemetria / Coleta de Dados</strong></td>
+              <td>Intensa (Google Analytics, MS)</td>
+              <td>Zero</td>
+              <td class="td-highlight">Zero Absoluto (100% Offline)</td>
+            </tr>
+            <tr>
+              <td><strong>Licença de Software</strong></td>
+              <td>Proprietária / Fechada</td>
+              <td>Variada</td>
+              <td class="td-highlight">Open Source (MIT)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       HARDWARE COMPATIBILITY MATRIX
+       ==================================================================== -->
+  <section class="hardware-section" id="compatibilidade">
+    <div class="container">
+      
+      <div class="section-header">
+        <span class="section-tag">COMPATIBILIDADE TESTADA</span>
+        <h2 class="section-title">Projetado para Toda a Família Lenovo</h2>
+        <p class="section-desc">
+          Do laptop gamer mais parrudo ao ultrabook ultrafino de trabalho.
+        </p>
+      </div>
+
+      <div class="hardware-chips-grid">
+        <div class="hw-card">
+          <div class="hw-card-icon">
+            <img src="assets/icons/laptop.svg" width="32" height="32" alt="Legion">
+          </div>
+          <h4>Lenovo Legion</h4>
+          <p>Legion 5, 5 Pro, 7, 7 Pro, Slim 5/7 (Gen 6, 7, 8 e 9)</p>
+        </div>
+
+        <div class="hw-card">
+          <div class="hw-card-icon">
+            <img src="assets/icons/laptop.svg" width="32" height="32" alt="LOQ">
+          </div>
+          <h4>Lenovo LOQ</h4>
+          <p>LOQ 15, LOQ 16 (Plataformas Intel 13ª/14ª Gen &amp; AMD Ryzen 7000/8000)</p>
+        </div>
+
+        <div class="hw-card">
+          <div class="hw-card-icon">
+            <img src="assets/icons/laptop.svg" width="32" height="32" alt="IdeaPad Gaming">
+          </div>
+          <h4>IdeaPad Gaming</h4>
+          <p>IdeaPad Gaming 3 e 3i (Gerações Intel e AMD com NVIDIA GTX/RTX)</p>
+        </div>
+
+        <div class="hw-card">
+          <div class="hw-card-icon">
+            <img src="assets/icons/laptop.svg" width="32" height="32" alt="Yoga & IdeaPad">
+          </div>
+          <h4>IdeaPad &amp; Yoga</h4>
+          <p>IdeaPad 3/5/Slim, Yoga Slim e ThinkBook (Drivers ideapad_acpi)</p>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       CLI TERMINAL SHOWCASE (POWER USERS)
+       ==================================================================== -->
+  <section class="cli-section" id="terminal">
+    <div class="container">
+      
+      <div class="cli-container">
+        <div class="cli-info">
+          <span class="section-tag">FEITO PARA O TERMINAL</span>
+          <h3>Perfeito para Usuários de Hyprland, Sway e i3</h3>
+          <p>
+            Não quer abrir a interface gráfica toda hora? O DucksVantage conta com uma interface de linha de comando completa para scripts, atalhos do teclado e barras como Waybar e Polybar.
+          </p>
+
+          <ul class="cli-feature-bullets">
+            <li>
+              <span class="t-cyan">✔</span> Diagnóstico completo de sensores com <code>--status</code>
+            </li>
+            <li>
+              <span class="t-cyan">✔</span> Mudança instantânea de perfis: <code>--profile max-power</code>
+            </li>
+            <li>
+              <span class="t-cyan">✔</span> Controle de limite de bateria: <code>--conservation on|off</code>
+            </li>
+            <li>
+              <span class="t-cyan">✔</span> Saída limpa e rápida sem lentidão de inicialização
+            </li>
+          </ul>
+
+          <a href="#instalacao" class="btn-hero-primary" style="padding: 10px 22px; font-size: 0.95rem;">
+            <span>Aprender Comandos CLI</span>
+          </a>
+        </div>
+
+        <!-- Terminal Window Interativo -->
+        <div class="terminal-box">
+          <div class="terminal-top">
+            <div class="window-controls">
+              <span class="win-dot dot-red"></span>
+              <span class="win-dot dot-yellow"></span>
+              <span class="win-dot dot-green"></span>
+            </div>
+            <div class="terminal-tabs">
+              <button class="terminal-tab-btn active" data-cmd="status">--status</button>
+              <button class="terminal-tab-btn" data-cmd="profile">--profile</button>
+              <button class="terminal-tab-btn" data-cmd="conservation">--conservation</button>
+            </div>
+          </div>
+          <div class="terminal-content" id="terminal-screen">
+<span class="t-dim">$ ducksvantage --status</span>
+<span class="t-cyan">===============================================================</span>
+<span class="t-cyan">       DUCKSVANTAGE v2.0 - DIAGNÓSTICO DO SISTEMA &amp; ACPI       </span>
+<span class="t-cyan">===============================================================</span>
+<span class="t-green">✔ Hardware Detectado:</span> Lenovo Legion Pro 5 16ARX8
+<span class="t-green">✔ Driver ACPI Ativo:</span>  ideapad_acpi + lenovo-wmi-gamezone
+<span class="t-green">✔ Perfis Disponíveis:</span> quiet, balanced, performance, <span class="t-purple">max-power</span>
+<span class="t-yellow">⚡ Perfil Térmico:</span>    <span class="t-purple">[max-power]</span> (Potência EC desbloqueada)
+<span class="t-green">✔ CPU Detectada:</span>      AMD Ryzen 7 7745HX (16 threads @ 5.10 GHz, 58°C)
+<span class="t-green">✔ GPU Dedicada:</span>       NVIDIA GeForce RTX 4060 Laptop (115W, 62°C)
+<span class="t-green">✔ Modo de Conservação:</span> <span class="t-cyan">ATIVO [80%]</span> (Bateria protegida)
+<span class="t-green">✔ Regras UDEV:</span>        Instaladas em /etc/udev/rules.d/ (Sem sudo)
+<span class="t-green">✔ Pop-up OSD Fn+Q:</span>    Wayland / X11 Ativo (Sem roubar foco)
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       INSTALAÇÃO MULTI-DISTRO (ABAS)
+       ==================================================================== -->
+  <section class="install-section" id="instalacao">
+    <div class="container">
+      
+      <div class="section-header">
+        <span class="section-tag">INSTALAÇÃO EM 1 MINUTO</span>
+        <h2 class="section-title">Instale na Sua Distro Favorita</h2>
+        <p class="section-desc">
+          O DucksVantage vem com instalador multi-distro que configura os ícones do menu, bandeja do sistema e regras de permissão UDEV automaticamente.
+        </p>
+      </div>
+
+      <div class="install-box">
+        <div class="install-tabs">
+          <button class="install-tab-btn active" data-target="tab-arch">
+            <img src="assets/icons/laptop.svg" width="18" height="18" alt="Arch">
+            <span>CachyOS / Arch Linux</span>
+          </button>
+          <button class="install-tab-btn" data-target="tab-ubuntu">
+            <img src="assets/icons/laptop.svg" width="18" height="18" alt="Ubuntu">
+            <span>Ubuntu / Debian / Pop!_OS</span>
+          </button>
+          <button class="install-tab-btn" data-target="tab-fedora">
+            <img src="assets/icons/laptop.svg" width="18" height="18" alt="Fedora">
+            <span>Fedora / Nobara / RHEL</span>
+          </button>
+          <button class="install-tab-btn" data-target="tab-manual">
+            <img src="assets/icons/tools.svg" width="18" height="18" alt="Manual">
+            <span>Instalação Manual (Git)</span>
+          </button>
+        </div>
+
+        <div class="install-body">
+          <!-- Pane Arch / CachyOS -->
+          <div class="install-pane active" id="tab-arch">
+            <p>Instale as dependências via <code>pacman</code> e execute o script instalador:</p>
+            <div class="code-block-wrapper">
+              <button class="btn-copy btn-copy-code" data-clipboard="sudo pacman -S python-pyqt6 python-psutil python-pynvml
+sudo ./install.sh">Copiar</button>
+              <pre><code>sudo pacman -S python-pyqt6 python-psutil python-pynvml
+sudo ./install.sh</code></pre>
+            </div>
+            <p style="margin-top: 15px; font-size: 0.85rem; color: #8b949e;">
+              Dica: Você também pode empacotar como pacote nativo do Arch via <code>cd packaging &amp;&amp; makepkg -si</code>.
+            </p>
+          </div>
+
+          <!-- Pane Ubuntu / Debian -->
+          <div class="install-pane" id="tab-ubuntu">
+            <p>Para Ubuntu 22.04+, Debian 12+, Linux Mint ou Pop!_OS:</p>
+            <div class="code-block-wrapper">
+              <button class="btn-copy btn-copy-code" data-clipboard="sudo apt update
+sudo apt install python3-pyqt6 python3-psutil python3-pynvml policykit-1
+sudo ./install.sh">Copiar</button>
+              <pre><code>sudo apt update
+sudo apt install python3-pyqt6 python3-psutil python3-pynvml policykit-1
+sudo ./install.sh</code></pre>
+            </div>
+          </div>
+
+          <!-- Pane Fedora -->
+          <div class="install-pane" id="tab-fedora">
+            <p>Para Fedora 39/40, Nobara ou RHEL 9:</p>
+            <div class="code-block-wrapper">
+              <button class="btn-copy btn-copy-code" data-clipboard="sudo dnf install python3-pyqt6 python3-psutil python3-pynvml polkit
+sudo ./install.sh">Copiar</button>
+              <pre><code>sudo dnf install python3-pyqt6 python3-psutil python3-pynvml polkit
+sudo ./install.sh</code></pre>
+            </div>
+          </div>
+
+          <!-- Pane Manual -->
+          <div class="install-pane" id="tab-manual">
+            <p>Clone o repositório e rode diretamente sem instalar no sistema:</p>
+            <div class="code-block-wrapper">
+              <button class="btn-copy btn-copy-code" data-clipboard="git clone https://github.com/SEU-USUARIO/DucksVantage.git
+cd DucksVantage
+pip install -r requirements.txt
+python3 main.py --install-udev
+python3 main.py">Copiar</button>
+              <pre><code>git clone https://github.com/SEU-USUARIO/DucksVantage.git
+cd DucksVantage
+pip install -r requirements.txt
+python3 main.py --install-udev
+python3 main.py</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       FAQ (PERGUNTAS FREQUENTES)
+       ==================================================================== -->
+  <section class="faq-section" id="faq">
+    <div class="container">
+      
+      <div class="section-header">
+        <span class="section-tag">TIRE SUAS DÚVIDAS</span>
+        <h2 class="section-title">Perguntas Frequentes</h2>
+      </div>
+
+      <div class="faq-list">
+        <div class="faq-item open">
+          <div class="faq-question">
+            <h4>O DucksVantage funciona em sessões Wayland (KDE Plasma e GNOME)?</h4>
+            <span class="faq-arrow">▼</span>
+          </div>
+          <div class="faq-answer">
+            <p>
+              Sim! O pop-up OSD e a interface gráfica foram desenvolvidos especificamente com flags de janela Qt compatíveis com Wayland e X11. O overlay translúcido não aceita foco (<code>WindowDoesNotAcceptFocus</code>) e não minimiza jogos rodando em tela cheia via Gamescope, Proton ou Wine.
+            </p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question">
+            <h4>Preciso abrir o programa como `sudo`?</h4>
+            <span class="faq-arrow">▼</span>
+          </div>
+          <div class="faq-answer">
+            <p>
+              Não! O script <code>install.sh</code> instala automaticamente as regras de permissão UDEV (<code>/etc/udev/rules.d/99-ducksvantage.rules</code>). Isso permite que o seu usuário comum controle perfis ACPI, limites de bateria e TDP sem pedir senha root a cada clique.
+            </p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question">
+            <h4>Existe risco de danificar a bateria ou o hardware?</h4>
+            <span class="faq-arrow">▼</span>
+          </div>
+          <div class="faq-answer">
+            <p>
+              Nenhum. O DucksVantage não faz overclock inseguro ou gravações brutas de memória. Ele utiliza exclusivamente as interfaces oficiais expostas pelo kernel Linux (<code>ideapad_acpi</code>, <code>platform_profile</code> e RAPL), as mesmas que o firmware da própria Lenovo foi projetado para responder.
+            </p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question">
+            <h4>Como funciona o Modo de Conservação de 80%?</h4>
+            <span class="faq-arrow">▼</span>
+          </div>
+          <div class="faq-answer">
+            <p>
+              Quando ativado, ele instrui o Controlador Embarcado (EC) do notebook a suspender o carregamento elétrico das células de lítio quando a carga atinge 75–80%. Dessa forma, o notebook passa a ser alimentado diretamente pela fonte de energia, eliminando a degradação química por sobretensão.
+            </p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question">
+            <h4>O DucksVantage fica rodando na bandeja do sistema (tray icon)?</h4>
+            <span class="faq-arrow">▼</span>
+          </div>
+          <div class="faq-answer">
+            <p>
+              Sim! Ele fica discretamente na bandeja do sistema ao fechar a janela principal, com um menu rápido para alternar perfis térmicos, Modo Viagem e sair. Consumindo em média menos de 35 MB de RAM em repouso.
+            </p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       CTA BANNER FINAL
+       ==================================================================== -->
+  <section class="cta-banner">
+    <div class="container">
+      <div class="cta-card-box">
+        <img src="assets/icons/ducksvantage_logo.svg" alt="Duck Mascot" class="cta-mascot">
+        <h2 style="font-size: clamp(2rem, 4vw, 3rem); margin-bottom: 16px;">
+          Pronto para libertar o seu Lenovo no Linux?
+        </h2>
+        <p style="font-size: 1.15rem; max-width: 680px; margin: 0 auto 36px auto;">
+          Diga adeus ao software inchado do Windows. Tenha controle absoluto da sua máquina com código limpo, rápido e sem telemetria.
+        </p>
+        <div style="display: flex; justify-content: center; gap: 16px; flex-wrap: wrap;">
+          <a href="#instalacao" class="btn-hero-primary" style="font-size: 1.1rem; padding: 15px 36px;">
+            <span>Instalar DucksVantage Grátis</span>
+          </a>
+          <a href="https://github.com" target="_blank" class="btn-hero-secondary" style="font-size: 1.1rem; padding: 15px 32px;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+            </svg>
+            <span>Deixar uma Estrela no GitHub</span>
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====================================================================
+       FOOTER
+       ==================================================================== -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-top">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <img src="assets/icons/ducksvantage_logo.svg" width="34" height="34" alt="DucksVantage Logo">
+          <div>
+            <h4 style="font-size: 1.05rem; font-weight: 800; letter-spacing: 0.5px;">DUCKSVANTAGE</h4>
+            <p style="font-size: 0.75rem; color: #8b949e;">Controle de Hardware para Lenovo no Linux</p>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 20px; font-size: 0.88rem;">
+          <a href="#simulador">Simulador</a>
+          <a href="#recursos">Recursos</a>
+          <a href="#comparativo">Comparativo</a>
+          <a href="#instalacao">Instalação</a>
+          <a href="#faq">FAQ</a>
+        </div>
+      </div>
+
+      <div class="footer-bottom">
+        <p>© 2026 DucksVantage Project. Software Livre sob licença <b>MIT</b>.</p>
+        <p>Desenvolvido com Python, PyQt6 e carinho pela comunidade Linux.</p>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Scripts -->
+  <script src="js/main.js"></script>
+</body>
+</html>

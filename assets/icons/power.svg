@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="30px" height="30px" viewBox="0 0 30 30" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <!-- Generator: Sketch 54.1 (76490) - https://sketchapp.com -->
+    <title>7.Home/tileIcon/power</title>
+    <desc>Created with Sketch.</desc>
+    <defs>
+        <linearGradient x1="-28.9006843%" y1="15.6888635%" x2="111.139622%" y2="76.4706806%" id="linearGradient-1">
+            <stop stop-color="#5AA4FF" offset="0%"></stop>
+            <stop stop-color="#0078FF" offset="80.1269222%"></stop>
+            <stop stop-color="#1C88FF" offset="100%"></stop>
+        </linearGradient>
+    </defs>
+    <g id="7.Home/tileIcon/power" stroke="none" stroke-width="1" fill="none" fill-rule="evenodd">
+        <path d="M5,21 L24.0253991,21 L24.0253991,16.8504547 L27,16.8504547 L27,13.1495453 L24.0253991,13.1495453 L24.0253991,9 L5,9 L5,21 Z M26.0609167,19.7855992 L26.0609167,21.8914304 C26.0609167,23.0552513 25.3145,24 24.3925833,24 L3,24 L3,7 L24.5160833,7 C25.36975,7 26.0609167,7.87491946 26.0609167,8.95248067 L26.0609167,11.21577 L29,11.21577 L29,19.7855992 L26.0609167,19.7855992 Z M14.9745378,15.353612 L20.1376,14.922562 L13.3375853,18.881892 L13.3582058,15.353612 L9.08024,15.353612 L15.0506751,11.825332 L14.9745378,15.353612 Z" id="Combined-Shape" fill="url(#linearGradient-1)" fill-rule="nonzero"></path>
+    </g>
+</svg>

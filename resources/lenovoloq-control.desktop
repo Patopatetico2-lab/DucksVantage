@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Lenovo LOQ Control
+Comment=Substituto nativo do Lenovo Vantage para CachyOS e KDE Plasma
+Exec=python3 /home/notebook/Downloads/lenovo\ loq/main.py
+Icon=preferences-system-power
+Terminal=false
+Type=Application
+Categories=System;Settings;HardwareSettings;
+Keywords=lenovo;vantage;loq;legion;fan;battery;conservation;power;
+StartupNotify=true
+

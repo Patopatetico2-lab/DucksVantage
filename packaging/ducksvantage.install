@@ -1,0 +1,14 @@
+post_install() {
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger 2>/dev/null || true
+    chmod 0666 /sys/firmware/acpi/platform_profile 2>/dev/null || true
+    chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/conservation_mode 2>/dev/null || true
+    chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/fn_lock 2>/dev/null || true
+    chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/camera_power 2>/dev/null || true
+    chmod 0666 /sys/class/powercap/intel-rapl*/constraint_*_power_limit_uw 2>/dev/null || true
+}
+
+post_upgrade() {
+    post_install
+}
+
