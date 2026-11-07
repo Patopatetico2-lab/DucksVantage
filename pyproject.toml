@@ -10,9 +10,14 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
 authors = [
-    { name = "Ducksvantage Project" }
+    { name = "Patopatetico2-lab" }
 ]
 keywords = ["lenovo", "vantage", "legion", "loq", "ideapad", "linux", "pyqt6", "acpi", "hardware"]
+
+[project.urls]
+Homepage = "https://patopatetico2-lab.github.io/DucksVantage/"
+Repository = "https://github.com/Patopatetico2-lab/DucksVantage"
+Documentation = "https://patopatetico2-lab.github.io/DucksVantage/"
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Environment :: X11 Applications :: Qt",

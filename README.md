@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://seu-usuario.github.io/DucksVantage/"><img src="https://img.shields.io/badge/🌐_Landing_Page-Visitar_Site_Oficial-00d2ff?style=for-the-badge" alt="Landing Page"></a>
+  <a href="https://patopatetico2-lab.github.io/DucksVantage/"><img src="https://img.shields.io/badge/🌐_Landing_Page-Visitar_Site_Oficial-00d2ff?style=for-the-badge" alt="Landing Page"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue?style=for-the-badge&logo=python&logoColor=white" alt="Python 3">
   <img src="https://img.shields.io/badge/PyQt6-Native-2cd283?style=for-the-badge" alt="PyQt6">
   <img src="https://img.shields.io/badge/Linux_Kernel-6.x-orange?style=for-the-badge&logo=linux&logoColor=white" alt="Linux">
@@ -201,5 +201,5 @@ O projeto inclui uma **landing page de propaganda moderna e interativa** pronta 
 1. No seu repositório no GitHub, acesse **Settings** (Configurações) > **Pages**.
 2. Em **Build and deployment** > **Source**, selecione **Deploy from a branch**.
 3. Em **Branch**, selecione `main` (ou `master`) e escolha a pasta `/` (root) ou `/docs`.
-4. Clique em **Save**. Em instantes seu site estará no ar em: `https://<seu-usuario>.github.io/DucksVantage/`!
+4. Clique em **Save**. Em instantes seu site estará no ar em: `https://patopatetico2-lab.github.io/DucksVantage/`!
 

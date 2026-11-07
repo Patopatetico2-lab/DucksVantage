@@ -1,10 +1,10 @@
-# Maintainer: Ducksvantage Project
+# Maintainer: Patopatetico2-lab
 pkgname=ducksvantage
 pkgver=2.0.0
 pkgrel=1
 pkgdesc="Universal Lenovo Vantage replacement for Linux (Legion, LOQ, IdeaPad Gaming, IdeaPad & Yoga)"
 arch=('any')
-url="https://github.com/ducksvantage/ducksvantage"
+url="https://github.com/Patopatetico2-lab/DucksVantage"
 license=('MIT')
 depends=('python' 'python-pyqt6' 'python-psutil')
 optdepends=('python-pynvml: Low-latency NVIDIA GPU telemetry')
