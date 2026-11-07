@@ -6,11 +6,11 @@ GenericName=Lenovo Hardware & Power Control
 GenericName[pt_BR]=Controle de Hardware e Energia Lenovo
 Comment=Universal Lenovo Vantage replacement for Linux (Legion, LOQ, IdeaPad Gaming, IdeaPad & Yoga)
 Comment[pt_BR]=Substituto universal e leve do Lenovo Vantage para Linux (Legion, LOQ, IdeaPad Gaming, IdeaPad e Yoga)
-Exec=ducksvantage
-Icon=ducksvantage
+Exec=/usr/bin/python3 /home/notebook/Downloads/DucksVantage/main.py
+Icon=/home/notebook/Downloads/DucksVantage/assets/app_icon.svg
+Path=/home/notebook/Downloads/DucksVantage
 Terminal=false
 Categories=System;Settings;HardwareSettings;Utility;Qt;
 Keywords=Lenovo;Legion;LOQ;IdeaPad;Vantage;Battery;Thermal;Performance;Max-Power;Ducksvantage;
 StartupNotify=true
-StartupWMClass=ducksvantage
-
+StartupWMClass=Ducksvantage

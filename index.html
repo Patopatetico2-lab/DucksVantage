@@ -188,7 +188,9 @@
             <span>DucksVantage 2.0 • Lenovo Legion Pro 5 16ARX8</span>
             <span class="window-chip">Linux 6.12 (CachyOS)</span>
           </div>
-          <div style="width: 50px;"></div>
+          <div>
+            <button id="btn-sound-toggle" class="btn-audio-toggle" title="Alternar som do atalho Fn+Q">🔊 Som OSD</button>
+          </div>
         </div>
 
         <div class="app-body">
@@ -608,6 +610,54 @@
           <p>
             Chega de digitar sua senha de administrador para trocar o modo da ventoinha. Nosso instalador configura regras seguras em <code>/etc/udev/rules.d/99-ducksvantage.rules</code> concedendo permissão de escrita ao seu usuário nos caminhos ACPI.
           </p>
+        </div>
+      </div>
+
+      <!-- Calculadora de Degradação da Bateria -->
+      <div class="battery-calc-card">
+        <div class="calc-header">
+          <div>
+            <span class="section-tag" style="margin-bottom: 4px;">CALCULADORA DE AUTONOMIA</span>
+            <h3 style="font-size: 1.5rem; font-weight: 800;">Simulador de Saúde da Bateria (Wh &amp; Ciclos)</h3>
+            <p style="font-size: 0.92rem; color: #94a3b8;">Arraste a barra para comparar a degradação química com e sem o Modo de Conservação de 80% do DucksVantage.</p>
+          </div>
+          <div style="font-size: 0.85rem; background: rgba(0, 210, 255, 0.1); border: 1px solid rgba(0, 210, 255, 0.25); padding: 6px 14px; border-radius: 20px; color: #00d2ff;">
+            Bateria de Fábrica: <b>80 Wh</b>
+          </div>
+        </div>
+
+        <div class="calc-slider-box">
+          <div class="slider-label-row">
+            <span>Tempo de Uso do Notebook:</span>
+            <span id="calc-months-val" style="color: #00d2ff; font-weight: 800; font-size: 1.1rem;">18 meses</span>
+          </div>
+          <input type="range" id="calc-months-slider" class="calc-range-input" min="1" max="36" value="18">
+        </div>
+
+        <div class="calc-results-grid">
+          <!-- Sem DucksVantage (100% Carga Direta) -->
+          <div class="calc-result-box bad">
+            <div class="calc-result-title" style="color: #f87171;">✕ Sem DucksVantage (Carga a 100% Contínua)</div>
+            <div class="calc-pct-big" id="calc-bad-pct" style="color: #f87171;">72%</div>
+            <div class="calc-progress-bar">
+              <div id="calc-bad-bar" class="calc-bar-fill" style="width: 72%; background: linear-gradient(90deg, #ef4444, #f87171);"></div>
+            </div>
+            <p style="font-size: 0.85rem; color: #cbd5e1; line-height: 1.5;">
+              Tensão alta constante (4.25V/célula) acelera a degradação dos íons de lítio. Capacidade reduzida para <b id="calc-bad-wh">57.6 Wh</b>. Autonomia cai quase pela metade.
+            </p>
+          </div>
+
+          <!-- Com DucksVantage (80% Conservação) -->
+          <div class="calc-result-box win">
+            <div class="calc-result-title" style="color: #4ade80;">✔ Com DucksVantage (Modo Conservação 80%)</div>
+            <div class="calc-pct-big" id="calc-win-pct" style="color: #4ade80;">93%</div>
+            <div class="calc-progress-bar">
+              <div id="calc-win-bar" class="calc-bar-fill" style="width: 93%; background: linear-gradient(90deg, #22c55e, #4ade80);"></div>
+            </div>
+            <p style="font-size: 0.85rem; color: #cbd5e1; line-height: 1.5;">
+              Células protegidas na faixa ótima de 3.9V. O notebook opera direto na fonte. Capacidade preservada em <b id="calc-win-wh">74.4 Wh</b> mesmo após anos de tomada.
+            </p>
+          </div>
         </div>
       </div>
 

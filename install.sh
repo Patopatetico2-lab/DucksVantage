@@ -96,11 +96,42 @@ mkdir -p "$(dirname "${DESKTOP_DST}")"
 cp "${DESKTOP_SRC}" "${DESKTOP_DST}"
 chmod 0644 "${DESKTOP_DST}"
 
+# Determinar diretório de aplicativos do usuário (~/.local/share/applications/)
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+    TARGET_USER="$SUDO_USER"
+    USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+else
+    TARGET_USER="$USER"
+    USER_HOME="$HOME"
+fi
+
+USER_APP_DIR="${USER_HOME}/.local/share/applications"
+mkdir -p "${USER_APP_DIR}"
+cp "${DESKTOP_SRC}" "${USER_APP_DIR}/ducksvantage.desktop"
+chmod 0644 "${USER_APP_DIR}/ducksvantage.desktop"
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+    chown -R "$TARGET_USER":"$TARGET_USER" "${USER_APP_DIR}/ducksvantage.desktop"
+fi
+
+echo "  • Atalho do sistema: ${DESKTOP_DST}"
+echo "  • Atalho do usuário: ${USER_APP_DIR}/ducksvantage.desktop"
+
+# Atualizar caches do sistema e do KDE Plasma 6
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
 fi
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+    update-desktop-database "${USER_APP_DIR}" >/dev/null 2>&1 || true
+fi
+
+echo "  • Atualizando cache do KDE Plasma (kbuildsycoca6)..."
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+    sudo -u "$TARGET_USER" kbuildsycoca6 --noincremental >/dev/null 2>&1 || \
+    sudo -u "$TARGET_USER" kbuildsycoca5 --noincremental >/dev/null 2>&1 || true
+else
+    kbuildsycoca6 --noincremental >/dev/null 2>&1 || \
+    kbuildsycoca5 --noincremental >/dev/null 2>&1 || true
 fi
 
 # 5. Instalar e Ativar Regras UDEV para Acesso Direto ao Kernel sem Sudo
