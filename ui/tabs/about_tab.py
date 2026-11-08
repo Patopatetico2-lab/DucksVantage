@@ -12,15 +12,16 @@ from core.qt_compat import (
     QMessageBox, QApplication, QIcon, QPixmap
 )
 from ui.theme_tokens import ThemeTokens
-from ui.components import StatusBadge
+from ui.components import StatusBadge, ToggleSwitch
 from core.permissions import PermissionsManager
 
 ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "assets", "icons")
 
 
 class AboutTab(QWidget):
-    """Informações completas de DMI/BIOS do sistema e reparo compacto de permissões UDEV."""
+    """Informações completas de DMI/BIOS do sistema, Autostart XDG e reparo compacto de permissões UDEV."""
     permissions_updated = Signal()
+    autostart_toggled = Signal(bool)
 
     def __init__(self, backend, parent=None):
         super().__init__(parent)
@@ -89,7 +90,46 @@ class AboutTab(QWidget):
         layout.addWidget(info_card)
 
         # =====================================================================
-        # 2. Card Compacto de Status UDEV e Reparo de Permissões (Sem Bloco Gigante)
+        # 2. Card de Inicialização Automática Universal (XDG Autostart)
+        # =====================================================================
+        autostart_card = QFrame()
+        autostart_card.setProperty("class", "card")
+        autostart_layout = QHBoxLayout(autostart_card)
+        autostart_layout.setContentsMargins(20, 16, 20, 16)
+        autostart_layout.setSpacing(14)
+
+        auto_icon = QLabel()
+        power_icon_path = os.path.join(ICON_DIR, "power.svg")
+        if os.path.exists(power_icon_path):
+            auto_icon.setPixmap(QPixmap(power_icon_path).scaled(26, 26, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        autostart_layout.addWidget(auto_icon)
+
+        auto_titles = QVBoxLayout()
+        auto_titles.setSpacing(3)
+        auto_title = QLabel("Iniciar com o sistema")
+        auto_title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        auto_title.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        auto_titles.addWidget(auto_title)
+
+        self.autostart_desc_lbl = QLabel(
+            "Inicia o Ducksvantage silenciosamente na bandeja do sistema (--minimized) via padrão XDG (~/.config/autostart/ducksvantage.desktop)."
+        )
+        self.autostart_desc_lbl.setWordWrap(True)
+        self.autostart_desc_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        auto_titles.addWidget(self.autostart_desc_lbl)
+        autostart_layout.addLayout(auto_titles, stretch=1)
+
+        self.autostart_badge = StatusBadge("DESATIVADO", bg_color="#1e293b", text_color="#cbd5e1")
+        autostart_layout.addWidget(self.autostart_badge)
+
+        self.autostart_toggle = ToggleSwitch(checked=self.backend.get_autostart_enabled())
+        self.autostart_toggle.toggled.connect(self._on_autostart_toggled)
+        autostart_layout.addWidget(self.autostart_toggle)
+
+        layout.addWidget(autostart_card)
+
+        # =====================================================================
+        # 3. Card Compacto de Status UDEV e Reparo de Permissões (Sem Bloco Gigante)
         # =====================================================================
         udev_card = QFrame()
         udev_card.setProperty("class", "card")
@@ -153,7 +193,30 @@ class AboutTab(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(scroll)
 
+        self.update_autostart_status()
         self.update_permission_status()
+
+    def update_autostart_status(self):
+        """Sincroniza o estado visual do switch e badge com ~/.config/autostart/ducksvantage.desktop."""
+        enabled = self.backend.get_autostart_enabled()
+        self.autostart_toggle.blockSignals(True)
+        self.autostart_toggle.setChecked(enabled)
+        self.autostart_toggle.blockSignals(False)
+
+        if enabled:
+            self.autostart_badge.setText("ATIVO NO BOOT")
+            self.autostart_badge.setColor("#064e3b", "#34d399")
+        else:
+            self.autostart_badge.setText("DESATIVADO")
+            self.autostart_badge.setColor("#1e293b", "#cbd5e1")
+
+    def _on_autostart_toggled(self, checked: bool):
+        """Cria ou remove ~/.config/autostart/ducksvantage.desktop conforme o switch."""
+        ok, msg = self.backend.set_autostart_enabled(checked)
+        if not ok:
+            QMessageBox.critical(self, "Erro no Autostart", msg)
+        self.update_autostart_status()
+        self.autostart_toggled.emit(self.backend.get_autostart_enabled())
 
     def _add_spec_item(self, grid: QGridLayout, row: int, col: int, label: str, value: str):
         box = QFrame()

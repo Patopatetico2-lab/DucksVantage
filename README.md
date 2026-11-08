@@ -119,6 +119,9 @@ Depois de instalado, procure por **Ducksvantage** no menu de aplicativos do KDE 
 ducksvantage
 # ou direto da pasta do repositório:
 python3 main.py
+
+# Iniciar silenciosamente na bandeja do sistema (System Tray / Autostart)
+python3 main.py --minimized
 ```
 
 Você também pode controlar os perfis e verificar sensores pela linha de comando (útil para scripts ou keybinds do Hyprland / KWin):
@@ -136,6 +139,10 @@ python3 main.py --profile max-power
 # Ativar ou desativar o limite de carga em 80% (Modo de Conservação)
 python3 main.py --conservation on
 python3 main.py --conservation off
+
+# Ativar ou desativar a inicialização automática com o sistema (XDG Autostart)
+python3 main.py --autostart on
+python3 main.py --autostart off
 
 # Instalar/reparar as regras UDEV para operar sem pedir senha sudo/polkit
 python3 main.py --install-udev

@@ -12,6 +12,7 @@ além dos 6 Recursos Exclusivos de Elite:
 """
 
 import os
+import sys
 import re
 import glob
 import struct
@@ -2679,3 +2680,85 @@ class HardwareBackend:
             return True
         all_ok, _ = PermissionsManager.check_system_permissions(essential)
         return all_ok
+
+    # -------------------------------------------------------------------------
+    # Inicialização Automática Universal (Padrão XDG Autostart freedesktop.org)
+    # -------------------------------------------------------------------------
+    def get_autostart_desktop_path(self) -> str:
+        """Retorna o caminho padrão XDG Autostart (~/.config/autostart/ducksvantage.desktop)."""
+        xdg_config = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        if not xdg_config:
+            xdg_config = os.path.expanduser("~/.config")
+        return os.path.join(xdg_config, "autostart", "ducksvantage.desktop")
+
+    def get_autostart_enabled(self) -> bool:
+        """Verifica se o arquivo de inicialização automática existe e está habilitado."""
+        desktop_path = self.get_autostart_desktop_path()
+        if not os.path.isfile(desktop_path):
+            return False
+        try:
+            with open(desktop_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            if re.search(r"(?m)^\s*Hidden\s*=\s*true\s*$", content, re.IGNORECASE):
+                return False
+            if re.search(r"(?m)^\s*X-GNOME-Autostart-enabled\s*=\s*false\s*$", content, re.IGNORECASE):
+                return False
+            return True
+        except OSError:
+            return True
+
+    def set_autostart_enabled(self, enabled: bool) -> Tuple[bool, str]:
+        """
+        Gerencia a inicialização automática com o sistema via especificação XDG Autostart
+        (~/.config/autostart/ducksvantage.desktop), compatível com KDE Plasma, GNOME, XFCE,
+        Cinnamon, MATE, LXQt e gerenciadores de sessão em qualquer distribuição Linux.
+        """
+        desktop_path = self.get_autostart_desktop_path()
+        autostart_dir = os.path.dirname(desktop_path)
+
+        if not enabled:
+            try:
+                if os.path.exists(desktop_path):
+                    os.remove(desktop_path)
+                self.settings.set("autostart_enabled", False)
+                return True, f"Inicialização automática desativada ({desktop_path} removido)."
+            except OSError as e:
+                return False, f"Erro ao remover o arquivo de autostart: {e}"
+
+        try:
+            os.makedirs(autostart_dir, exist_ok=True)
+            project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            main_py = os.path.join(project_dir, "main.py")
+            icon_path = os.path.join(project_dir, "assets", "app_icon.svg")
+            python_bin = sys.executable or shutil.which("python3") or "/usr/bin/python3"
+
+            desktop_content = (
+                "[Desktop Entry]\n"
+                "Version=1.0\n"
+                "Type=Application\n"
+                "Name=Ducksvantage\n"
+                "GenericName=Lenovo Hardware & Power Control\n"
+                "GenericName[pt_BR]=Controle de Hardware e Energia Lenovo\n"
+                "Comment=Start Ducksvantage minimized in system tray (Fn+Q OSD & Game Auto-Switch)\n"
+                "Comment[pt_BR]=Inicia o Ducksvantage minimizado na bandeja do sistema (OSD Fn+Q e Auto-Switch)\n"
+                f"Exec={python_bin} {main_py} --minimized\n"
+                f"Icon={icon_path}\n"
+                f"Path={project_dir}\n"
+                "Terminal=false\n"
+                "Categories=System;Settings;HardwareSettings;Utility;Qt;\n"
+                "Keywords=Lenovo;Legion;LOQ;IdeaPad;Vantage;Battery;Thermal;Performance;Max-Power;Ducksvantage;\n"
+                "StartupNotify=false\n"
+                "StartupWMClass=Ducksvantage\n"
+                "X-GNOME-Autostart-enabled=true\n"
+                "X-KDE-autostart-after=panel\n"
+                "X-MATE-Autostart-enabled=true\n"
+                "X-LXQt-Need-Tray=true\n"
+            )
+
+            with open(desktop_path, "w", encoding="utf-8") as f:
+                f.write(desktop_content)
+            os.chmod(desktop_path, 0o644)
+            self.settings.set("autostart_enabled", True)
+            return True, f"Inicialização automática configurada em {desktop_path}"
+        except OSError as e:
+            return False, f"Erro ao criar o arquivo de autostart: {e}"

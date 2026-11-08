@@ -247,6 +247,7 @@ class MainWindow(QMainWindow):
         elif index == 2:
             self.battery_tab.refresh_display()
         elif index == 3:
+            self.about_tab.update_autostart_status()
             self.about_tab.update_permission_status()
 
     def _connect_signals(self):
@@ -281,8 +282,10 @@ class MainWindow(QMainWindow):
         self.dashboard_tab.auto_power_toggled.connect(self._apply_auto_power)
         self.dashboard_tab.kbd_backlight_requested.connect(self._apply_kbd_backlight)
 
-        # 6. Aba Sobre / UDEV
+        # 6. Aba Sobre / UDEV / Autostart XDG
         self.about_tab.permissions_updated.connect(self.about_tab.update_permission_status)
+        self.about_tab.autostart_toggled.connect(self._on_autostart_changed)
+        self.tray_manager.autostart_toggled.connect(self._apply_autostart)
 
         # 7. Bandeja do Sistema
         self.tray_manager.show_window_requested.connect(self._toggle_visibility)
@@ -643,6 +646,22 @@ class MainWindow(QMainWindow):
             self.header_profile_pill.setText("EQUILIBRADO")
             self.header_profile_pill.setColor("#155e75", ThemeTokens.THERMAL_BALANCED)
 
+    def _apply_autostart(self, enabled: bool):
+        ok, msg = self.backend.set_autostart_enabled(enabled)
+        if not ok:
+            QMessageBox.critical(self, "Erro no Autostart", msg)
+        self._on_autostart_changed(self.backend.get_autostart_enabled())
+
+    def _on_autostart_changed(self, enabled: bool):
+        self.about_tab.update_autostart_status()
+        self.tray_manager.update_tray_state()
+        self.osd.notify_feature_osd(
+            title="Iniciar com o Sistema",
+            subtitle="Ativado em ~/.config/autostart" if enabled else "Inicialização automática desativada",
+            icon_name="power.svg",
+            accent_color=ThemeTokens.STATUS_GREEN if enabled else ThemeTokens.BORDER_CYAN
+        )
+
     def _toggle_visibility(self):
         if self.isVisible():
             self.hide()
@@ -650,6 +669,7 @@ class MainWindow(QMainWindow):
             self.show()
             self.raise_()
             self.activateWindow()
+            self._on_telemetry_tick()
 
     def _quit_app(self):
         self._is_quitting = True

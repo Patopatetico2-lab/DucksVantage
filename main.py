@@ -66,6 +66,11 @@ def run_cli_mode(args, backend: HardwareBackend):
         ok, msg = PermissionsManager.install_udev_rules(backend.get_active_writable_paths())
         print(f"[{'OK' if ok else 'ERRO'}] Instalação UDEV: {msg}")
 
+    if args.autostart:
+        enable = args.autostart.lower() in ("1", "true", "on", "sim", "ativar")
+        ok, msg = backend.set_autostart_enabled(enable)
+        print(f"[{'OK' if ok else 'ERRO'}] Autostart XDG ({'Ativado' if enable else 'Desativado'}): {msg}")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -84,10 +89,22 @@ def main():
         choices=["on", "off", "1", "0"],
         help="Ativa ou desativa o Modo de Conservação (~80%%)"
     )
+    parser.add_argument(
+        "--autostart",
+        type=str,
+        choices=["on", "off", "1", "0"],
+        help="Ativa ou desativa a inicialização automática com o sistema (XDG Autostart)"
+    )
+    parser.add_argument(
+        "--minimized", "--tray",
+        dest="minimized",
+        action="store_true",
+        help="Inicia o aplicativo silenciosamente na bandeja do sistema (System Tray) sem abrir a janela principal"
+    )
     parser.add_argument("--install-udev", action="store_true", help="Instala as regras UDEV para operar sem sudo")
     args = parser.parse_args()
 
-    if args.status or args.profile or args.conservation or args.install_udev:
+    if args.status or args.profile or args.conservation or args.install_udev or args.autostart:
         backend = HardwareBackend()
         run_cli_mode(args, backend)
         return
@@ -114,6 +131,7 @@ def main():
     app.setApplicationName("Ducksvantage")
     app.setDesktopFileName("ducksvantage.desktop")
     app.setWindowIcon(QIcon("assets/app_icon.svg"))
+    app.setQuitOnLastWindowClosed(False)
 
     qss_file = os.path.join(base_dir, "styles.qss")
     if os.path.exists(qss_file):
@@ -122,7 +140,8 @@ def main():
 
     backend = HardwareBackend()
     window = MainWindow(backend)
-    window.show()
+    if not args.minimized:
+        window.show()
 
     sys.exit(app.exec())
 

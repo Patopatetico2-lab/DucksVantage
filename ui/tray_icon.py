@@ -20,6 +20,7 @@ class SystemTrayManager(QObject):
     profile_requested = Signal(str)
     conservation_toggled = Signal(bool)
     eco_travel_toggled = Signal(bool)
+    autostart_toggled = Signal(bool)
     show_window_requested = Signal()
     quit_requested = Signal()
 
@@ -122,6 +123,13 @@ class SystemTrayManager(QObject):
         self.action_conservation.triggered.connect(self._on_conservation_click)
         self.menu.addAction(self.action_conservation)
 
+        # Inicialização Automática com o Sistema (XDG Autostart)
+        self.action_autostart = QAction("Iniciar com o sistema", self.menu)
+        self.action_autostart.setIcon(self._get_icon("power.svg"))
+        self.action_autostart.setCheckable(True)
+        self.action_autostart.triggered.connect(self.autostart_toggled.emit)
+        self.menu.addAction(self.action_autostart)
+
         self.menu.addSeparator()
 
         # Abrir / Ocultar Janela
@@ -195,6 +203,7 @@ class SystemTrayManager(QObject):
         self.action_eco_travel.setChecked(self.backend.get_eco_travel_mode())
         if self.backend.features.conservation_mode:
             self.action_conservation.setChecked(self.backend.get_conservation_mode())
+        self.action_autostart.setChecked(self.backend.get_autostart_enabled())
 
         bat = self.backend.get_battery_info()
         cpu = self.backend.get_cpu_metrics()
