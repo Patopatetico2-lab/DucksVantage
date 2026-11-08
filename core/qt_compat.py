@@ -14,7 +14,7 @@ try:
     from PyQt6.QtGui import (
         QColor, QFont, QPainter, QPainterPath, QPolygonF, QBrush, QPen,
         QLinearGradient, QConicalGradient, QIcon, QAction, QPixmap,
-        QShortcut, QKeySequence
+        QShortcut, QKeySequence, QCursor, QGuiApplication
     )
     from PyQt6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -33,7 +33,7 @@ except ImportError:
         from PySide6.QtGui import (
             QColor, QFont, QPainter, QPainterPath, QPolygonF, QBrush, QPen,
             QLinearGradient, QConicalGradient, QIcon, QAction, QPixmap,
-            QShortcut, QKeySequence
+            QShortcut, QKeySequence, QCursor, QGuiApplication
         )
         from PySide6.QtWidgets import (
             QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,

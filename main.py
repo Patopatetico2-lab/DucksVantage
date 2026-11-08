@@ -28,7 +28,7 @@ def _terminate_previous_instances() -> None:
             cmdline = " ".join(proc.info.get("cmdline") or [])
             if ("main.py" in cmdline or "ducksvantage" in cmdline) and "python" in (proc.info.get("name") or "").lower():
                 proc.terminate()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
 
 
@@ -118,7 +118,7 @@ def main():
         print("=" * 65)
         sys.exit(1)
 
-    from core.qt_compat import QApplication, QIcon
+    from core.qt_compat import QApplication, QIcon, QSystemTrayIcon
     from ui_main import MainWindow
 
     _terminate_previous_instances()
@@ -131,7 +131,10 @@ def main():
     app.setApplicationName("Ducksvantage")
     app.setDesktopFileName("ducksvantage.desktop")
     app.setWindowIcon(QIcon("assets/app_icon.svg"))
-    app.setQuitOnLastWindowClosed(False)
+
+    # Verifica suporte à bandeja do sistema (evita processo fantasma em GNOME puro ou Wayland sem tray)
+    tray_available = QSystemTrayIcon.isSystemTrayAvailable()
+    app.setQuitOnLastWindowClosed(not tray_available)
 
     qss_file = os.path.join(base_dir, "styles.qss")
     if os.path.exists(qss_file):
@@ -139,8 +142,17 @@ def main():
             app.setStyleSheet(f.read())
 
     backend = HardwareBackend()
+    app.aboutToQuit.connect(backend.close)
     window = MainWindow(backend)
-    if not args.minimized:
+
+    if args.minimized:
+        if tray_available:
+            pass  # Permanece em segundo plano minimizado na bandeja
+        else:
+            print("[Ducksvantage] Aviso: Nenhuma bandeja do sistema (System Tray) detectada neste ambiente desktop.")
+            print("[Ducksvantage] Abrindo a janela principal para evitar processo fantasma.")
+            window.show()
+    else:
         window.show()
 
     sys.exit(app.exec())

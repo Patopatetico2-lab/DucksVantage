@@ -9,7 +9,7 @@ import os
 from core.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     Qt, QFont, QIcon, QTimer, QVariantAnimation,
-    QGraphicsOpacityEffect, QApplication
+    QGraphicsOpacityEffect, QApplication, QCursor, QGuiApplication
 )
 from ui.theme_tokens import ThemeTokens
 
@@ -22,16 +22,28 @@ class VantageOSDOverlay(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # Flags obrigatórias para não roubar foco e não minimizar jogos
-        self.setWindowFlags(
+        self.is_wayland = (
+            "wayland" in os.environ.get("XDG_SESSION_TYPE", "").lower()
+            or bool(os.environ.get("WAYLAND_DISPLAY"))
+        )
+
+        # Flags para não roubar foco, não minimizar jogos e manter suporte Wayland/X11
+        flags = (
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.Tool |
             Qt.WindowType.WindowDoesNotAcceptFocus |
             Qt.WindowType.WindowTransparentForInput
         )
+        if self.is_wayland:
+            flags |= Qt.WindowType.ToolTip
+        else:
+            flags |= Qt.WindowType.Tool
+
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setObjectName("ducksvantage-osd")
+        self.setWindowTitle("Ducksvantage OSD")
 
         self.setFixedSize(390, 110)
 
@@ -104,14 +116,36 @@ class VantageOSDOverlay(QWidget):
         self.fade_anim.setEndValue(0.0)
         self.fade_anim.start()
 
+    def _get_target_screen(self):
+        """Identifica a tela ativa (sob o cursor do mouse em jogos/apps) com fallback para tela principal."""
+        try:
+            pos = QCursor.pos()
+            screen = QGuiApplication.screenAt(pos)
+            if screen:
+                return screen
+        except Exception:
+            pass
+        return QApplication.primaryScreen()
+
     def _reposition(self):
-        """Posiciona o pop-up centralizado na parte inferior/central da tela."""
-        screen = QApplication.primaryScreen()
+        """Posiciona o pop-up centralizado na parte inferior/central da tela ativa com suporte a Wayland e X11."""
+        screen = self._get_target_screen()
         if screen:
-            geom = screen.geometry()
+            geom = screen.availableGeometry() if hasattr(screen, "availableGeometry") else screen.geometry()
             x = geom.x() + (geom.width() - self.width()) // 2
             y = geom.y() + int(geom.height() * 0.78)
-            self.move(x, y)
+
+            if hasattr(self, "windowHandle") and self.windowHandle():
+                try:
+                    self.windowHandle().setScreen(screen)
+                except Exception:
+                    pass
+
+            self.setGeometry(x, y, self.width(), self.height())
+            try:
+                self.move(x, y)
+            except Exception:
+                pass
 
     def show_osd(self, title: str, subtitle: str, icon_path: str, accent_color: str):
         """Exibe o OSD com novos valores e reinicia o timer de permanência de 1.5s."""
@@ -136,6 +170,16 @@ class VantageOSDOverlay(QWidget):
         self.fade_anim.stop()
         self.opacity_effect.setOpacity(1.0)
         self.show()
+        self.raise_()
+
+        if hasattr(self, "windowHandle") and self.windowHandle():
+            screen = self._get_target_screen()
+            if screen:
+                try:
+                    self.windowHandle().setScreen(screen)
+                except Exception:
+                    pass
+                self._reposition()
 
         self.hide_timer.start()
 

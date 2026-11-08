@@ -5,6 +5,7 @@ Salva e recupera as preferências do usuário em ~/.config/ducksvantage/settings
 
 import os
 import json
+import tempfile
 from typing import Any, Dict
 
 CONFIG_DIR = os.path.expanduser("~/.config/ducksvantage")
@@ -114,16 +115,36 @@ class SettingsManager:
                 print(f"[Aviso] Falha ao ler configurações: {e}")
 
     def save(self):
-        """Grava as configurações no disco em formato JSON identado."""
+        """Grava as configurações no disco em formato JSON de forma atômica e segura."""
         for target_dir, target_file in (
             (CONFIG_DIR, CONFIG_FILE),
             ("/tmp/ducksvantage", "/tmp/ducksvantage/settings.json"),
         ):
             try:
                 os.makedirs(target_dir, exist_ok=True)
-                with open(target_file, "w", encoding="utf-8") as f:
-                    json.dump(self._data, f, indent=4, ensure_ascii=False)
-                return
+                tmp_fd, tmp_path = tempfile.mkstemp(
+                    dir=target_dir,
+                    prefix=".settings_",
+                    suffix=".tmp"
+                )
+                try:
+                    with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                        json.dump(self._data, f, indent=4, ensure_ascii=False)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp_path, target_file)
+                    return
+                except Exception:
+                    try:
+                        os.close(tmp_fd)
+                    except Exception:
+                        pass
+                    if os.path.exists(tmp_path):
+                        try:
+                            os.remove(tmp_path)
+                        except Exception:
+                            pass
+                    raise
             except Exception:
                 continue
 

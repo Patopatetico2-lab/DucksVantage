@@ -81,3 +81,8 @@ venv.bak/
 # Operating System Files
 .DS_Store
 Thumbs.db
+
+# Node.js / Video rendering
+node_modules/
+out/
+

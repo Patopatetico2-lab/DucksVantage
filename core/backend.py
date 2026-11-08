@@ -17,6 +17,7 @@ import re
 import glob
 import struct
 import datetime
+import time
 import platform
 import subprocess
 import shutil
@@ -180,6 +181,17 @@ class HardwareBackend:
         # Descritores não-bloqueantes /dev/input para capturar tecla Copilot (F23) se acessível
         self._input_fds: List[int] = []
 
+        # Caches de telemetria e processos para evitar micro-travamentos (stutters) na interface
+        self._cached_cpu_vendor: Optional[str] = None
+        self._cached_nvidia_metrics: Optional[GPUMetrics] = None
+        self._last_nvidia_smi_time: float = 0.0
+        self._cached_running_game: Optional[str] = None
+        self._last_game_scan_time: float = 0.0
+        self._cached_running_app_rule: Optional[Dict[str, str]] = None
+        self._last_app_rule_scan_time: float = 0.0
+        self._cached_net_power_status: Optional[NetworkPowerStatus] = None
+        self._last_net_power_status_time: float = 0.0
+
         self.scan_hardware()
         self._check_undervolt_crash_recovery()
 
@@ -217,6 +229,34 @@ class HardwareBackend:
             except ValueError:
                 pass
         return default
+
+    def get_cpu_vendor(self) -> str:
+        """Identifica e armazena em cache o fabricante do processador (Intel, AMD ou Generic)."""
+        if self._cached_cpu_vendor:
+            return self._cached_cpu_vendor
+        cpuinfo = self._read_file_text("/proc/cpuinfo") or ""
+        vendor = "Generic"
+        if "GenuineIntel" in cpuinfo or "Intel" in cpuinfo:
+            vendor = "Intel"
+        elif "AuthenticAMD" in cpuinfo or "AMD" in cpuinfo:
+            vendor = "AMD"
+        self._cached_cpu_vendor = vendor
+        return vendor
+
+    def close(self):
+        """Fecha com segurança descritores de arquivo abertos de evdev."""
+        for fd in list(self._input_fds):
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+        self._input_fds.clear()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     # =========================================================================
     # Varredura Universal e Feature Discovery (Zero Hardcoding)
@@ -523,8 +563,14 @@ class HardwareBackend:
     def _poll_evdev_keys(self) -> List[Dict[str, Any]]:
         """Lê pacotes struct input_event (24 bytes em 64-bit) para capturar tecla Copilot (F23=193) etc."""
         triggered = []
+
+        now = time.time()
         if not self._input_fds:
-            return triggered
+            if now - getattr(self, "_last_evdev_scan_time", 0.0) > 5.0:
+                self._last_evdev_scan_time = now
+                self._init_evdev_listeners()
+            if not self._input_fds:
+                return triggered
 
         mappings = self.get_key_mappings()
         code_to_slot = {}
@@ -533,11 +579,13 @@ class HardwareBackend:
                 code_to_slot[int(cfg["evdev_code"])] = (slot_id, cfg)
 
         event_size = struct.calcsize("llHHi")
+        dead_fds = []
         for fd in list(self._input_fds):
             try:
                 while True:
                     data = os.read(fd, event_size * 8)
                     if not data:
+                        dead_fds.append(fd)
                         break
                     for offset in range(0, len(data) - event_size + 1, event_size):
                         _sec, _usec, ev_type, ev_code, ev_val = struct.unpack(
@@ -554,8 +602,18 @@ class HardwareBackend:
                             })
             except BlockingIOError:
                 continue
-            except Exception:
+            except (OSError, Exception):
+                dead_fds.append(fd)
                 continue
+
+        if dead_fds:
+            for fd in dead_fds:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+                if fd in self._input_fds:
+                    self._input_fds.remove(fd)
 
         return triggered
 
@@ -624,7 +682,7 @@ class HardwareBackend:
             # promovemos para 'max-power' para incluir o Desempenho Máximo no ciclo físico do Fn+Q.
             elif self.features.max_power_profile and self.paths.platform_profile:
                 if old_p == "performance" and raw_prof in ("low-power", "quiet"):
-                    ok, _ = PermissionsManager.write_sysfs_value(self.paths.platform_profile, "max-power")
+                    ok, _ = PermissionsManager.write_sysfs_value(self.paths.platform_profile, "max-power", allow_elevation=False)
                     if ok:
                         raw_after = self._read_raw_platform_profile()
                         current_prof = "max-power"
@@ -641,7 +699,7 @@ class HardwareBackend:
                     if prev_raw in ("low-power", "quiet") and raw_prof == "balanced":
                         choices = self.get_platform_profile_choices()
                         low_target = "low-power" if "low-power" in choices else ("quiet" if "quiet" in choices else raw_prof)
-                        ok, _ = PermissionsManager.write_sysfs_value(self.paths.platform_profile, low_target)
+                        ok, _ = PermissionsManager.write_sysfs_value(self.paths.platform_profile, low_target, allow_elevation=False)
                         if ok:
                             raw_after = self._read_raw_platform_profile()
                             current_prof = "low-power"
@@ -746,7 +804,7 @@ class HardwareBackend:
             return val.split()
         return ["low-power", "balanced", "performance"]
 
-    def set_platform_profile(self, profile: str) -> Tuple[bool, str]:
+    def set_platform_profile(self, profile: str, allow_elevation: bool = True) -> Tuple[bool, str]:
         """
         Escreve o perfil térmico desejado ('low-power', 'balanced', 'performance' ou 'max-power')
         em /sys/firmware/acpi/platform_profile e sincroniza o estado ativo da interface e do Fn+Q.
@@ -771,7 +829,7 @@ class HardwareBackend:
             else:
                 return False, f"Perfil '{profile}' não suportado. Opções: {choices}"
 
-        ok, msg = PermissionsManager.write_sysfs_value(self.paths.platform_profile, kernel_target)
+        ok, msg = PermissionsManager.write_sysfs_value(self.paths.platform_profile, kernel_target, allow_elevation=allow_elevation)
         if ok:
             raw_after = self._read_raw_platform_profile()
             self._max_power_active = (norm_profile == "max-power")
@@ -821,11 +879,16 @@ class HardwareBackend:
         if not enable:
             self._active_game_name = None
 
-    def detect_running_game(self) -> Optional[str]:
+    def detect_running_game(self, force: bool = False) -> Optional[str]:
         """
         Monitora processos ativos em busca de jogos abertos via Steam (Proton/Nativo),
         Heroic Games Launcher, Lutris, Wine, Gamescope ou GameMode.
+        Aplica cache seguro de 4s para evitar micro-travamentos (stutters) na interface.
         """
+        now = time.time()
+        if not force and (now - self._last_game_scan_time < 4.0):
+            return self._cached_running_game
+
         ignored_bins = {
             "steam", "steamwebhelper", "steamservice", "steam-runtime",
             "heroic", "lutris", "wineserver", "services.exe", "explorer.exe",
@@ -834,6 +897,7 @@ class HardwareBackend:
             "crashhandler", "crashhandler64", " pressure-vessel", "bwrap"
         }
 
+        found_game = None
         try:
             for proc in psutil.process_iter(["name", "exe", "cmdline"]):
                 try:
@@ -856,12 +920,15 @@ class HardwareBackend:
                             if idx + 1 < len(cmdline):
                                 g_bin = os.path.basename(cmdline[idx + 1].replace("\\", "/"))
                                 if g_bin.lower() not in ignored_bins:
-                                    return f"{g_bin} (Steam #{app_id})"
-                        return f"Steam Game (AppID {app_id})"
+                                    found_game = f"{g_bin} (Steam #{app_id})"
+                                    break
+                        found_game = f"Steam Game (AppID {app_id})"
+                        break
 
                     # 2. Gamescope ou GameModeRun ativo
                     if p_low in ("gamescope", "gamemoderun"):
-                        return f"Sessão {pname}"
+                        found_game = f"Sessão {pname}"
+                        break
 
                     # 3. Executáveis rodando de steamapps/common, Heroic ou Games
                     if any(marker in cmd_low for marker in ("/steamapps/common/", "/games/heroic/", "/heroic/prefixes/")):
@@ -869,12 +936,18 @@ class HardwareBackend:
                             clean_arg = os.path.basename(arg.replace("\\", "/"))
                             c_low = clean_arg.lower()
                             if c_low.endswith((".exe", ".x86_64", ".bin")) and c_low not in ignored_bins:
-                                return clean_arg
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                found_game = clean_arg
+                                break
+                        if found_game:
+                            break
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
         except Exception:
             pass
-        return None
+
+        self._cached_running_game = found_game
+        self._last_game_scan_time = now
+        return found_game
 
     # =========================================================================
     # Gerenciador de Perfis de Energia por Aplicativo (App Rules) + Auto-Switching
@@ -952,16 +1025,22 @@ class HardwareBackend:
                     pname = (proc.info.get("name") or "").strip()
                     if pname and len(pname) >= 3 and pname.lower() not in system_ignore and not pname.startswith("kworker"):
                         found.add(pname)
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
         except Exception:
             pass
         return sorted(found)[:40]
 
-    def detect_running_app_rule(self) -> Optional[Dict[str, str]]:
-        """Verifica se algum processo em execução corresponde a uma regra ativa de App Rules."""
+    def detect_running_app_rule(self, force: bool = False) -> Optional[Dict[str, str]]:
+        """Verifica se algum processo em execução corresponde a uma regra ativa de App Rules com cache seguro de 4s."""
+        now = time.time()
+        if not force and (now - self._last_app_rule_scan_time < 4.0):
+            return self._cached_running_app_rule
+
         rules = [r for r in self.get_app_power_rules() if r.get("enabled", True) and r.get("executable")]
         if not rules:
+            self._cached_running_app_rule = None
+            self._last_app_rule_scan_time = now
             return None
 
         # Priorizar regras de maior desempenho caso múltiplos apps estejam abertos
@@ -980,23 +1059,28 @@ class HardwareBackend:
                         matched_rules.append(rule_map[pname])
                     elif exe_base and exe_base in rule_map:
                         matched_rules.append(rule_map[exe_base])
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
         except Exception:
             pass
 
         if not matched_rules:
+            self._cached_running_app_rule = None
+            self._last_app_rule_scan_time = now
             return None
 
         best = max(
             matched_rules,
             key=lambda r: priority_order.get(self.normalize_profile(r.get("profile", "balanced")), 2)
         )
-        return {
+        res = {
             "executable": str(best.get("executable", "")).lower(),
             "label": str(best.get("label") or best.get("executable")),
             "profile": self.normalize_profile(str(best.get("profile", "performance"))),
         }
+        self._cached_running_app_rule = res
+        self._last_app_rule_scan_time = now
+        return res
 
     def check_game_auto_switch(self) -> Optional[Dict[str, Any]]:
         """
@@ -1038,10 +1122,10 @@ class HardwareBackend:
             self._active_game_name = target_name
             self._active_rule_exec = rule_exec
 
-            self.set_platform_profile(target_prof or "performance")
+            self.set_platform_profile(target_prof or "performance", allow_elevation=False)
             if self.features.cpu_governor:
                 gov = "performance" if target_prof in ("performance", "max-power") else "powersave"
-                self.set_cpu_governor(gov)
+                self.set_cpu_governor(gov, allow_elevation=False)
 
             return {
                 "type": "app_rule_started" if rule_exec else "game_started",
@@ -1060,9 +1144,9 @@ class HardwareBackend:
             if restore_prof in ("performance", "max-power"):
                 restore_prof = "balanced" if self._get_ac_online() == 1 else "low-power"
 
-            self.set_platform_profile(restore_prof)
+            self.set_platform_profile(restore_prof, allow_elevation=False)
             if self.features.cpu_governor:
-                self.set_cpu_governor("powersave")
+                self.set_cpu_governor("powersave", allow_elevation=False)
 
             return {
                 "type": "game_stopped",
@@ -1186,8 +1270,8 @@ class HardwareBackend:
                 return txt.split()
         return ["performance", "powersave"]
 
-    def set_cpu_governor(self, governor: str) -> Tuple[bool, str]:
-        return PermissionsManager.write_cpu_governor_all(governor)
+    def set_cpu_governor(self, governor: str, allow_elevation: bool = True) -> Tuple[bool, str]:
+        return PermissionsManager.write_cpu_governor_all(governor, allow_elevation=allow_elevation)
 
     def get_cpu_tdp_limits(self) -> Tuple[int, int]:
         """Lê os limites atuais de potência PL1 (Sustentado) e PL2 (Boost) em Watts."""
@@ -1596,17 +1680,13 @@ class HardwareBackend:
             temp_c = raw_temp / 1000.0
 
         model_name = "Processador"
-        vendor = "Generic"
+        vendor = self.get_cpu_vendor()
         cpuinfo = self._read_file_text("/proc/cpuinfo")
         if cpuinfo:
             for line in cpuinfo.splitlines():
                 if "model name" in line:
                     model_name = line.split(":", 1)[1].strip()
                     break
-            if "Intel" in model_name or "GenuineIntel" in cpuinfo:
-                vendor = "Intel"
-            elif "AMD" in model_name or "AuthenticAMD" in cpuinfo:
-                vendor = "AMD"
 
         pl1_w, pl2_w = self.get_cpu_tdp_limits()
 
@@ -1686,6 +1766,12 @@ class HardwareBackend:
 
         # 2. Tentativa via nvidia-smi
         if self.nvidia_available and shutil.which("nvidia-smi"):
+            now = time.time()
+            if now - self._last_nvidia_smi_time < 2.5:
+                if self._cached_nvidia_metrics is not None:
+                    return self._cached_nvidia_metrics
+                return metrics
+            self._last_nvidia_smi_time = now
             try:
                 cmd = [
                     "nvidia-smi",
@@ -1713,7 +1799,7 @@ class HardwareBackend:
                             except ValueError:
                                 return 0
 
-                        return GPUMetrics(
+                        nv_metrics = GPUMetrics(
                             available=True,
                             vendor="NVIDIA",
                             name=name,
@@ -1727,8 +1813,13 @@ class HardwareBackend:
                             clock_mhz=_safe_int(parts[6]) if len(parts) >= 7 else 0,
                             pstate=parts[7] if len(parts) >= 8 else "P0"
                         )
+                        self._cached_nvidia_metrics = nv_metrics
+                        return nv_metrics
             except Exception:
                 pass
+
+            if self._cached_nvidia_metrics is not None:
+                return self._cached_nvidia_metrics
 
         # 3. Fallback DRM / HWMon para AMD Radeon (amdgpu) ou Intel (i915 / xe)
         drm_card = self.paths.igpu_drm_card
@@ -2116,16 +2207,16 @@ class HardwareBackend:
         else:
             # Restaurar controle automático do EC
             if self.paths.hwmon_pwm1_enable and os.path.exists(self.paths.hwmon_pwm1_enable):
-                PermissionsManager.write_sysfs_value(self.paths.hwmon_pwm1_enable, "2")
+                PermissionsManager.write_sysfs_value(self.paths.hwmon_pwm1_enable, "2", allow_elevation=False)
             elif self.paths.fan_mode and os.path.exists(self.paths.fan_mode):
-                PermissionsManager.write_sysfs_value(self.paths.fan_mode, "1")
+                PermissionsManager.write_sysfs_value(self.paths.fan_mode, "1", allow_elevation=False)
             self._last_applied_pwm = -1
             return True, "Curva customizada desativada. Controle automático original do EC restaurado."
 
     def apply_dynamic_fan_curve_tick(self, force: bool = False) -> Optional[int]:
         """
         Avalia a temperatura atual de CPU/GPU contra a curva de ventoinhas customizada
-        e atualiza o PWM / Fan Mode no Embedded Controller da Lenovo.
+        e atualiza o PWM / Fan Mode no Embedded Controller da Lenovo de forma não-bloqueante.
         """
         if not bool(self.settings.get("custom_fan_curve_enabled", False)) and not force:
             return None
@@ -2151,9 +2242,9 @@ class HardwareBackend:
         if self.paths.hwmon_pwm1 and os.path.exists(self.paths.hwmon_pwm1):
             if self.paths.hwmon_pwm1_enable and os.path.exists(self.paths.hwmon_pwm1_enable):
                 if os.access(self.paths.hwmon_pwm1_enable, os.W_OK):
-                    PermissionsManager.write_sysfs_value(self.paths.hwmon_pwm1_enable, "1")
+                    PermissionsManager.write_sysfs_value(self.paths.hwmon_pwm1_enable, "1", allow_elevation=False)
             if os.access(self.paths.hwmon_pwm1, os.W_OK) or force:
-                PermissionsManager.write_sysfs_value(self.paths.hwmon_pwm1, str(pwm_byte))
+                PermissionsManager.write_sysfs_value(self.paths.hwmon_pwm1, str(pwm_byte), allow_elevation=False)
 
         # 2. Escrita no nó fan_mode do driver ideapad_acpi (VPC2004)
         # 0 = Passivo / Super Silent (0 RPM em baixas temperaturas), 1 = Standard, 4 = Thermal Efficient, 2 = Max Speed / Full Blast
@@ -2167,7 +2258,7 @@ class HardwareBackend:
             else:
                 ec_mode = "2"
             if os.access(self.paths.fan_mode, os.W_OK) or force:
-                PermissionsManager.write_sysfs_value(self.paths.fan_mode, ec_mode)
+                PermissionsManager.write_sysfs_value(self.paths.fan_mode, ec_mode, allow_elevation=False)
 
         return target_pwm_pct
 
@@ -2283,10 +2374,6 @@ class HardwareBackend:
         else:
             self._clear_undervolt_canary()
 
-        self.settings.set("undervolt_core_mv", core_mv)
-        self.settings.set("undervolt_cache_mv", cache_mv)
-        self.settings.set("gpu_ac_offset_w", gpu_ac_offset_w)
-
         msr_core_hex = hex(self._encode_intel_msr_undervolt_offset(0, core_mv))
         msr_cache_hex = hex(self._encode_intel_msr_undervolt_offset(2, cache_mv))
         applied_details = []
@@ -2295,58 +2382,117 @@ class HardwareBackend:
         if self.paths.lenovo_wmi_attr_dir:
             ac_off_path = os.path.join(self.paths.lenovo_wmi_attr_dir, "gpu_nv_ac_offset", "current_value")
             if os.path.exists(ac_off_path):
-                ok_wmi, _ = PermissionsManager.write_sysfs_value(ac_off_path, str(gpu_ac_offset_w))
+                ok_wmi, _ = PermissionsManager.write_sysfs_value(ac_off_path, str(gpu_ac_offset_w), allow_elevation=False)
                 if ok_wmi:
                     applied_details.append(f"WMI AC Offset: +{gpu_ac_offset_w}W")
+                    self.settings.set("gpu_ac_offset_w", gpu_ac_offset_w)
+        else:
+            self.settings.set("gpu_ac_offset_w", gpu_ac_offset_w)
 
-        # 3. Escrita direta em /dev/cpu/*/msr (Plane 0 Core & Plane 2 Cache) se acessível
-        msr_nodes = sorted(glob.glob("/dev/cpu/[0-9]*/msr"))
+        # 3. Escrita de tensão diferenciada por fabricante de CPU
+        vendor = self.get_cpu_vendor()
         msr_written = False
-        if msr_nodes and os.access(msr_nodes[0], os.W_OK):
-            try:
-                val_core = self._encode_intel_msr_undervolt_offset(0, core_mv)
-                val_cache = self._encode_intel_msr_undervolt_offset(2, cache_mv)
-                packed_core = struct.pack("<Q", val_core)
-                packed_cache = struct.pack("<Q", val_cache)
-                for mpath in msr_nodes:
-                    fd = os.open(mpath, os.O_WRONLY)
-                    try:
-                        os.pwrite(fd, packed_core, 0x150)
-                        os.pwrite(fd, packed_cache, 0x150)
-                    finally:
-                        os.close(fd)
-                msr_written = True
-                applied_details.append(f"MSR 0x150 ({msr_core_hex})")
-            except Exception:
-                msr_written = False
 
-        # 4. Fallback via intel-undervolt / wrmsr / ryzenadj
-        if not msr_written and (core_mv != 0 or cache_mv != 0):
-            if shutil.which("wrmsr") and shutil.which("pkexec"):
+        if vendor == "Intel":
+            # Escrita direta em /dev/cpu/*/msr (Plane 0 Core & Plane 2 Cache) se acessível
+            msr_nodes = sorted(glob.glob("/dev/cpu/[0-9]*/msr"))
+            if msr_nodes and os.access(msr_nodes[0], os.W_OK):
                 try:
-                    cmd = f"wrmsr -a 0x150 {msr_core_hex} && wrmsr -a 0x150 {msr_cache_hex}"
-                    res = subprocess.run(["pkexec", "sh", "-c", cmd], capture_output=True, text=True, timeout=15)
-                    if res.returncode == 0:
-                        msr_written = True
-                        applied_details.append(f"wrmsr 0x150 ({msr_core_hex})")
-                except Exception:
-                    pass
-            elif shutil.which("ryzenadj") and shutil.which("pkexec"):
-                try:
-                    co_counts = max(-30, min(0, core_mv // 5))
-                    res = subprocess.run(
-                        ["pkexec", "ryzenadj", f"--set-coall={co_counts}"],
-                        capture_output=True, text=True, timeout=15
-                    )
-                    if res.returncode == 0:
-                        msr_written = True
-                        applied_details.append(f"Ryzen CO ({co_counts})")
-                except Exception:
-                    pass
+                    val_core = self._encode_intel_msr_undervolt_offset(0, core_mv)
+                    val_cache = self._encode_intel_msr_undervolt_offset(2, cache_mv)
+                    packed_core = struct.pack("<Q", val_core)
+                    packed_cache = struct.pack("<Q", val_cache)
+                    for mpath in msr_nodes:
+                        fd = os.open(mpath, os.O_WRONLY)
+                        try:
+                            os.pwrite(fd, packed_core, 0x150)
+                            os.pwrite(fd, packed_cache, 0x150)
+                        finally:
+                            os.close(fd)
+                    msr_written = True
+                    applied_details.append(f"MSR 0x150 ({msr_core_hex})")
+                except OSError as e:
+                    # Tratar 12ª/13ª/14ª Geração com OC Lock / Undervolt Protection ativado na BIOS
+                    msr_written = False
+                    if e.errno in (1, 5, 13):  # EPERM, EIO, EACCES
+                        applied_details.append("Intel OC Lock/Undervolt Protection ativo na BIOS")
+                    else:
+                        applied_details.append(f"MSR OSError ({e.strerror})")
+                except Exception as e:
+                    msr_written = False
+                    applied_details.append(f"MSR Exception ({e})")
+
+            # Fallback para Intel via wrmsr / intel-undervolt
+            if not msr_written and (core_mv != 0 or cache_mv != 0):
+                if shutil.which("wrmsr") and shutil.which("pkexec"):
+                    try:
+                        cmd = f"wrmsr -a 0x150 {msr_core_hex} && wrmsr -a 0x150 {msr_cache_hex}"
+                        res = subprocess.run(["pkexec", "sh", "-c", cmd], capture_output=True, text=True, timeout=10)
+                        if res.returncode == 0:
+                            msr_written = True
+                            applied_details.append(f"wrmsr 0x150 ({msr_core_hex})")
+                        else:
+                            applied_details.append("MSR 0x150 bloqueado (OC Lock ativo na BIOS)")
+                    except Exception:
+                        pass
+                elif shutil.which("intel-undervolt") and shutil.which("pkexec"):
+                    try:
+                        res = subprocess.run(["pkexec", "intel-undervolt", "apply"], capture_output=True, text=True, timeout=10)
+                        if res.returncode == 0:
+                            msr_written = True
+                            applied_details.append("intel-undervolt service")
+                    except Exception:
+                        pass
+
+        elif vendor == "AMD":
+            # CPUs AMD: JAMAIS escrever no MSR 0x150! Usar ryzenadj Curve Optimizer
+            if core_mv != 0:
+                co_counts = max(-30, min(0, core_mv // 5))
+                if shutil.which("ryzenadj"):
+                    try:
+                        res = subprocess.run(
+                            ["ryzenadj", f"--set-coall={co_counts}"],
+                            capture_output=True, text=True, timeout=5
+                        )
+                        if res.returncode == 0:
+                            msr_written = True
+                            applied_details.append(f"Ryzen CO ({co_counts})")
+                        elif shutil.which("pkexec"):
+                            res2 = subprocess.run(
+                                ["pkexec", "ryzenadj", f"--set-coall={co_counts}"],
+                                capture_output=True, text=True, timeout=10
+                            )
+                            if res2.returncode == 0:
+                                msr_written = True
+                                applied_details.append(f"Ryzen CO ({co_counts})")
+                    except Exception:
+                        pass
+                if not msr_written:
+                    applied_details.append("AMD ryzenadj necessário para Curve Optimizer")
+            else:
+                msr_written = True
+        else:
+            applied_details.append("Processador genérico: undervolt não suportado")
+
+        # 4. Avaliação de estabilidade e persistência de settings
+        undervolt_requested = (core_mv != 0 or cache_mv != 0)
+        if undervolt_requested and not msr_written:
+            # Reverte canário e settings para 0 para não disparar falso watchdog de crash no próximo boot
+            self._clear_undervolt_canary()
+            self.settings.set("undervolt_core_mv", 0)
+            self.settings.set("undervolt_cache_mv", 0)
+            summary = (
+                f"Falha ao aplicar undervolt: {', '.join(applied_details) if applied_details else 'Proteção de hardware ativa'}."
+            )
+            return False, summary
+
+        # Sucesso
+        self.settings.set("undervolt_core_mv", core_mv)
+        self.settings.set("undervolt_cache_mv", cache_mv)
 
         summary = (
             f"Offsets configurados: Core {core_mv} mV | Cache {cache_mv} mV | "
-            f"GPU/AC Offset {gpu_ac_offset_w} W ({msr_core_hex})."
+            f"GPU/AC Offset {gpu_ac_offset_w} W."
         )
         if applied_details:
             summary += " [" + ", ".join(applied_details) + "]"
@@ -2363,6 +2509,7 @@ class HardwareBackend:
         Mecanismo de Segurança / Reset de Emergência Imediato:
         Zera todos os offsets de tensão (Core = 0 mV, Cache = 0 mV), restaura o offset WMI padrão (20W)
         e remove o arquivo canário para prevenir travamentos ou Kernel Panic.
+        Garante que MSR 0x150 seja manipulado exclusivamente em CPUs Intel.
         """
         self._clear_undervolt_canary()
 
@@ -2370,26 +2517,34 @@ class HardwareBackend:
         self.settings.set("undervolt_cache_mv", 0)
         self.settings.set("gpu_ac_offset_w", 20)
 
-        # Restaurar MSR 0x150 para 0 mV se acessível diretamente sem bloquear
-        msr_nodes = sorted(glob.glob("/dev/cpu/[0-9]*/msr"))
-        if msr_nodes and os.access(msr_nodes[0], os.W_OK):
-            try:
-                packed_zero_core = struct.pack("<Q", self._encode_intel_msr_undervolt_offset(0, 0))
-                packed_zero_cache = struct.pack("<Q", self._encode_intel_msr_undervolt_offset(2, 0))
-                for mpath in msr_nodes:
-                    fd = os.open(mpath, os.O_WRONLY)
-                    try:
-                        os.pwrite(fd, packed_zero_core, 0x150)
-                        os.pwrite(fd, packed_zero_cache, 0x150)
-                    finally:
-                        os.close(fd)
-            except Exception:
-                pass
+        vendor = self.get_cpu_vendor()
+        if vendor == "Intel":
+            # Restaurar MSR 0x150 para 0 mV SOMENTE em Intel se acessível diretamente sem bloquear
+            msr_nodes = sorted(glob.glob("/dev/cpu/[0-9]*/msr"))
+            if msr_nodes and os.access(msr_nodes[0], os.W_OK):
+                try:
+                    packed_zero_core = struct.pack("<Q", self._encode_intel_msr_undervolt_offset(0, 0))
+                    packed_zero_cache = struct.pack("<Q", self._encode_intel_msr_undervolt_offset(2, 0))
+                    for mpath in msr_nodes:
+                        fd = os.open(mpath, os.O_WRONLY)
+                        try:
+                            os.pwrite(fd, packed_zero_core, 0x150)
+                            os.pwrite(fd, packed_zero_cache, 0x150)
+                        finally:
+                            os.close(fd)
+                except Exception:
+                    pass
+        elif vendor == "AMD":
+            if shutil.which("ryzenadj"):
+                try:
+                    subprocess.run(["ryzenadj", "--set-coall=0"], capture_output=True, text=True, timeout=5)
+                except Exception:
+                    pass
 
         if self.paths.lenovo_wmi_attr_dir:
             ac_off_path = os.path.join(self.paths.lenovo_wmi_attr_dir, "gpu_nv_ac_offset", "current_value")
             if os.path.exists(ac_off_path) and os.access(ac_off_path, os.W_OK):
-                PermissionsManager.write_sysfs_value(ac_off_path, "20")
+                PermissionsManager.write_sysfs_value(ac_off_path, "20", allow_elevation=False)
 
         self._last_emergency_reset = f"{reason}: Tensões restauradas para 0 mV (Padrão Seguro de Fábrica)."
         return True, self._last_emergency_reset
@@ -2412,8 +2567,12 @@ class HardwareBackend:
                 eth_iface = ifname
         return wifi_iface, eth_iface
 
-    def get_network_power_status(self) -> NetworkPowerStatus:
-        """Lê o estado real de economia de energia das placas Wi-Fi (iwlwifi/rtw89/mt7921) e Ethernet (r8169)."""
+    def get_network_power_status(self, force: bool = False) -> NetworkPowerStatus:
+        """Lê o estado real de economia de energia das placas Wi-Fi (iwlwifi/rtw89/mt7921) e Ethernet (r8169) com cache seguro de 5s."""
+        now = time.time()
+        if not force and self._cached_net_power_status is not None and (now - self._last_net_power_status_time < 5.0):
+            return self._cached_net_power_status
+
         status = NetworkPowerStatus()
         wifi_if, eth_if = self._discover_network_interfaces()
 
@@ -2432,7 +2591,7 @@ class HardwareBackend:
                 try:
                     res = subprocess.run(
                         ["iw", "dev", wifi_if, "get", "power_save"],
-                        capture_output=True, text=True, timeout=1.5
+                        capture_output=True, text=True, timeout=1.0
                     )
                     if res.returncode == 0 and res.stdout:
                         out_low = res.stdout.lower()
@@ -2466,6 +2625,8 @@ class HardwareBackend:
             else:
                 status.eth_power_save_on = bool(self.settings.get("eth_power_saving", True))
 
+        self._cached_net_power_status = status
+        self._last_net_power_status_time = now
         return status
 
     def set_wifi_power_saving(self, enable_saving: bool) -> Tuple[bool, str]:
@@ -2474,6 +2635,8 @@ class HardwareBackend:
         - enable_saving = False -> Modo Jogos Online (Power Save OFF / Baixa Latência / Zero Packet Loss)
         - enable_saving = True  -> Modo Economia de Bateria (Power Save ON / Runtime PM auto)
         """
+        self._cached_net_power_status = None
+        self._last_net_power_status_time = 0.0
         wifi_if, _ = self._discover_network_interfaces()
         self.settings.set("wifi_low_latency_gaming", not enable_saving)
         if not wifi_if:
@@ -2524,6 +2687,8 @@ class HardwareBackend:
 
     def set_ethernet_power_saving(self, enable_saving: bool) -> Tuple[bool, str]:
         """Ativa ('auto') ou desativa ('on') o gerenciamento de energia PCIe da porta Ethernet Gigabit."""
+        self._cached_net_power_status = None
+        self._last_net_power_status_time = 0.0
         _, eth_if = self._discover_network_interfaces()
         self.settings.set("eth_power_saving", bool(enable_saving))
         if not eth_if:

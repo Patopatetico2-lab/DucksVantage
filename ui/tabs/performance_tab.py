@@ -1332,6 +1332,13 @@ class PerformanceTab(QWidget):
         gpu_w = self.slider_uv_gpu_offset.value()
         ok, msg = self.backend.apply_undervolt_offsets(core_mv, cache_mv, gpu_w)
         self.lbl_uv_status.setText(msg)
+
+        if not ok:
+            self._watchdog_timer.stop()
+            self.uv_watchdog_frame.setVisible(False)
+            self.uv_badge.setText("CORE: 0 mV | CACHE: 0 mV")
+            return
+
         self.uv_badge.setText(f"CORE: {core_mv} mV | CACHE: {cache_mv} mV")
 
         if core_mv < 0 or cache_mv < 0:

@@ -77,16 +77,10 @@ class PermissionsManager:
 
     @staticmethod
     def install_udev_rules(custom_paths: List[str] = None) -> Tuple[bool, str]:
-        temp_file = "/tmp/99-ducksvantage.rules"
-        try:
-            with open(temp_file, "w", encoding="utf-8") as f:
-                f.write(UDEV_RULE_CONTENT)
-        except Exception as e:
-            return False, f"Falha ao criar arquivo temporário: {e}"
-
         cmd_parts = [
-            f"cp {temp_file} {UDEV_RULE_PATH}",
-            f"chmod 644 {UDEV_RULE_PATH}",
+            "mkdir -p /etc/udev/rules.d",
+            f"cat > '{UDEV_RULE_PATH}'",
+            f"chmod 644 '{UDEV_RULE_PATH}'",
             "udevadm control --reload-rules",
             "udevadm trigger",
             "chmod 0666 /sys/firmware/acpi/platform_profile 2>/dev/null || true",
@@ -120,7 +114,7 @@ class PermissionsManager:
             return False, "Nenhum gerenciador de privilégios gráficos (pkexec ou kdesu) encontrado."
 
         try:
-            res = subprocess.run(runner, capture_output=True, text=True, timeout=60)
+            res = subprocess.run(runner, input=UDEV_RULE_CONTENT, capture_output=True, text=True, timeout=60)
             if res.returncode == 0:
                 return True, "Regras UDEV instaladas e permissões liberadas imediatamente!"
             return False, f"Erro ao aplicar regras (código {res.returncode}): {res.stderr or res.stdout}"
@@ -128,7 +122,7 @@ class PermissionsManager:
             return False, f"Exceção durante execução do pkexec: {e}"
 
     @staticmethod
-    def write_sysfs_value(path: str, value: str) -> Tuple[bool, str]:
+    def write_sysfs_value(path: str, value: str, allow_elevation: bool = True) -> Tuple[bool, str]:
         if not path or not os.path.exists(path):
             return False, f"Caminho sysfs inexistente: {path}"
 
@@ -143,10 +137,13 @@ class PermissionsManager:
         except Exception as e:
             return False, f"Erro de escrita em {path}: {e}"
 
+        if not allow_elevation:
+            return False, f"Permissão negada em {path} (elevação desativada para operações de plano de fundo)."
+
         if shutil.which("pkexec"):
             try:
                 cmd = f"echo '{clean_val}' > '{path}' && chmod 0666 '{path}'"
-                res = subprocess.run(["pkexec", "sh", "-c", cmd], capture_output=True, text=True, timeout=30)
+                res = subprocess.run(["pkexec", "sh", "-c", cmd], capture_output=True, text=True, timeout=10)
                 if res.returncode == 0:
                     return True, "Aplicado via elevação Polkit (permissão liberada para a sessão)."
                 return False, f"Elevação cancelada ou recusada: {res.stderr.strip()}"
@@ -156,7 +153,7 @@ class PermissionsManager:
         return False, f"Permissão negada em {path}. Clique em 'Reparar Permissões UDEV' na aba Sobre."
 
     @staticmethod
-    def write_multiple_sysfs_values(pairs: List[Tuple[str, str]]) -> Tuple[bool, str]:
+    def write_multiple_sysfs_values(pairs: List[Tuple[str, str]], allow_elevation: bool = True) -> Tuple[bool, str]:
         """Escreve múltiplos valores sysfs em uma única operação (ex: PL1 + PL2 RAPL)."""
         valid_pairs = [(p, str(v).strip()) for p, v in pairs if p and os.path.exists(p)]
         if not valid_pairs:
@@ -176,10 +173,13 @@ class PermissionsManager:
         if not need_pkexec:
             return True, "Limites aplicados diretamente no kernel."
 
+        if not allow_elevation:
+            return False, "Permissão negada nos nós de potência (elevação desativada)."
+
         if shutil.which("pkexec"):
             try:
                 cmds = [f"echo '{val}' > '{path}' && chmod 0666 '{path}'" for path, val in valid_pairs]
-                res = subprocess.run(["pkexec", "sh", "-c", " && ".join(cmds)], capture_output=True, text=True, timeout=30)
+                res = subprocess.run(["pkexec", "sh", "-c", " && ".join(cmds)], capture_output=True, text=True, timeout=10)
                 if res.returncode == 0:
                     return True, "Limites aplicados via Polkit e liberados para a sessão."
                 return False, f"Elevação recusada: {res.stderr.strip()}"
@@ -189,7 +189,7 @@ class PermissionsManager:
         return False, "Sem permissão de escrita nos nós de potência. Repare as regras UDEV na aba Sobre."
 
     @staticmethod
-    def write_cpu_governor_all(governor: str) -> Tuple[bool, str]:
+    def write_cpu_governor_all(governor: str, allow_elevation: bool = True) -> Tuple[bool, str]:
         gov_files = sorted(glob.glob("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor"))
         if not gov_files:
             return False, "Interface cpufreq/scaling_governor não encontrada neste kernel."
@@ -205,13 +205,16 @@ class PermissionsManager:
         except Exception as e:
             return False, f"Erro ao alterar governor: {e}"
 
+        if not allow_elevation:
+            return False, f"Permissão negada para alterar governor (elevação desativada)."
+
         if shutil.which("pkexec"):
             try:
                 cmd = (
                     f"for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do "
                     f"echo '{clean_gov}' > \"$f\"; chmod 0666 \"$f\"; done"
                 )
-                res = subprocess.run(["pkexec", "sh", "-c", cmd], capture_output=True, text=True, timeout=30)
+                res = subprocess.run(["pkexec", "sh", "-c", cmd], capture_output=True, text=True, timeout=10)
                 if res.returncode == 0:
                     return True, f"Governor '{clean_gov}' aplicado em todos os núcleos."
                 return False, f"Elevação cancelada: {res.stderr.strip()}"

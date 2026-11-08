@@ -33,7 +33,12 @@ class SystemTrayManager(QObject):
         self._setup_events()
         self.update_tray_state()
 
-        self.tray_icon.show()
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray_icon.show()
+
+    def is_available(self) -> bool:
+        """Indica se a bandeja do sistema está acessível e visível."""
+        return QSystemTrayIcon.isSystemTrayAvailable() and self.tray_icon.isVisible()
 
     def _get_icon(self, filename: str) -> QIcon:
         path = os.path.join("assets", "icons", filename)

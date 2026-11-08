@@ -16,7 +16,8 @@ from typing import List
 from core.qt_compat import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QStackedWidget, QTimer, Qt, QFont,
-    QIcon, QSize, QApplication, QMessageBox, QShortcut, QKeySequence
+    QIcon, QSize, QApplication, QMessageBox, QShortcut, QKeySequence,
+    QSystemTrayIcon
 )
 from core.backend import HardwareBackend
 from ui.theme_tokens import ThemeTokens
@@ -673,12 +674,24 @@ class MainWindow(QMainWindow):
 
     def _quit_app(self):
         self._is_quitting = True
+        if hasattr(self, "fast_poll_timer"):
+            self.fast_poll_timer.stop()
+        if hasattr(self, "telemetry_timer"):
+            self.telemetry_timer.stop()
+        if hasattr(self, "backend") and self.backend:
+            self.backend.close()
         QApplication.quit()
 
     def closeEvent(self, event):
-        """Ao fechar a janela, minimiza para a bandeja para manter o OSD e Fn+Q ativos."""
-        if not self._is_quitting and self.tray_manager and self.tray_manager.tray_icon.isVisible():
+        """Ao fechar a janela, minimiza para a bandeja se disponível, ou encerra o app."""
+        tray_available = (
+            QSystemTrayIcon.isSystemTrayAvailable()
+            and self.tray_manager is not None
+            and self.tray_manager.is_available()
+        )
+        if not self._is_quitting and tray_available:
             event.ignore()
             self.hide()
         else:
+            self._quit_app()
             event.accept()
