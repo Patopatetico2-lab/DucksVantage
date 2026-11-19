@@ -9,7 +9,8 @@ import os
 from core.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     Qt, QFont, QIcon, QTimer, QVariantAnimation,
-    QGraphicsOpacityEffect, QApplication, QCursor, QGuiApplication
+    QApplication, QCursor, QGuiApplication,
+    QPainter, QColor, QPen, QBrush, QRectF
 )
 from ui.theme_tokens import ThemeTokens
 
@@ -26,18 +27,18 @@ class VantageOSDOverlay(QWidget):
             "wayland" in os.environ.get("XDG_SESSION_TYPE", "").lower()
             or bool(os.environ.get("WAYLAND_DISPLAY"))
         )
+        self._accent_color = ThemeTokens.BORDER_CYAN
+        self._opacity = 1.0
 
-        # Flags para não roubar foco, não minimizar jogos e manter suporte Wayland/X11
+        # Usa Qt.WindowType.Tool (xdg_toplevel no Wayland) em vez de ToolTip (xdg_popup),
+        # garantindo que o OSD apareça mesmo sem janela-pai visível (ex: app minimizado na bandeja).
         flags = (
+            Qt.WindowType.Tool |
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
             Qt.WindowType.WindowDoesNotAcceptFocus |
             Qt.WindowType.WindowTransparentForInput
         )
-        if self.is_wayland:
-            flags |= Qt.WindowType.ToolTip
-        else:
-            flags |= Qt.WindowType.Tool
 
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -52,13 +53,7 @@ class VantageOSDOverlay(QWidget):
 
         self.container = QFrame()
         self.container.setObjectName("osdContainer")
-        self.container.setStyleSheet(f"""
-            QFrame#osdContainer {{
-                background-color: rgba(26, 30, 41, 0.88);
-                border: 2px solid #30415a;
-                border-radius: {ThemeTokens.RADIUS_OSD}px;
-            }}
-        """)
+        self.container.setStyleSheet("QFrame#osdContainer { background: transparent; border: none; }")
 
         c_layout = QHBoxLayout(self.container)
         c_layout.setContentsMargins(22, 16, 22, 16)
@@ -68,6 +63,7 @@ class VantageOSDOverlay(QWidget):
         self.icon_label = QLabel()
         self.icon_label.setFixedSize(48, 48)
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon_label.setStyleSheet("background: transparent; border: none;")
         c_layout.addWidget(self.icon_label)
 
         # Textos informativos
@@ -77,12 +73,12 @@ class VantageOSDOverlay(QWidget):
 
         self.title_label = QLabel("Modo Térmico")
         self.title_label.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
-        self.title_label.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        self.title_label.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; background: transparent; border: none;")
         text_layout.addWidget(self.title_label)
 
         self.subtitle_label = QLabel("Atalho Fn + Q")
         self.subtitle_label.setFont(QFont("Segoe UI", 10))
-        self.subtitle_label.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY};")
+        self.subtitle_label.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; background: transparent; border: none;")
         text_layout.addWidget(self.subtitle_label)
 
         c_layout.addLayout(text_layout)
@@ -90,29 +86,44 @@ class VantageOSDOverlay(QWidget):
 
         root_layout.addWidget(self.container)
 
-        # Efeito de opacidade para fade-out suave
-        self.opacity_effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(self.opacity_effect)
-        self.opacity_effect.setOpacity(1.0)
-
-        # Timer de exibição (1.5 segundos)
+        # Timer de exibição (1.8 segundos)
         self.hide_timer = QTimer(self)
         self.hide_timer.setSingleShot(True)
-        self.hide_timer.setInterval(1500)
+        self.hide_timer.setInterval(1800)
         self.hide_timer.timeout.connect(self._start_fade_out)
 
-        # Animação suave de fade-out
+        # Animação suave de fade-out via opacidade direta (compatível com Wayland e X11)
         self.fade_anim = QVariantAnimation(self)
-        self.fade_anim.setDuration(350)
+        self.fade_anim.setDuration(300)
         self.fade_anim.valueChanged.connect(self._on_fade_step)
         self.fade_anim.finished.connect(self.hide)
 
+    def paintEvent(self, event):
+        """Desenha o cartão escuro arredondado com borda luminosa diretamente via QPainter (100% compatível com Wayland)."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setOpacity(max(0.0, min(1.0, self._opacity)))
+
+        rect = QRectF(self.rect()).adjusted(2.0, 2.0, -2.0, -2.0)
+        bg = QColor(20, 25, 37, 238)
+        border = QColor(self._accent_color)
+
+        painter.setBrush(QBrush(bg))
+        painter.setPen(QPen(border, 2.2))
+        painter.drawRoundedRect(rect, float(ThemeTokens.RADIUS_OSD), float(ThemeTokens.RADIUS_OSD))
+        painter.end()
+
     def _on_fade_step(self, val):
-        self.opacity_effect.setOpacity(float(val))
+        self._opacity = float(val)
+        try:
+            self.setWindowOpacity(self._opacity)
+        except Exception:
+            pass
+        self.update()
 
     def _start_fade_out(self):
         self.fade_anim.stop()
-        self.fade_anim.setStartValue(self.opacity_effect.opacity())
+        self.fade_anim.setStartValue(self._opacity)
         self.fade_anim.setEndValue(0.0)
         self.fade_anim.start()
 
@@ -137,7 +148,8 @@ class VantageOSDOverlay(QWidget):
 
             if hasattr(self, "windowHandle") and self.windowHandle():
                 try:
-                    self.windowHandle().setScreen(screen)
+                    if self.windowHandle().screen() != screen:
+                        self.windowHandle().setScreen(screen)
                 except Exception:
                     pass
 
@@ -148,38 +160,27 @@ class VantageOSDOverlay(QWidget):
                 pass
 
     def show_osd(self, title: str, subtitle: str, icon_path: str, accent_color: str):
-        """Exibe o OSD com novos valores e reinicia o timer de permanência de 1.5s."""
+        """Exibe o OSD com novos valores e reinicia o timer de permanência."""
+        self._accent_color = accent_color
         self.title_label.setText(title)
-        self.title_label.setStyleSheet(f"color: {accent_color};")
+        self.title_label.setStyleSheet(f"color: {accent_color}; background: transparent; border: none;")
         self.subtitle_label.setText(subtitle)
 
         if os.path.exists(icon_path):
             pix = QIcon(icon_path).pixmap(48, 48)
             self.icon_label.setPixmap(pix)
 
-        self.container.setStyleSheet(f"""
-            QFrame#osdContainer {{
-                background-color: rgba(26, 30, 41, 0.88);
-                border: 2px solid {accent_color};
-                border-radius: {ThemeTokens.RADIUS_OSD}px;
-            }}
-        """)
+        self.fade_anim.stop()
+        self._opacity = 1.0
+        try:
+            self.setWindowOpacity(1.0)
+        except Exception:
+            pass
 
         self._reposition()
-
-        self.fade_anim.stop()
-        self.opacity_effect.setOpacity(1.0)
         self.show()
         self.raise_()
-
-        if hasattr(self, "windowHandle") and self.windowHandle():
-            screen = self._get_target_screen()
-            if screen:
-                try:
-                    self.windowHandle().setScreen(screen)
-                except Exception:
-                    pass
-                self._reposition()
+        self.update()
 
         self.hide_timer.start()
 

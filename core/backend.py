@@ -204,6 +204,8 @@ class HardwareBackend:
         self._last_applied_refresh_hz: Optional[int] = None
         self._touchpad_event_name: Optional[str] = None
         self._touchpad_device_name: Optional[str] = None
+        self._platform_profile_paths: List[str] = []
+        self._last_profile_by_path: Dict[str, str] = {}
 
         self.scan_hardware()
         self._check_undervolt_crash_recovery()
@@ -277,30 +279,44 @@ class HardwareBackend:
     def scan_hardware(self) -> None:
         """Executa descoberta dinâmica e rigorosa de recursos em qualquer notebook Lenovo."""
         # 1. ACPI / Kernel Platform Profile e Descoberta Dinâmica de 'max-power'
+        # Suporte simultâneo ao subsistema class/platform-profile (Linux 6.14+ / 7.x, ex: lenovo-wmi-gamezone)
+        # e à interface clássica /sys/firmware/acpi/platform_profile.
+        self._platform_profile_paths = []
+        pp_dirs = sorted(glob.glob("/sys/class/platform-profile/platform-profile-*"))
+        chosen_pp = None
+        for pp_dir in pp_dirs:
+            prof_p = os.path.join(pp_dir, "profile")
+            if not os.path.exists(prof_p):
+                continue
+            self._platform_profile_paths.append(prof_p)
+            pp_name = (self._read_file_text(os.path.join(pp_dir, "name")) or "").lower()
+            if any(k in pp_name for k in ("lenovo", "ideapad", "legion", "thinkpad", "gamezone")):
+                if chosen_pp is None:
+                    chosen_pp = pp_dir
+            elif chosen_pp is None:
+                chosen_pp = pp_dir
+
         if os.path.exists("/sys/firmware/acpi/platform_profile"):
+            self._platform_profile_paths.append("/sys/firmware/acpi/platform_profile")
+
+        if chosen_pp:
+            self.paths.platform_profile = os.path.join(chosen_pp, "profile")
+            self.features.platform_profile = True
+            choices_p = os.path.join(chosen_pp, "choices")
+            if os.path.exists(choices_p):
+                self.paths.platform_profile_choices = choices_p
+            elif os.path.exists("/sys/firmware/acpi/platform_profile_choices"):
+                self.paths.platform_profile_choices = "/sys/firmware/acpi/platform_profile_choices"
+        elif os.path.exists("/sys/firmware/acpi/platform_profile"):
             self.paths.platform_profile = "/sys/firmware/acpi/platform_profile"
             self.features.platform_profile = True
             if os.path.exists("/sys/firmware/acpi/platform_profile_choices"):
                 self.paths.platform_profile_choices = "/sys/firmware/acpi/platform_profile_choices"
-        else:
-            # Suporte nativo ao novo subsistema class/platform-profile (Linux 6.14+ / 7.x)
-            pp_dirs = sorted(glob.glob("/sys/class/platform-profile/platform-profile-*"))
-            chosen_pp = None
-            for pp_dir in pp_dirs:
-                if not os.path.exists(os.path.join(pp_dir, "profile")):
-                    continue
-                pp_name = (self._read_file_text(os.path.join(pp_dir, "name")) or "").lower()
-                if any(k in pp_name for k in ("lenovo", "ideapad", "legion", "thinkpad")):
-                    chosen_pp = pp_dir
-                    break
-                if chosen_pp is None:
-                    chosen_pp = pp_dir
-            if chosen_pp:
-                self.paths.platform_profile = os.path.join(chosen_pp, "profile")
-                self.features.platform_profile = True
-                choices_p = os.path.join(chosen_pp, "choices")
-                if os.path.exists(choices_p):
-                    self.paths.platform_profile_choices = choices_p
+
+        if self.paths.platform_profile and self.paths.platform_profile in self._platform_profile_paths:
+            # Garante que o caminho primário seja sempre o primeiro da lista monitorada
+            self._platform_profile_paths.remove(self.paths.platform_profile)
+            self._platform_profile_paths.insert(0, self.paths.platform_profile)
 
         if self.features.platform_profile:
             canonical_choices = self.get_supported_canonical_profiles()
@@ -875,8 +891,45 @@ class HardwareBackend:
         return dict(cls.PROFILE_DETAILS.get(norm, cls.PROFILE_DETAILS["balanced"]))
 
     def _read_raw_platform_profile(self) -> str:
-        """Lê diretamente /sys/firmware/acpi/platform_profile e normaliza o identificador."""
-        val = self._read_file_text(self.paths.platform_profile)
+        """
+        Lê diretamente o nó ativo de platform_profile (class/platform-profile e/ou acpi/platform_profile)
+        e normaliza o identificador. Quando múltiplos nós de perfil existem no kernel, detecta mudanças
+        em qualquer um deles para garantir captura imediata do atalho físico Fn+Q.
+        """
+        primary_path = self.paths.platform_profile
+        # Se um teste ou override manual apontou para um arquivo customizado fora da lista descoberta
+        if primary_path and primary_path not in self._platform_profile_paths:
+            val = self._read_file_text(primary_path)
+            return self.normalize_profile(val) if val else "balanced"
+
+        monitored = list(self._platform_profile_paths)
+        if primary_path and primary_path not in monitored:
+            monitored.insert(0, primary_path)
+
+        changed_norm: Optional[str] = None
+        first_norm: Optional[str] = None
+        for p in monitored:
+            val = self._read_file_text(p)
+            if not val:
+                continue
+            norm = self.normalize_profile(val)
+            if first_norm is None:
+                first_norm = norm
+            prev = self._last_profile_by_path.get(p)
+            if prev is not None and prev != norm and changed_norm is None:
+                changed_norm = norm
+            self._last_profile_by_path[p] = norm
+
+        if changed_norm is not None:
+            # Sincroniza a memória dos demais nós para evitar falso-positivo no próximo ciclo
+            for p in monitored:
+                self._last_profile_by_path[p] = changed_norm
+            return changed_norm
+
+        if first_norm is not None:
+            return first_norm
+
+        val = self._read_file_text(primary_path)
         return self.normalize_profile(val) if val else "balanced"
 
     def fast_poll_changes(self) -> List[Dict[str, Any]]:

@@ -258,17 +258,47 @@ class TestDucksVantageFixes(unittest.TestCase):
             self.assertIsNone(g2)
 
     # -------------------------------------------------------------------------
-    # 6. Wayland OSD Overlay Compatibility
+    # 6. Wayland OSD Overlay Compatibility & Fn+Q Multi-Node Detection
     # -------------------------------------------------------------------------
     def test_osd_overlay_wayland_flags(self):
-        """O OSD deve inicializar com flags adequadas a sessões Wayland e X11."""
-        from core.qt_compat import QApplication
+        """O OSD deve inicializar com Tool (e nunca ToolTip sem pai no Wayland) e renderizar show_profile."""
+        from core.qt_compat import QApplication, Qt
         app = QApplication.instance() or QApplication(["ducksvantage", "-platform", "offscreen"])
 
         from ui.osd_overlay import VantageOSDOverlay
         osd = VantageOSDOverlay()
         self.assertEqual(osd.objectName(), "ducksvantage-osd")
         self.assertIsNotNone(osd.container)
+        self.assertIsNone(osd.graphicsEffect())
+        self.assertEqual(osd.windowFlags() & Qt.WindowType.WindowType_Mask, Qt.WindowType.Tool)
+        osd.notify_thermal_mode("performance")
+        self.assertIn("Desempenho", osd.title_label.text())
+        osd.hide()
+
+    def test_fn_q_multi_node_platform_profile_polling(self):
+        """fast_poll_changes deve detectar Fn+Q mesmo quando o kernel expõe múltiplos nós de platform-profile."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            node_class = os.path.join(tmpdir, "class_profile")
+            node_acpi = os.path.join(tmpdir, "acpi_profile")
+            with open(node_class, "w", encoding="utf-8") as f:
+                f.write("balanced\n")
+            with open(node_acpi, "w", encoding="utf-8") as f:
+                f.write("balanced\n")
+
+            self.backend.paths.platform_profile = node_class
+            self.backend._platform_profile_paths = [node_class, node_acpi]
+            self.backend._last_profile_by_path = {node_class: "balanced", node_acpi: "balanced"}
+            self.backend._last_raw_profile = "balanced"
+            self.backend._last_profile = "balanced"
+
+            # Simula Fn+Q alterando o nó class/platform-profile-0/profile
+            with open(node_class, "w", encoding="utf-8") as f:
+                f.write("performance\n")
+
+            events = self.backend.fast_poll_changes()
+            prof_events = [e for e in events if e.get("type") == "profile_changed"]
+            self.assertEqual(len(prof_events), 1)
+            self.assertEqual(prof_events[0]["new"], "performance")
 
     # -------------------------------------------------------------------------
     # 7. Escrita Atômica de Configurações
