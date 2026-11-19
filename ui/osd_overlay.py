@@ -6,6 +6,7 @@ Projetado especificamente para NÃO roubar o foco nem minimizar jogos em tela ch
 """
 
 import os
+import configparser
 from core.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     Qt, QFont, QIcon, QTimer, QVariantAnimation,
@@ -29,6 +30,7 @@ class VantageOSDOverlay(QWidget):
         )
         self._accent_color = ThemeTokens.BORDER_CYAN
         self._opacity = 1.0
+        self._last_kwin_rule_pos = None
 
         # Usa Qt.WindowType.Tool (xdg_toplevel no Wayland) em vez de ToolTip (xdg_popup),
         # garantindo que o OSD apareça mesmo sem janela-pai visível (ex: app minimizado na bandeja).
@@ -115,10 +117,11 @@ class VantageOSDOverlay(QWidget):
 
     def _on_fade_step(self, val):
         self._opacity = float(val)
-        try:
-            self.setWindowOpacity(self._opacity)
-        except Exception:
-            pass
+        if not self.is_wayland:
+            try:
+                self.setWindowOpacity(self._opacity)
+            except Exception:
+                pass
         self.update()
 
     def _start_fade_out(self):
@@ -138,6 +141,91 @@ class VantageOSDOverlay(QWidget):
             pass
         return QApplication.primaryScreen()
 
+    def _ensure_kwin_wayland_rule(self, x: int, y: int) -> None:
+        """
+        No KDE Plasma 6 (Wayland), o protocolo xdg-shell ignora move(x, y) e WindowStaysOnTopHint
+        do lado do cliente. Registra automaticamente uma regra nativa no compositor KWin
+        (~/.config/kwinrulesrc) + reconfigure via D-Bus para forçar o OSD sempre no topo (above=true),
+        na posição inferior central (x, y) e sem roubar o foco da janela ativa.
+        """
+        if not self.is_wayland:
+            return
+        try:
+            plat = (QGuiApplication.platformName() or "").lower()
+            if plat in ("offscreen", "minimal"):
+                return
+        except Exception:
+            pass
+
+        pos_str = f"{x},{y}"
+        if self._last_kwin_rule_pos == pos_str:
+            return
+
+        try:
+            cfg_dir = os.path.expanduser("~/.config")
+            if not os.path.isdir(cfg_dir):
+                return
+            rules_path = os.path.join(cfg_dir, "kwinrulesrc")
+            cp = configparser.ConfigParser(interpolation=None)
+            cp.optionxform = str  # Preserva maiúsculas/minúsculas exatas exigidas pelo KConfig (Description)
+            if os.path.exists(rules_path):
+                cp.read(rules_path, encoding="utf-8")
+
+            if not cp.has_section("General"):
+                cp.add_section("General")
+
+            rule_id = "ducksvantage_osd"
+            existing_rules = [r.strip() for r in cp.get("General", "rules", fallback="").split(",") if r.strip()]
+            if rule_id not in existing_rules:
+                existing_rules.append(rule_id)
+            cp.set("General", "rules", ",".join(existing_rules))
+            cp.set("General", "count", str(len(existing_rules)))
+
+            if not cp.has_section(rule_id):
+                cp.add_section(rule_id)
+
+            desired = {
+                "Description": "Ducksvantage OSD Overlay",
+                "title": "Ducksvantage OSD",
+                "titlematch": "1",
+                "above": "true",
+                "aboverule": "2",
+                "noborder": "true",
+                "noborderrule": "2",
+                "skiptaskbar": "true",
+                "skiptaskbarrule": "2",
+                "skippager": "true",
+                "skippagerrule": "2",
+                "skipswitcher": "true",
+                "skipswitcherrule": "2",
+                "acceptfocus": "false",
+                "acceptfocusrule": "2",
+                "position": pos_str,
+                "positionrule": "2",
+                "types": "4294967295",
+            }
+            changed = False
+            for k, v in desired.items():
+                if cp.get(rule_id, k, fallback=None) != v:
+                    cp.set(rule_id, k, v)
+                    changed = True
+
+            if changed or not os.path.exists(rules_path) or os.path.getsize(rules_path) == 0:
+                with open(rules_path, "w", encoding="utf-8") as f:
+                    cp.write(f, space_around_delimiters=False)
+                try:
+                    from PyQt6.QtDBus import QDBusConnection, QDBusMessage
+                    bus = QDBusConnection.sessionBus()
+                    if bus.isConnected():
+                        msg = QDBusMessage.createMethodCall("org.kde.KWin", "/KWin", "org.kde.KWin", "reconfigure")
+                        bus.send(msg)
+                except Exception:
+                    pass
+
+            self._last_kwin_rule_pos = pos_str
+        except Exception:
+            pass
+
     def _reposition(self):
         """Posiciona o pop-up centralizado na parte inferior/central da tela ativa com suporte a Wayland e X11."""
         screen = self._get_target_screen()
@@ -145,6 +233,8 @@ class VantageOSDOverlay(QWidget):
             geom = screen.availableGeometry() if hasattr(screen, "availableGeometry") else screen.geometry()
             x = geom.x() + (geom.width() - self.width()) // 2
             y = geom.y() + int(geom.height() * 0.78)
+
+            self._ensure_kwin_wayland_rule(x, y)
 
             if hasattr(self, "windowHandle") and self.windowHandle():
                 try:
@@ -172,10 +262,11 @@ class VantageOSDOverlay(QWidget):
 
         self.fade_anim.stop()
         self._opacity = 1.0
-        try:
-            self.setWindowOpacity(1.0)
-        except Exception:
-            pass
+        if not self.is_wayland:
+            try:
+                self.setWindowOpacity(1.0)
+            except Exception:
+                pass
 
         self._reposition()
         self.show()

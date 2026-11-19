@@ -199,6 +199,7 @@ class TestDucksVantageFixes(unittest.TestCase):
         """Chamadas subsequentes a get_gpu_metrics devem usar o cache e evitar subprocess.run."""
         self.backend.nvidia_available = True
         self.backend._nvml_initialized = False
+        self.backend.paths.nvidia_drm_card = None
         self.backend._cached_nvidia_metrics = None
         self.backend._last_nvidia_smi_time = 0.0
 
@@ -219,6 +220,7 @@ class TestDucksVantageFixes(unittest.TestCase):
         """Falha no nvidia-smi deve ativar cooldown e não executar subprocess a cada tick."""
         self.backend.nvidia_available = True
         self.backend._nvml_initialized = False
+        self.backend.paths.nvidia_drm_card = None
         self.backend._cached_nvidia_metrics = None
         self.backend._last_nvidia_smi_time = 0.0
 
