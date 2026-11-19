@@ -196,16 +196,19 @@ class BatteryTab(QWidget):
         layout.setSpacing(18)
 
         # =====================================================================
-        # 1. Card de Controles de Carregamento (Exclusão Mútua)
+        # 1. Card de Controles de Carregamento (Exclusão Mútua — exibe só o suportado)
         # =====================================================================
-        cons_card = QFrame()
-        cons_card.setProperty("class", "card")
-        cons_layout = QVBoxLayout(cons_card)
+        feat = self.backend.features
+        self.cons_card = QFrame()
+        self.cons_card.setProperty("class", "card")
+        cons_layout = QVBoxLayout(self.cons_card)
         cons_layout.setContentsMargins(20, 18, 20, 18)
         cons_layout.setSpacing(14)
 
         # Modo de Conservação
-        top_row = QHBoxLayout()
+        self.cons_row_widget = QWidget()
+        top_row = QHBoxLayout(self.cons_row_widget)
+        top_row.setContentsMargins(0, 0, 0, 0)
         icon_lbl = QLabel()
         cons_icon_path = os.path.join(ICON_DIR, "edge_conservation.svg")
         if os.path.exists(cons_icon_path):
@@ -226,18 +229,22 @@ class BatteryTab(QWidget):
         top_row.addStretch()
 
         self.toggle_switch = ToggleSwitch()
-        self.toggle_switch.setEnabled(self.backend.features.conservation_mode)
+        self.toggle_switch.setEnabled(feat.conservation_mode)
         self.toggle_switch.toggled.connect(self._on_conservation_toggled)
         top_row.addWidget(self.toggle_switch)
-        cons_layout.addLayout(top_row)
+        self.cons_row_widget.setVisible(feat.conservation_mode)
+        cons_layout.addWidget(self.cons_row_widget)
 
-        # Divisor
-        div = QFrame()
-        div.setStyleSheet(f"background-color: {ThemeTokens.BORDER_DEFAULT}; max-height: 1px;")
-        cons_layout.addWidget(div)
+        # Divisor (apenas quando ambos os controles estão disponíveis)
+        self.cons_div = QFrame()
+        self.cons_div.setStyleSheet(f"background-color: {ThemeTokens.BORDER_DEFAULT}; max-height: 1px;")
+        self.cons_div.setVisible(bool(feat.conservation_mode and feat.rapid_charge))
+        cons_layout.addWidget(self.cons_div)
 
         # Carregamento Rápido (Rapid Charge)
-        rapid_row = QHBoxLayout()
+        self.rapid_row_widget = QWidget()
+        rapid_row = QHBoxLayout(self.rapid_row_widget)
+        rapid_row.setContentsMargins(0, 0, 0, 0)
         rapid_icon = QLabel()
         rapid_icon_path = os.path.join(ICON_DIR, "edge_rapid_charge.svg")
         if os.path.exists(rapid_icon_path):
@@ -258,19 +265,21 @@ class BatteryTab(QWidget):
         rapid_row.addStretch()
 
         self.toggle_rapid = ToggleSwitch()
-        self.toggle_rapid.setEnabled(self.backend.features.rapid_charge)
+        self.toggle_rapid.setEnabled(feat.rapid_charge)
         self.toggle_rapid.toggled.connect(self._on_rapid_charge_toggled)
         rapid_row.addWidget(self.toggle_rapid)
-        cons_layout.addLayout(rapid_row)
+        self.rapid_row_widget.setVisible(feat.rapid_charge)
+        cons_layout.addWidget(self.rapid_row_widget)
 
-        layout.addWidget(cons_card)
+        self.cons_card.setVisible(bool(feat.conservation_mode or feat.rapid_charge))
+        layout.addWidget(self.cons_card)
 
         # =====================================================================
         # 2. Card de Diagnóstico Elétrico com CircularGauge + 6 Cards Elétricos
         # =====================================================================
-        health_card = QFrame()
-        health_card.setProperty("class", "card")
-        health_layout = QVBoxLayout(health_card)
+        self.health_card = QFrame()
+        self.health_card.setProperty("class", "card")
+        health_layout = QVBoxLayout(self.health_card)
         health_layout.setContentsMargins(20, 18, 20, 18)
         health_layout.setSpacing(16)
 
@@ -318,14 +327,15 @@ class BatteryTab(QWidget):
         body_row.addLayout(details_grid, stretch=1)
         health_layout.addLayout(body_row)
 
-        layout.addWidget(health_card)
+        self.health_card.setVisible(feat.battery)
+        layout.addWidget(self.health_card)
 
         # =====================================================================
         # 3. ELITE 3: Battery Health Historian (Gráfico de Saúde e Degradação)
         # =====================================================================
-        hist_card = QFrame()
-        hist_card.setProperty("class", "card")
-        hist_layout = QVBoxLayout(hist_card)
+        self.hist_card = QFrame()
+        self.hist_card.setProperty("class", "card")
+        hist_layout = QVBoxLayout(self.hist_card)
         hist_layout.setContentsMargins(20, 18, 20, 18)
         hist_layout.setSpacing(12)
 
@@ -382,15 +392,19 @@ class BatteryTab(QWidget):
         self.wear_summary_lbl.setStyleSheet(f"color: {ThemeTokens.STATUS_GREEN};")
         hist_layout.addWidget(self.wear_summary_lbl)
 
-        layout.addWidget(hist_card)
+        self.hist_card.setVisible(feat.battery)
+        layout.addWidget(self.hist_card)
 
         # =====================================================================
         # 4. NOVA FUNCIONALIDADE 4: Controle de Economia de Energia de Rede (Wi-Fi / Ethernet)
         # =====================================================================
         net_status = self.backend.get_network_power_status()
-        net_card = QFrame()
-        net_card.setProperty("class", "card")
-        net_layout = QVBoxLayout(net_card)
+        has_wifi = bool(net_status.wifi_available and feat.wifi_power_save)
+        has_eth = bool(net_status.eth_available and feat.eth_power_save)
+
+        self.net_card = QFrame()
+        self.net_card.setProperty("class", "card")
+        net_layout = QVBoxLayout(self.net_card)
         net_layout.setContentsMargins(20, 18, 20, 18)
         net_layout.setSpacing(14)
 
@@ -402,15 +416,19 @@ class BatteryTab(QWidget):
         net_header.addWidget(ic_net)
 
         net_titles = QVBoxLayout()
-        nt_lbl = QLabel(
-            f"Controle de Economia de Energia de Rede • Wi-Fi ({net_status.wifi_iface} / {net_status.wifi_driver}) & Ethernet ({net_status.eth_iface})"
-        )
+        net_iface_parts = []
+        if has_wifi:
+            net_iface_parts.append(f"Wi-Fi ({net_status.wifi_iface} / {net_status.wifi_driver})")
+        if has_eth:
+            net_iface_parts.append(f"Ethernet ({net_status.eth_iface})")
+        net_title_suffix = " & ".join(net_iface_parts) if net_iface_parts else "Interfaces de Rede"
+        nt_lbl = QLabel(f"Controle de Economia de Energia de Rede • {net_title_suffix}")
         nt_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         nt_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         net_titles.addWidget(nt_lbl)
 
         nt_sub = QLabel(
-            "Desative o Power Saving do Wi-Fi para eliminar picos de ping e perda de pacotes em jogos competitivos online, ou ative para poupar bateria."
+            "Ajuste o gerenciamento de energia das interfaces de rede detectadas neste notebook para menor latência ou maior autonomia."
         )
         nt_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         net_titles.addWidget(nt_sub)
@@ -422,9 +440,9 @@ class BatteryTab(QWidget):
         net_layout.addLayout(net_header)
 
         # Toggle 1: Modo Jogos Online (Wi-Fi Power Save OFF / Baixa Latência)
-        wifi_box = QFrame()
-        wifi_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
-        wifi_row = QHBoxLayout(wifi_box)
+        self.wifi_box = QFrame()
+        self.wifi_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
+        wifi_row = QHBoxLayout(self.wifi_box)
         wifi_row.setContentsMargins(8, 6, 8, 6)
 
         w_info = QVBoxLayout()
@@ -445,12 +463,13 @@ class BatteryTab(QWidget):
         self.sw_wifi_low_latency.setChecked(not net_status.wifi_power_save_on)
         self.sw_wifi_low_latency.toggled.connect(self._on_wifi_low_latency_toggled)
         wifi_row.addWidget(self.sw_wifi_low_latency)
-        net_layout.addWidget(wifi_box)
+        self.wifi_box.setVisible(has_wifi)
+        net_layout.addWidget(self.wifi_box)
 
         # Toggle 2: Economia de Energia PCIe Ethernet Gigabit
-        eth_box = QFrame()
-        eth_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
-        eth_row = QHBoxLayout(eth_box)
+        self.eth_box = QFrame()
+        self.eth_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
+        eth_row = QHBoxLayout(self.eth_box)
         eth_row.setContentsMargins(8, 6, 8, 6)
 
         e_info = QVBoxLayout()
@@ -471,9 +490,11 @@ class BatteryTab(QWidget):
         self.sw_eth_power_save.setChecked(net_status.eth_power_save_on)
         self.sw_eth_power_save.toggled.connect(self._on_eth_power_save_toggled)
         eth_row.addWidget(self.sw_eth_power_save)
-        net_layout.addWidget(eth_box)
+        self.eth_box.setVisible(has_eth)
+        net_layout.addWidget(self.eth_box)
 
-        layout.addWidget(net_card)
+        self.net_card.setVisible(bool(has_wifi or has_eth))
+        layout.addWidget(self.net_card)
 
         # =====================================================================
         # 5. NOVA FUNCIONALIDADE 5: Monitor de Ciclo de Vida e Alertas Inteligentes da Bateria
@@ -481,9 +502,9 @@ class BatteryTab(QWidget):
         alert_cfg = self.backend.get_battery_alert_settings()
         life_status = self.backend.get_battery_lifecycle_status()
 
-        alert_card = QFrame()
-        alert_card.setProperty("class", "card")
-        alert_layout = QVBoxLayout(alert_card)
+        self.alert_card = QFrame()
+        self.alert_card.setProperty("class", "card")
+        alert_layout = QVBoxLayout(self.alert_card)
         alert_layout.setContentsMargins(20, 18, 20, 18)
         alert_layout.setSpacing(14)
 
@@ -514,10 +535,10 @@ class BatteryTab(QWidget):
         alert_header.addWidget(self.lifecycle_badge)
         alert_layout.addLayout(alert_header)
 
-        # Linha 1: Notificações Inteligentes na Bandeja + Alerta de 80%
-        al_box1 = QFrame()
-        al_box1.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
-        al_row1 = QHBoxLayout(al_box1)
+        # Linha 1: Notificações Inteligentes na Bandeja + Alerta de 80% (somente se Conservation Mode for suportado)
+        self.al_box1 = QFrame()
+        self.al_box1.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
+        al_row1 = QHBoxLayout(self.al_box1)
         al_row1.setContentsMargins(8, 6, 8, 6)
 
         a1_info = QVBoxLayout()
@@ -538,7 +559,8 @@ class BatteryTab(QWidget):
         self.sw_bat_alerts.setChecked(bool(alert_cfg["alerts_enabled"] and alert_cfg["alert_80_enabled"]))
         self.sw_bat_alerts.toggled.connect(self._on_battery_alert_settings_changed)
         al_row1.addWidget(self.sw_bat_alerts)
-        alert_layout.addWidget(al_box1)
+        self.al_box1.setVisible(feat.conservation_mode)
+        alert_layout.addWidget(self.al_box1)
 
         # Linha 2: Limite de Alerta Térmico da Bateria (°C) + Botão Testar Alerta
         al_box2 = QFrame()
@@ -583,7 +605,8 @@ class BatteryTab(QWidget):
         al_row2.addWidget(self.btn_test_bat_alert)
 
         alert_layout.addWidget(al_box2)
-        layout.addWidget(alert_card)
+        self.alert_card.setVisible(feat.battery)
+        layout.addWidget(self.alert_card)
         layout.addStretch()
 
         scroll.setWidget(container)
@@ -744,24 +767,6 @@ class BatteryTab(QWidget):
                 f"Desgaste Médio: {wear_per_cycle:.3f}% por ciclo ({bat.cycle_count} ciclos)  •  {cons_note}"
             )
 
-            # 5. Atualizar Estado de Economia de Rede e Ciclo de Vida
-            net_st = self.backend.get_network_power_status()
-            if hasattr(self, "sw_wifi_low_latency"):
-                self.sw_wifi_low_latency.blockSignals(True)
-                self.sw_wifi_low_latency.setChecked(not net_st.wifi_power_save_on)
-                self.sw_wifi_low_latency.blockSignals(False)
-                if not net_st.wifi_power_save_on:
-                    self.net_badge.setText(f"BAIXA LATÊNCIA ({net_st.wifi_iface.upper()})")
-                    self.net_badge.setColor("#581c87", "#e9d5ff")
-                else:
-                    self.net_badge.setText(f"ECONOMIA WI-FI ({net_st.wifi_iface.upper()})")
-                    self.net_badge.setColor("#155e75", "#38bdf8")
-
-            if hasattr(self, "sw_eth_power_save"):
-                self.sw_eth_power_save.blockSignals(True)
-                self.sw_eth_power_save.setChecked(net_st.eth_power_save_on)
-                self.sw_eth_power_save.blockSignals(False)
-
             life = self.backend.get_battery_lifecycle_status()
             if hasattr(self, "lifecycle_badge"):
                 self.lifecycle_badge.setText(f"CICLO DE VIDA: {life['badge']} ({bat.temperature_c:.1f}°C)")
@@ -771,3 +776,34 @@ class BatteryTab(QWidget):
                 self.lbl_bat_temp_thr.setText(
                     f"Alerta Térmico da Bateria em Jogos: {thr_val}°C (Atual: {bat.temperature_c:.1f}°C)"
                 )
+
+        # 5. Atualizar Estado de Economia de Rede (independente de bateria)
+        net_st = self.backend.get_network_power_status()
+        has_wifi = bool(net_st.wifi_available and self.backend.features.wifi_power_save)
+        has_eth = bool(net_st.eth_available and self.backend.features.eth_power_save)
+        self.wifi_box.setVisible(has_wifi)
+        self.eth_box.setVisible(has_eth)
+        self.net_card.setVisible(bool(has_wifi or has_eth))
+
+        if has_wifi and hasattr(self, "sw_wifi_low_latency"):
+            self.sw_wifi_low_latency.blockSignals(True)
+            self.sw_wifi_low_latency.setChecked(not net_st.wifi_power_save_on)
+            self.sw_wifi_low_latency.blockSignals(False)
+            if not net_st.wifi_power_save_on:
+                self.net_badge.setText(f"BAIXA LATÊNCIA ({net_st.wifi_iface.upper()})")
+                self.net_badge.setColor("#581c87", "#e9d5ff")
+            else:
+                self.net_badge.setText(f"ECONOMIA WI-FI ({net_st.wifi_iface.upper()})")
+                self.net_badge.setColor("#155e75", "#38bdf8")
+        elif has_eth:
+            if net_st.eth_power_save_on:
+                self.net_badge.setText(f"ECO ETHERNET ({net_st.eth_iface.upper()})")
+                self.net_badge.setColor("#155e75", "#38bdf8")
+            else:
+                self.net_badge.setText(f"ETHERNET ATIVA ({net_st.eth_iface.upper()})")
+                self.net_badge.setColor("#581c87", "#e9d5ff")
+
+        if has_eth and hasattr(self, "sw_eth_power_save"):
+            self.sw_eth_power_save.blockSignals(True)
+            self.sw_eth_power_save.setChecked(net_st.eth_power_save_on)
+            self.sw_eth_power_save.blockSignals(False)

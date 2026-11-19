@@ -164,12 +164,14 @@ class MainWindow(QMainWindow):
         self.header_eco_pill.setVisible(False)
         layout.addWidget(self.header_eco_pill)
 
-        # Badge do Perfil Ativo
+        # Badge do Perfil Ativo (exibida apenas se o kernel suportar platform_profile)
         self.header_profile_pill = StatusBadge("EQUILIBRADO", bg_color="#293c4f", text_color="#2ec5eb")
+        self.header_profile_pill.setVisible(self.backend.features.platform_profile)
         layout.addWidget(self.header_profile_pill)
 
-        # Badge de Bateria e Fonte AC
+        # Badge de Bateria e Fonte AC (exibida apenas se houver bateria detectada)
         self.header_bat_pill = StatusBadge("BATERIA: --%", bg_color="#064e3b", text_color="#34d399")
+        self.header_bat_pill.setVisible(self.backend.features.battery)
         layout.addWidget(self.header_bat_pill)
 
         return header
@@ -292,6 +294,12 @@ class MainWindow(QMainWindow):
         self.tray_manager.show_window_requested.connect(self._toggle_visibility)
         self.tray_manager.quit_requested.connect(self._quit_app)
 
+        # 8. RECURSOS 1, 2 e 3: GPU MUX Switch, Taxa de Atualização e LCD Overdrive
+        self.performance_tab.gpu_mux_changed.connect(self._on_gpu_mux_changed)
+        self.performance_tab.refresh_rate_changed.connect(self._on_refresh_rate_changed)
+        self.performance_tab.lcd_overdrive_changed.connect(self._on_lcd_overdrive_changed)
+        self.dashboard_tab.lcd_overdrive_toggled.connect(self._apply_lcd_overdrive)
+
     def _register_qt_shortcuts(self):
         """Registra os atalhos de teclado (incluindo F23 / Meta+Shift+F23 da tecla Copilot)."""
         for sc in self._active_shortcuts:
@@ -338,8 +346,44 @@ class MainWindow(QMainWindow):
             self.performance_tab.refresh_profile_state()
             self.battery_tab.refresh_display()
             self.tray_manager.update_tray_state()
+        elif osd_type == "refresh_rate":
+            hz = res.get("hz", 60)
+            self.osd.notify_refresh_rate(hz)
+            self.performance_tab.refresh_display_state()
         elif osd_type == "window":
             self._toggle_visibility()
+
+    def _on_gpu_mux_changed(self, mode: str, req_reboot: bool):
+        self.osd.notify_gpu_mux(mode, req_reboot)
+        self.dashboard_tab.update_telemetry()
+        if req_reboot:
+            QMessageBox.information(
+                self,
+                "GPU MUX Switch - Reinicialização Necessária",
+                f"O modo de GPU foi configurado para '{mode.upper()}'.\n\n"
+                "Para concluir a ativação no Linux, reinicie o computador ou a sessão gráfica."
+            )
+
+    def _on_refresh_rate_changed(self, hz: int):
+        self.osd.notify_refresh_rate(hz)
+
+    def _apply_lcd_overdrive(self, enabled: bool):
+        ok, msg = self.backend.set_lcd_overdrive(enabled)
+        if ok:
+            self.osd.notify_lcd_overdrive(enabled)
+            self.performance_tab.refresh_bios_state()
+            if getattr(self.dashboard_tab, "item_lcd_overdrive", None):
+                self.dashboard_tab.item_lcd_overdrive.set_checked(enabled)
+        else:
+            if getattr(self.dashboard_tab, "item_lcd_overdrive", None):
+                self.dashboard_tab.item_lcd_overdrive.set_checked(not enabled)
+            self.performance_tab.refresh_bios_state()
+            QMessageBox.warning(self, "LCD Overdrive", f"Não foi possível alterar o LCD Overdrive:\n{msg}")
+
+    def _on_lcd_overdrive_changed(self, enabled: bool):
+        self.osd.notify_lcd_overdrive(enabled)
+        if getattr(self.dashboard_tab, "item_lcd_overdrive", None):
+            self.dashboard_tab.item_lcd_overdrive.set_checked(enabled)
 
     # =========================================================================
     # Ações e Sincronização de Hardware
@@ -376,7 +420,7 @@ class MainWindow(QMainWindow):
         if ok:
             self.osd.notify_feature_osd(
                 title="Modo Viagem (Eco-Mode Extremo)" if enable else "Modo Viagem Desativado",
-                subtitle="Conservação 80% • GPU D3cold • Turbo Off • Low Power" if enable else "Desempenho Padrão Restaurado",
+                subtitle=self.backend.get_eco_travel_summary() if enable else "Desempenho Padrão Restaurado",
                 icon_name="eco_travel.svg",
                 accent_color=ThemeTokens.STATUS_GREEN if enable else ThemeTokens.BORDER_CYAN
             )
@@ -402,7 +446,7 @@ class MainWindow(QMainWindow):
     def _apply_conservation(self, active: bool):
         success, msg = self.backend.set_conservation_mode(active)
         if success:
-            if active:
+            if active and self.backend.features.rapid_charge:
                 self.backend.set_rapid_charge(False)
                 self.dashboard_tab.item_rapid_charge.set_checked(False)
             self.dashboard_tab.item_conservation.set_checked(active)
@@ -415,7 +459,7 @@ class MainWindow(QMainWindow):
     def _apply_rapid_charge(self, active: bool):
         success, msg = self.backend.set_rapid_charge(active)
         if success:
-            if active:
+            if active and self.backend.features.conservation_mode:
                 self.backend.set_conservation_mode(False)
                 self.dashboard_tab.item_conservation.set_checked(False)
             self.dashboard_tab.item_rapid_charge.set_checked(active)
@@ -545,6 +589,13 @@ class MainWindow(QMainWindow):
                 cmd = ev.get("custom_command", "")
                 self._execute_custom_key_action(act, cmd)
 
+            # 8. Transição Automática de Taxa de Atualização (AC vs Bateria)
+            elif ev_type == "refresh_rate_changed":
+                hz = ev.get("hz", 60)
+                reason = ev.get("reason", "ac")
+                self.osd.notify_refresh_rate(hz, reason=reason)
+                self.performance_tab.refresh_display_state()
+
     def _on_test_battery_alert(self):
         """Dispara imediatamente um alerta de teste no KDE Plasma e no OSD."""
         alerts = self.backend.check_battery_smart_alerts(force_test=True)
@@ -620,6 +671,7 @@ class MainWindow(QMainWindow):
                 self.battery_tab.refresh_display()
 
         bat = self.backend.get_battery_info()
+        self.header_bat_pill.setVisible(bat.available)
         if bat.available:
             status_txt = "AC" if bat.ac_connected else "BAT"
             self.header_bat_pill.setText(f"{status_txt}: {bat.capacity_percent}%")
@@ -632,7 +684,11 @@ class MainWindow(QMainWindow):
         self.tray_manager.update_tray_state()
 
     def _update_header_profile_pill(self):
-        self.header_eco_pill.setVisible(self.backend.get_eco_travel_mode())
+        self.header_eco_pill.setVisible(bool(self.backend.features.eco_travel and self.backend.get_eco_travel_mode()))
+        if not self.backend.features.platform_profile:
+            self.header_profile_pill.setVisible(False)
+            return
+        self.header_profile_pill.setVisible(True)
         prof = self.backend.normalize_profile(self.backend.get_platform_profile())
         if prof == "max-power":
             self.header_profile_pill.setText("MAX-POWER")

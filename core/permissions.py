@@ -21,9 +21,10 @@ UDEV_RULE_CONTENT = """# =======================================================
 # 1. Perfil de Plataforma ACPI (Quiet, Balanced, Performance, Max-Power)
 ACTION=="add|change", SUBSYSTEM=="acpi", RUN+="/bin/sh -c 'chmod 0666 /sys/firmware/acpi/platform_profile 2>/dev/null || true'"
 ACTION=="add|change", SUBSYSTEM=="platform", RUN+="/bin/sh -c 'chmod 0666 /sys/firmware/acpi/platform_profile 2>/dev/null || true'"
+ACTION=="add|change", SUBSYSTEM=="platform-profile", RUN+="/bin/sh -c 'chmod 0666 /sys/firmware/acpi/platform_profile /sys/class/platform-profile/*/profile 2>/dev/null || true'"
 
 # 2. Driver Universal Lenovo Ideapad ACPI (VPC*)
-ACTION=="add|change", SUBSYSTEM=="platform", KERNEL=="VPC*", RUN+="/bin/sh -c 'chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/conservation_mode /sys/bus/platform/drivers/ideapad_acpi/VPC*/fn_lock /sys/bus/platform/drivers/ideapad_acpi/VPC*/camera_power /sys/bus/platform/drivers/ideapad_acpi/VPC*/usb_charging /sys/bus/platform/drivers/ideapad_acpi/VPC*/fan_mode 2>/dev/null || true'"
+ACTION=="add|change", SUBSYSTEM=="platform", KERNEL=="VPC*", RUN+="/bin/sh -c 'chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/conservation_mode /sys/bus/platform/drivers/ideapad_acpi/VPC*/rapid_charge /sys/bus/platform/drivers/ideapad_acpi/VPC*/fn_lock /sys/bus/platform/drivers/ideapad_acpi/VPC*/camera_power /sys/bus/platform/drivers/ideapad_acpi/VPC*/usb_charging /sys/bus/platform/drivers/ideapad_acpi/VPC*/touchpad /sys/bus/platform/drivers/ideapad_acpi/VPC*/fan_mode /sys/bus/platform/drivers/ideapad_acpi/VPC*/lcd_overdrive /sys/bus/platform/drivers/ideapad_acpi/VPC*/gpu_mode 2>/dev/null || true'"
 
 # 3. Modos de Carregamento da Bateria (Rapid Charge / Long Life)
 ACTION=="add|change", SUBSYSTEM=="power_supply", RUN+="/bin/sh -c 'chmod 0666 /sys/class/power_supply/BAT*/charge_types 2>/dev/null || true'"
@@ -41,8 +42,8 @@ ACTION=="add|change", SUBSYSTEM=="pci", RUN+="/bin/sh -c 'chmod 0666 /sys/bus/pc
 # 7. Leitura de Eventos de Teclas Especiais (Tecla Copilot F23 / WMI Hotkeys)
 ACTION=="add|change", SUBSYSTEM=="input", RUN+="/bin/sh -c 'chmod 0644 /dev/input/by-path/*kbd* /dev/input/by-path/*VPC* 2>/dev/null || true'"
 
-# 8. Atributos Térmicos e de Potência Lenovo WMI Other (CPU/GPU Temp Limits, AC Offset, PPT) e Hwmon PWM
-ACTION=="add|change", SUBSYSTEM=="firmware-attributes", RUN+="/bin/sh -c 'chmod 0666 /sys/class/firmware-attributes/lenovo-wmi-other-*/attributes/*/current_value 2>/dev/null || true'"
+# 8. Atributos Térmicos e de Potência Lenovo WMI Other (CPU/GPU Temp Limits, AC Offset, PPT, Overdrive) e Hwmon PWM
+ACTION=="add|change", SUBSYSTEM=="firmware-attributes", RUN+="/bin/sh -c 'chmod 0666 /sys/class/firmware-attributes/*/attributes/*/current_value 2>/dev/null || true'"
 ACTION=="add|change", SUBSYSTEM=="hwmon", RUN+="/bin/sh -c 'chmod 0666 /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null || true'"
 
 # 9. Controle de Economia de Energia de Rede (Wi-Fi / Ethernet PCIe Runtime PM)
@@ -84,10 +85,16 @@ class PermissionsManager:
             "udevadm control --reload-rules",
             "udevadm trigger",
             "chmod 0666 /sys/firmware/acpi/platform_profile 2>/dev/null || true",
+            "chmod 0666 /sys/class/platform-profile/*/profile 2>/dev/null || true",
             "chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/conservation_mode 2>/dev/null || true",
+            "chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/rapid_charge 2>/dev/null || true",
             "chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/fn_lock 2>/dev/null || true",
             "chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/camera_power 2>/dev/null || true",
             "chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/usb_charging 2>/dev/null || true",
+            "chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/touchpad 2>/dev/null || true",
+            "chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/fan_mode 2>/dev/null || true",
+            "chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/lcd_overdrive 2>/dev/null || true",
+            "chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/gpu_mode 2>/dev/null || true",
             "chmod 0666 /sys/class/power_supply/BAT*/charge_types 2>/dev/null || true",
             "chmod 0666 /sys/class/leds/*kbd_backlight*/brightness 2>/dev/null || true",
             "chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || true",
@@ -95,6 +102,7 @@ class PermissionsManager:
             "chmod 0666 /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null || true",
             "chmod 0666 /sys/class/powercap/intel-rapl*/constraint_*_power_limit_uw 2>/dev/null || true",
             "chmod 0666 /sys/bus/pci/devices/*/power/control 2>/dev/null || true",
+            "chmod 0666 /sys/class/firmware-attributes/*/attributes/*/current_value 2>/dev/null || true",
             "chmod 0644 /dev/input/by-path/*kbd* /dev/input/by-path/*VPC* 2>/dev/null || true",
         ]
 

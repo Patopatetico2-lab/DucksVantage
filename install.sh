@@ -142,17 +142,23 @@ chmod 0644 "${UDEV_RULE_DST}"
 
 # Aplicar permissões imediatas na sessão atual sem exigir reboot
 chmod 0666 /sys/firmware/acpi/platform_profile 2>/dev/null || true
+chmod 0666 /sys/class/platform-profile/*/profile 2>/dev/null || true
 chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/conservation_mode 2>/dev/null || true
+chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/rapid_charge 2>/dev/null || true
 chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/fn_lock 2>/dev/null || true
 chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/camera_power 2>/dev/null || true
 chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/usb_charging 2>/dev/null || true
+chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/touchpad 2>/dev/null || true
 chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/fan_mode 2>/dev/null || true
+chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/lcd_overdrive 2>/dev/null || true
+chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/gpu_mode 2>/dev/null || true
 chmod 0666 /sys/class/leds/*kbd_backlight*/brightness 2>/dev/null || true
 chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || true
 chmod 0666 /sys/devices/system/cpu/cpufreq/boost 2>/dev/null || true
 chmod 0666 /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null || true
 chmod 0666 /sys/class/powercap/intel-rapl*/constraint_*_power_limit_uw 2>/dev/null || true
 chmod 0666 /sys/class/power_supply/BAT*/charge_types 2>/dev/null || true
+chmod 0666 /sys/class/firmware-attributes/*/attributes/*/current_value 2>/dev/null || true
 
 if command -v udevadm >/dev/null 2>&1; then
     udevadm control --reload-rules || true

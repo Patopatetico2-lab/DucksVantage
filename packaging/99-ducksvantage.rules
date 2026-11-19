@@ -6,7 +6,7 @@
 # =============================================================================
 
 # 1. Perfis Térmicos ACPI (Quiet/Low-Power, Balanced, Performance, Max-Power)
-SUBSYSTEM=="platform-profile", ACTION=="add|change", RUN+="/bin/chmod 0666 /sys/firmware/acpi/platform_profile"
+SUBSYSTEM=="platform-profile", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/firmware/acpi/platform_profile /sys/class/platform-profile/*/profile 2>/dev/null || true'"
 SUBSYSTEM=="acpi", ACTION=="add|change", TEST=="/sys/firmware/acpi/platform_profile", RUN+="/bin/chmod 0666 /sys/firmware/acpi/platform_profile"
 
 # 2. Driver ideapad_acpi / ideapad_laptop (Modo de Conservação ~80%, Fn-Lock, Camera E-Shutter, USB Charging, Fan Mode)

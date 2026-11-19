@@ -87,8 +87,22 @@ def main():
         print(f"    - Remapper [{slot_id}]: Tecla '{cfg.get('qt_shortcut')}' -> Ação '{cfg.get('action')}' (Ativo: {cfg.get('enabled')})")
 
     # 8. Feature Discovery & UDEV
+    mux_info = backend.get_gpu_mux_info()
+    refresh_info = backend.get_display_refresh_info()
+    bios_attrs = backend.get_bios_attributes()
+    print("\n[+] GPU MUX Switch, Display Refresh & Ajustes de BIOS Lenovo:")
+    print(f"    - GPU MUX Mode:       {mux_info.current_mode.upper()} (Backend: {mux_info.backend_name} | Modos: {mux_info.available_modes})")
+    print(f"    - Taxa de Atualiz.:   {refresh_info.current_hz} Hz (Suportadas: {refresh_info.available_rates} | Display: {refresh_info.display_name} | Backend: {refresh_info.backend_name})")
+    print(f"    - Auto-Switch AC/Bat: {'ATIVO' if refresh_info.auto_switch_ac else 'DESATIVADO'} (Fn+R Ciclo)")
+    print(f"    - LCD Overdrive:      {'ATIVO' if backend.get_lcd_overdrive() else 'DESATIVADO'} (Suportado: {backend.is_lcd_overdrive_supported()})")
+    print(f"    - BIOS Lenovo WMI:    {len(bios_attrs)} atributos descobertos dinamicamente")
+
     print("\n[+] Feature Discovery & Permissões UDEV:")
     print(f"    - Fn-Lock: {feat.fn_lock} | Camera Power: {feat.camera_power} | USB Charging: {feat.usb_charging} | Kbd Backlight: {feat.kbd_backlight}")
+    print(f"    - Fan Control: {feat.fan_control} | CPU Undervolt: {feat.cpu_undervolt} | WMI GPU Offset: {feat.wmi_gpu_ac_offset} | Touchpad: {feat.touchpad_control}")
+    print(f"    - Wi-Fi PowerSave: {feat.wifi_power_save} | Ethernet PowerSave: {feat.eth_power_save} | LCD Overdrive: {feat.lcd_overdrive}")
+    caps = backend.get_detected_capabilities()
+    print(f"    - Recursos Liberados na UI ({len(caps)}): {', '.join(c['name'] for c in caps)}")
     print(f"    - Regra UDEV Ativa:   {'SIM' if PermissionsManager.is_udev_rule_installed() else 'NÃO'}")
     print(f"    - Escrita Direta:     {'LIBERADA' if backend.has_full_write_permissions() else 'REQUER REPARO UDEV'}")
     print("=" * 72)

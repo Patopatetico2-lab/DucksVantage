@@ -219,3 +219,44 @@ class VantageOSDOverlay(QWidget):
                 icon_path=os.path.join(ICON_DIR, "thermal_balanced.svg"),
                 accent_color=ThemeTokens.THERMAL_BALANCED
             )
+
+    def notify_refresh_rate(self, hz: int, reason: str = ""):
+        """Dispara o OSD para a taxa de atualização (Fn + R ou AC/Bateria)."""
+        sub = "Fn + R • Taxa de Atualização"
+        if reason == "ac":
+            sub = "Alimentação AC • Fluidez Máxima"
+        elif reason == "battery":
+            sub = "Modo Bateria • Economia de Energia"
+
+        self.show_osd(
+            title=f"Taxa de Atualização: {hz} Hz",
+            subtitle=sub,
+            icon_path=os.path.join(ICON_DIR, "refresh.svg"),
+            accent_color=ThemeTokens.BORDER_CYAN if hz > 60 else ThemeTokens.STATUS_GREEN
+        )
+
+    def notify_gpu_mux(self, mode: str, requires_reboot: bool = False):
+        """Dispara o OSD para a alteração de modo do GPU MUX Switch."""
+        mode_names = {
+            "hybrid": "Modo Híbrido (Optimus)",
+            "dedicated": "dGPU Exclusiva (Direct)",
+            "integrated": "iGPU Pura (Eco Extremo)",
+        }
+        title = mode_names.get(mode.lower(), f"GPU {mode.upper()}")
+        sub = "Reinicialização necessária para ativar" if requires_reboot else "Modo de GPU alterado com sucesso"
+        self.show_osd(
+            title=f"GPU MUX: {title}",
+            subtitle=sub,
+            icon_path=os.path.join(ICON_DIR, "gpu_stack.svg"),
+            accent_color=ThemeTokens.BORDER_CYAN if mode != "integrated" else ThemeTokens.STATUS_GREEN
+        )
+
+    def notify_lcd_overdrive(self, enabled: bool):
+        """Dispara o OSD para alteração do LCD Overdrive."""
+        self.show_osd(
+            title=f"LCD Overdrive: {'Ativado' if enabled else 'Desativado'}",
+            subtitle="Tempo de resposta acelerado (Anti-Ghosting)" if enabled else "Tempo de resposta padrão do painel",
+            icon_path=os.path.join(ICON_DIR, "refresh.svg"),
+            accent_color=ThemeTokens.BORDER_CYAN if enabled else ThemeTokens.TEXT_LIGHT_GRAY
+        )
+

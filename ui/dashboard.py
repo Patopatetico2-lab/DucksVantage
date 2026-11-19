@@ -180,12 +180,13 @@ class EdgeControlItem(QFrame):
 
 
 class KeyboardBacklightEdgeItem(QFrame):
-    """Widget compacto no painel EDGE para o brilho do teclado (Desligado, Baixo, Alto)."""
+    """Widget compacto no painel EDGE para o brilho do teclado (níveis descobertos dinamicamente)."""
     level_requested = Signal(int)
 
-    def __init__(self, supported: bool = True, parent=None):
+    def __init__(self, supported: bool = True, max_level: int = 2, parent=None):
         super().__init__(parent)
         self.supported = supported
+        self.max_level = max(1, int(max_level))
         self.current_level = 0
 
         self.setStyleSheet(f"""
@@ -216,10 +217,7 @@ class KeyboardBacklightEdgeItem(QFrame):
         title.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         t_col.addWidget(title)
 
-        sub_txt = (
-            "Controle via /sys/class/leds/platform::kbd_backlight"
-            if supported else "Controlado via EC de Hardware (Atalho Fn + Espaço)"
-        )
+        sub_txt = "Controle direto de brilho do teclado via LED do sistema."
         self.sub_lbl = QLabel(sub_txt)
         self.sub_lbl.setFont(QFont("Segoe UI", 8))
         self.sub_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY};")
@@ -228,11 +226,17 @@ class KeyboardBacklightEdgeItem(QFrame):
         top.addStretch()
         layout.addLayout(top)
 
-        # Linha inferior: 3 botões compactos (Desligado, Baixo, Alto)
+        # Linha inferior: botões conforme max_brightness real do teclado
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
         self.buttons = []
-        labels = [("Desligado", 0), ("Baixo", 1), ("Alto", 2)]
+        if self.max_level == 1:
+            labels = [("Desligado", 0), ("Ligado", 1)]
+        elif self.max_level == 2:
+            labels = [("Desligado", 0), ("Baixo", 1), ("Alto", 2)]
+        else:
+            mid = max(1, self.max_level // 2)
+            labels = [("Desligado", 0), ("Baixo", 1), ("Médio", mid), ("Alto", self.max_level)]
 
         for text, lvl in labels:
             btn = QPushButton(text)
@@ -288,6 +292,7 @@ class VantageDashboardView(QWidget):
     touchpad_toggled = Signal(bool)
     auto_power_toggled = Signal(bool)
     kbd_backlight_requested = Signal(int)
+    lcd_overdrive_toggled = Signal(bool)
 
     def __init__(self, backend, parent=None):
         super().__init__(parent)
@@ -314,10 +319,10 @@ class VantageDashboardView(QWidget):
         self.gauges_card = HardwareGaugesCard()
         left_col.addWidget(self.gauges_card)
 
-        # 2. Meio: Seletor Visual de Modo Térmico (Thermal Mode + Max-Power Dinâmico)
-        thermal_card = QFrame()
-        thermal_card.setProperty("class", "vantageCard")
-        thermal_card.setStyleSheet(f"""
+        # 2. Meio: Seletor Visual de Modo Térmico (Exibido apenas se o kernel liberar platform_profile)
+        self.thermal_card = QFrame()
+        self.thermal_card.setProperty("class", "vantageCard")
+        self.thermal_card.setStyleSheet(f"""
             QFrame.vantageCard {{
                 background-color: {ThemeTokens.BG_CARD};
                 border: 1px solid {ThemeTokens.BORDER_DEFAULT};
@@ -325,8 +330,17 @@ class VantageDashboardView(QWidget):
                 padding: 16px;
             }}
         """)
-        th_layout = QVBoxLayout(thermal_card)
+        th_layout = QVBoxLayout(self.thermal_card)
         th_layout.setSpacing(12)
+
+        supported_profiles = self.backend.get_supported_canonical_profiles()
+        prof_labels_map = {
+            "low-power": "Silencioso",
+            "balanced": "Equilibrado",
+            "performance": "Desempenho",
+            "max-power": "Max-Power",
+        }
+        supported_names = ", ".join(prof_labels_map[p] for p in supported_profiles if p in prof_labels_map) or "perfis disponíveis"
 
         th_header = QHBoxLayout()
         ic_gear = QLabel()
@@ -344,7 +358,7 @@ class VantageDashboardView(QWidget):
         shortcut_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         shortcut_btn.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         shortcut_btn.setToolTip(
-            "Pressione Fn + Q no teclado ou clique aqui para alternar entre Silencioso, Equilibrado, Desempenho e Max-Power."
+            f"Pressione Fn + Q no teclado ou clique aqui para alternar entre: {supported_names}."
         )
         shortcut_btn.setStyleSheet(f"""
             QPushButton {{
@@ -372,6 +386,7 @@ class VantageDashboardView(QWidget):
             "thermal_quiet.svg", ThemeTokens.THERMAL_QUIET
         )
         self.block_quiet.clicked.connect(self.profile_requested.emit)
+        self.block_quiet.setVisible("low-power" in supported_profiles)
         blocks_row.addWidget(self.block_quiet)
 
         self.block_balanced = ThermalBlock(
@@ -380,6 +395,7 @@ class VantageDashboardView(QWidget):
             "thermal_balanced.svg", ThemeTokens.THERMAL_BALANCED
         )
         self.block_balanced.clicked.connect(self.profile_requested.emit)
+        self.block_balanced.setVisible("balanced" in supported_profiles)
         blocks_row.addWidget(self.block_balanced)
 
         self.block_perf = ThermalBlock(
@@ -388,22 +404,21 @@ class VantageDashboardView(QWidget):
             "thermal_performance.svg", ThemeTokens.THERMAL_PERFORMANCE
         )
         self.block_perf.clicked.connect(self.profile_requested.emit)
+        self.block_perf.setVisible("performance" in supported_profiles)
         blocks_row.addWidget(self.block_perf)
 
-        # Descoberta Dinâmica do Perfil 'max-power' no Kernel (Incluído no ciclo Fn+Q)
-        if feat.max_power_profile:
-            self.block_max_power = ThermalBlock(
-                "max-power", "Max-Power",
-                "Potência extrema e rotação máxima das ventoinhas.",
-                "thermal_max_power.svg", ThemeTokens.THERMAL_CUSTOM
-            )
-            self.block_max_power.clicked.connect(self.profile_requested.emit)
-            blocks_row.addWidget(self.block_max_power)
-        else:
-            self.block_max_power = None
+        self.block_max_power = ThermalBlock(
+            "max-power", "Max-Power",
+            "Potência extrema e rotação máxima das ventoinhas.",
+            "thermal_max_power.svg", ThemeTokens.THERMAL_CUSTOM
+        )
+        self.block_max_power.clicked.connect(self.profile_requested.emit)
+        self.block_max_power.setVisible(bool(feat.max_power_profile or "max-power" in supported_profiles))
+        blocks_row.addWidget(self.block_max_power)
 
         th_layout.addLayout(blocks_row)
-        left_col.addWidget(thermal_card)
+        self.thermal_card.setVisible(bool(feat.platform_profile and supported_profiles))
+        left_col.addWidget(self.thermal_card)
 
         # 3. Base: Card Limpo de "Armazenamento & Refrigeração"
         storage_fan_card = QFrame()
@@ -453,10 +468,11 @@ class VantageDashboardView(QWidget):
 
         # =====================================================================
         # COLUNA DIREITA (35% de largura) - PAINEL VERTICAL DINÂMICO EDGE
+        # Exibe EXCLUSIVAMENTE os recursos realmente liberados pelo hardware!
         # =====================================================================
-        edge_card = QFrame()
-        edge_card.setProperty("class", "vantageCard")
-        edge_card.setStyleSheet(f"""
+        self.edge_card = QFrame()
+        self.edge_card.setProperty("class", "vantageCard")
+        self.edge_card.setStyleSheet(f"""
             QFrame.vantageCard {{
                 background-color: {ThemeTokens.BG_CARD};
                 border: 1px solid {ThemeTokens.BORDER_DEFAULT};
@@ -464,7 +480,7 @@ class VantageDashboardView(QWidget):
                 padding: 16px;
             }}
         """)
-        edge_layout = QVBoxLayout(edge_card)
+        edge_layout = QVBoxLayout(self.edge_card)
         edge_layout.setSpacing(8)
 
         # Cabeçalho Dinâmico (LEGION EDGE / LOQ EDGE / LENOVO EDGE • CONTROLES RÁPIDOS)
@@ -485,20 +501,27 @@ class VantageDashboardView(QWidget):
         self.item_eco_travel = EdgeControlItem(
             "eco_travel.svg",
             "Modo Viagem (Eco-Mode Extremo)",
-            "1-Clique: Conservação 80% + GPU D3cold + Turbo Off",
-            supported=True
+            self.backend.get_eco_travel_summary(),
+            supported=feat.eco_travel
         )
         self.item_eco_travel.toggled.connect(self.eco_travel_toggled.emit)
+        self.item_eco_travel.setVisible(feat.eco_travel)
         edge_layout.addWidget(self.item_eco_travel)
 
         # ELITE 2: Auto-Switching por Jogo (Steam / Heroic / Proton)
+        self._game_auto_default_sub = (
+            "Ativa Max-Power / Desempenho ao detectar jogo"
+            if feat.max_power_profile
+            else "Ativa modo Desempenho ao detectar jogo"
+        )
         self.item_game_auto = EdgeControlItem(
             "game_controller.svg",
             "Auto-Switch em Jogos (Smart)",
-            "Ativa Max-Power / Desempenho ao detectar jogo",
+            self._game_auto_default_sub,
             supported=feat.platform_profile
         )
         self.item_game_auto.toggled.connect(self.game_auto_toggled.emit)
+        self.item_game_auto.setVisible(feat.platform_profile)
         edge_layout.addWidget(self.item_game_auto)
 
         # 1. Modo de Conservação
@@ -509,6 +532,7 @@ class VantageDashboardView(QWidget):
             supported=feat.conservation_mode
         )
         self.item_conservation.toggled.connect(self.conservation_toggled.emit)
+        self.item_conservation.setVisible(feat.conservation_mode)
         edge_layout.addWidget(self.item_conservation)
 
         # 2. Carregamento Rápido (Rapid Charge)
@@ -519,6 +543,7 @@ class VantageDashboardView(QWidget):
             supported=feat.rapid_charge
         )
         self.item_rapid_charge.toggled.connect(self.rapid_charge_toggled.emit)
+        self.item_rapid_charge.setVisible(feat.rapid_charge)
         edge_layout.addWidget(self.item_rapid_charge)
 
         # 3. Trava de Teclas Fn (Fn-Lock)
@@ -529,6 +554,7 @@ class VantageDashboardView(QWidget):
             supported=feat.fn_lock
         )
         self.item_fn_lock.toggled.connect(self.fn_lock_toggled.emit)
+        self.item_fn_lock.setVisible(feat.fn_lock)
         edge_layout.addWidget(self.item_fn_lock)
 
         # 4. Obturador Eletrônico da Câmera (E-Shutter)
@@ -539,22 +565,21 @@ class VantageDashboardView(QWidget):
             supported=feat.camera_power
         )
         self.item_camera.toggled.connect(self.camera_toggled.emit)
+        self.item_camera.setVisible(feat.camera_power)
         edge_layout.addWidget(self.item_camera)
 
-        # 5. Always-On USB Charging (Exibido se existir no ACPI)
-        if feat.usb_charging:
-            self.item_usb = EdgeControlItem(
-                "edge_usb.svg",
-                "Always-On USB Charging",
-                "Mantém portas USB energizadas em repouso.",
-                supported=True
-            )
-            self.item_usb.toggled.connect(self.usb_charging_toggled.emit)
-            edge_layout.addWidget(self.item_usb)
-        else:
-            self.item_usb = None
+        # 5. Always-On USB Charging (Exibido apenas se existir no ACPI)
+        self.item_usb = EdgeControlItem(
+            "edge_usb.svg",
+            "Always-On USB Charging",
+            "Mantém portas USB energizadas em repouso.",
+            supported=feat.usb_charging
+        )
+        self.item_usb.toggled.connect(self.usb_charging_toggled.emit)
+        self.item_usb.setVisible(feat.usb_charging)
+        edge_layout.addWidget(self.item_usb)
 
-        # 6. Bloqueio do Touchpad
+        # 6. Bloqueio do Touchpad (Exibido apenas se houver touchpad + controle real)
         self.item_touchpad = EdgeControlItem(
             "edge_touchpad.svg",
             "Trava do Touchpad",
@@ -562,25 +587,50 @@ class VantageDashboardView(QWidget):
             supported=feat.touchpad_control
         )
         self.item_touchpad.toggled.connect(self.touchpad_toggled.emit)
+        self.item_touchpad.setVisible(feat.touchpad_control)
         edge_layout.addWidget(self.item_touchpad)
 
         # 7. Transição Automática AC / Bateria
+        show_auto_power = bool(feat.platform_profile and feat.battery)
         self.item_auto_power = EdgeControlItem(
             "power.svg",
             "Transição Automática AC",
             "Alterna perfil ao conectar/remover tomada.",
-            supported=feat.platform_profile
+            supported=show_auto_power
         )
         self.item_auto_power.toggled.connect(self.auto_power_toggled.emit)
+        self.item_auto_power.setVisible(show_auto_power)
         edge_layout.addWidget(self.item_auto_power)
 
-        # 8. Controle de Brilho do Teclado (Desligado, Baixo, Alto)
-        self.item_kbd_backlight = KeyboardBacklightEdgeItem(supported=feat.kbd_backlight)
+        # 8. Controle de Brilho do Teclado (Exibido apenas se o kernel expuser kbd_backlight)
+        self.item_kbd_backlight = KeyboardBacklightEdgeItem(
+            supported=feat.kbd_backlight,
+            max_level=feat.kbd_max_brightness
+        )
         self.item_kbd_backlight.level_requested.connect(self.kbd_backlight_requested.emit)
+        self.item_kbd_backlight.setVisible(feat.kbd_backlight)
         edge_layout.addWidget(self.item_kbd_backlight)
 
+        # 9. LCD Overdrive (Exibido apenas se a BIOS/painel expuser Overdrive)
+        self.item_lcd_overdrive = EdgeControlItem(
+            "refresh.svg",
+            "LCD Overdrive",
+            "Acelera tempo de resposta (anti-ghosting).",
+            supported=feat.lcd_overdrive
+        )
+        self.item_lcd_overdrive.toggled.connect(self.lcd_overdrive_toggled.emit)
+        self.item_lcd_overdrive.setVisible(feat.lcd_overdrive)
+        edge_layout.addWidget(self.item_lcd_overdrive)
+
+        any_edge_item = any((
+            feat.eco_travel, feat.platform_profile, feat.conservation_mode,
+            feat.rapid_charge, feat.fn_lock, feat.camera_power, feat.usb_charging,
+            feat.touchpad_control, show_auto_power, feat.kbd_backlight, feat.lcd_overdrive
+        ))
+        self.edge_card.setVisible(any_edge_item)
+
         edge_layout.addStretch()
-        main_layout.addWidget(edge_card, stretch=35)
+        main_layout.addWidget(self.edge_card, stretch=35)
 
         scroll.setWidget(container)
         root_layout = QVBoxLayout(self)
@@ -619,14 +669,15 @@ class VantageDashboardView(QWidget):
         self.gauges_card.update_metrics(cpu, gpu, ram)
 
         # 2. Thermal Mode (incluindo Max-Power dinâmico)
-        prof = self.backend.normalize_profile(self.backend.get_platform_profile())
-        self.block_quiet.set_active(prof in ("low-power", "quiet"))
-        self.block_balanced.set_active(prof == "balanced")
-        if self.block_max_power:
-            self.block_perf.set_active(prof == "performance")
-            self.block_max_power.set_active(prof == "max-power")
-        else:
-            self.block_perf.set_active(prof in ("performance", "max-power"))
+        if self.backend.features.platform_profile:
+            prof = self.backend.normalize_profile(self.backend.get_platform_profile())
+            self.block_quiet.set_active(prof in ("low-power", "quiet"))
+            self.block_balanced.set_active(prof == "balanced")
+            if self.block_max_power and not self.block_max_power.isHidden():
+                self.block_perf.set_active(prof == "performance")
+                self.block_max_power.set_active(prof == "max-power")
+            else:
+                self.block_perf.set_active(prof in ("performance", "max-power"))
 
         # 3. Card de Armazenamento & Refrigeração
         if disks:
@@ -645,18 +696,33 @@ class VantageDashboardView(QWidget):
                 self.lbl_ssd_temp.setText("N/A")
 
         self.lbl_fan_rpm.setText(fan.status_label)
-        boost_str = "Boost ON" if cpu.turbo_enabled else "Boost OFF"
-        self.lbl_cpu_gov.setText(f"{cpu.governor} • {boost_str} ({cpu.pl1_w}/{cpu.pl2_w}W)")
-        self.lbl_gpu_state.setText(f"{gpu.runtime_state} ({gpu.pstate})" if gpu.available else "D3cold (Suspensa)")
+        cpu_parts = []
+        if self.backend.features.cpu_governor:
+            cpu_parts.append(cpu.governor)
+        if cpu.turbo_supported:
+            cpu_parts.append("Boost ON" if cpu.turbo_enabled else "Boost OFF")
+        cpu_line = " • ".join(cpu_parts) if cpu_parts else f"{cpu.frequency_mhz:.0f} MHz"
+        if cpu.pl_supported:
+            cpu_line += f" ({cpu.pl1_w}/{cpu.pl2_w}W)"
+        self.lbl_cpu_gov.setText(cpu_line)
 
-        # 4. Sincronizar Switches do Painel EDGE
-        self.item_eco_travel.set_checked(self.backend.get_eco_travel_mode())
-        self.item_game_auto.set_checked(self.backend.get_game_auto_switch())
-        active_game = self.backend.get_active_game()
-        if active_game:
-            self.item_game_auto.set_subtitle(f"JOGO ATIVO: {active_game}", ThemeTokens.STATUS_GREEN)
+        if gpu.available:
+            self.lbl_gpu_state.setText(f"{gpu.runtime_state} ({gpu.pstate})")
+        elif self.backend.paths.nvidia_drm_card:
+            self.lbl_gpu_state.setText("D3cold (Suspensa)")
         else:
-            self.item_game_auto.set_subtitle("Ativa Max-Power / Desempenho ao detectar jogo")
+            self.lbl_gpu_state.setText("Integrada / N/A")
+
+        # 4. Sincronizar Switches do Painel EDGE (somente os suportados)
+        if self.backend.features.eco_travel:
+            self.item_eco_travel.set_checked(self.backend.get_eco_travel_mode())
+        if self.backend.features.platform_profile:
+            self.item_game_auto.set_checked(self.backend.get_game_auto_switch())
+            active_game = self.backend.get_active_game()
+            if active_game:
+                self.item_game_auto.set_subtitle(f"JOGO ATIVO: {active_game}", ThemeTokens.STATUS_GREEN)
+            else:
+                self.item_game_auto.set_subtitle(self._game_auto_default_sub)
 
         if self.backend.features.conservation_mode:
             self.item_conservation.set_checked(self.backend.get_conservation_mode())
@@ -666,11 +732,13 @@ class VantageDashboardView(QWidget):
             self.item_fn_lock.set_checked(self.backend.get_fn_lock())
         if self.backend.features.camera_power:
             self.item_camera.set_checked(self.backend.get_camera_power())
-        if self.item_usb and self.backend.features.usb_charging:
+        if self.backend.features.usb_charging:
             self.item_usb.set_checked(self.backend.get_usb_charging())
-
-        self.item_touchpad.set_checked(self.backend.get_touchpad_status())
-        self.item_auto_power.set_checked(self.backend.get_auto_power_transition())
-
+        if self.backend.features.touchpad_control:
+            self.item_touchpad.set_checked(self.backend.get_touchpad_status())
+        if self.backend.features.platform_profile and self.backend.features.battery:
+            self.item_auto_power.set_checked(self.backend.get_auto_power_transition())
         if self.backend.features.kbd_backlight:
             self.item_kbd_backlight.set_level(self.backend.get_kbd_backlight())
+        if self.backend.features.lcd_overdrive:
+            self.item_lcd_overdrive.set_checked(self.backend.get_lcd_overdrive())

@@ -90,6 +90,59 @@ class AboutTab(QWidget):
         layout.addWidget(info_card)
 
         # =====================================================================
+        # 1.5 Card de Recursos Liberados por Este Hardware (Auto-Discovery)
+        # =====================================================================
+        caps = self.backend.get_detected_capabilities()
+        self.caps_card = QFrame()
+        self.caps_card.setProperty("class", "card")
+        caps_layout = QVBoxLayout(self.caps_card)
+        caps_layout.setContentsMargins(20, 18, 20, 18)
+        caps_layout.setSpacing(12)
+
+        caps_header = QHBoxLayout()
+        c_icon = QLabel()
+        tools_path = os.path.join(ICON_DIR, "tools.svg")
+        if os.path.exists(tools_path):
+            c_icon.setPixmap(QPixmap(tools_path).scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        caps_header.addWidget(c_icon)
+
+        caps_titles = QVBoxLayout()
+        caps_titles.setSpacing(2)
+        caps_title = QLabel("Recursos Liberados por Este Notebook (Auto-Discovery)")
+        caps_title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        caps_title.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        caps_titles.addWidget(caps_title)
+
+        caps_sub = QLabel(
+            f"A interface foi adaptada automaticamente para o {sys.display_model_name}, exibindo apenas as funções suportadas pelo hardware e kernel."
+        )
+        caps_sub.setWordWrap(True)
+        caps_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        caps_titles.addWidget(caps_sub)
+        caps_header.addLayout(caps_titles, stretch=1)
+
+        self.caps_badge = StatusBadge(
+            f"{len(caps)} {'RECURSO ATIVO' if len(caps) == 1 else 'RECURSOS ATIVOS'}",
+            bg_color="#064e3b",
+            text_color="#34d399"
+        )
+        caps_header.addWidget(self.caps_badge)
+        caps_layout.addLayout(caps_header)
+
+        if caps:
+            caps_grid = QGridLayout()
+            caps_grid.setSpacing(10)
+            for idx, cap in enumerate(caps):
+                self._add_spec_item(caps_grid, idx // 3, idx % 3, cap["name"], cap["detail"])
+            caps_layout.addLayout(caps_grid)
+        else:
+            empty_lbl = QLabel("Nenhum controle proprietário ACPI/WMI foi exposto pelo kernel atual.")
+            empty_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+            caps_layout.addWidget(empty_lbl)
+
+        layout.addWidget(self.caps_card)
+
+        # =====================================================================
         # 2. Card de Inicialização Automática Universal (XDG Autostart)
         # =====================================================================
         autostart_card = QFrame()

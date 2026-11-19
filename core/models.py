@@ -137,6 +137,7 @@ class SystemInfo:
 @dataclass
 class HardwareFeatures:
     platform_profile: bool = False
+    available_profiles: List[str] = field(default_factory=list)
     max_power_profile: bool = False
     conservation_mode: bool = False
     rapid_charge: bool = False
@@ -148,7 +149,21 @@ class HardwareFeatures:
     turbo_boost: bool = False
     cpu_governor: bool = False
     custom_tdp: bool = False
-    touchpad_control: bool = True
+    fan_control: bool = False
+    wmi_cpu_temp: bool = False
+    wmi_gpu_temp: bool = False
+    cpu_undervolt: bool = False
+    wmi_gpu_ac_offset: bool = False
+    touchpad_control: bool = False
+    gpu_telemetry: bool = False
+    gpu_mux: bool = False
+    refresh_rate: bool = False
+    lcd_overdrive: bool = False
+    bios_attributes: bool = False
+    battery: bool = False
+    wifi_power_save: bool = False
+    eth_power_save: bool = False
+    eco_travel: bool = False
 
 
 @dataclass
@@ -157,10 +172,12 @@ class HardwarePaths:
     platform_profile: Optional[str] = None
     platform_profile_choices: Optional[str] = None
     conservation_mode: Optional[str] = None
+    rapid_charge: Optional[str] = None
     charge_types: Optional[str] = None
     fn_lock: Optional[str] = None
     camera_power: Optional[str] = None
     usb_charging: Optional[str] = None
+    touchpad: Optional[str] = None
     fan_mode: Optional[str] = None
     kbd_backlight: Optional[str] = None
     kbd_max_backlight: Optional[str] = None
@@ -185,11 +202,13 @@ class HardwarePaths:
     lenovo_wmi_attr_dir: Optional[str] = None
     hwmon_pwm1: Optional[str] = None
     hwmon_pwm1_enable: Optional[str] = None
+    lcd_overdrive: Optional[str] = None
+    gpu_mode: Optional[str] = None
 
 
 @dataclass
 class UndervoltStatus:
-    supported: bool = True
+    supported: bool = False
     cpu_vendor: str = "Intel"
     method: str = "MSR 0x150 (Intel OC Mailbox)"
     core_offset_mv: int = 0
@@ -219,4 +238,42 @@ class AppProfileRule:
     label: str = ""
     profile: str = "performance"
     enabled: bool = True
+
+
+@dataclass
+class GpuMuxInfo:
+    available: bool = False
+    current_mode: str = "hybrid"  # "hybrid", "dedicated", "integrated"
+    available_modes: List[str] = field(default_factory=lambda: ["hybrid", "dedicated", "integrated"])
+    backend_name: str = "none"    # "supergfxctl", "envycontrol", "prime-select", "lenovo-wmi", "sysfs", "none"
+    requires_reboot: bool = False
+    pending_mode: Optional[str] = None
+    message: str = ""
+
+
+@dataclass
+class DisplayRefreshInfo:
+    available: bool = False
+    current_hz: int = 60
+    available_rates: List[int] = field(default_factory=lambda: [60])
+    display_name: str = ""
+    resolution: str = ""
+    backend_name: str = "none"  # "kscreen-doctor", "wlr-randr", "xrandr", "drm"
+    auto_switch_ac: bool = True
+
+
+@dataclass
+class BiosAttribute:
+    attr_id: str
+    display_name: str
+    category: str = "Geral"  # "Tela & Vídeo", "Energia & Boot", "Ajustes Térmicos & Potência", "Geral"
+    attr_type: str = "enumeration"  # "boolean", "integer", "enumeration"
+    current_value: str = ""
+    default_value: str = ""
+    min_value: Optional[int] = None
+    max_value: Optional[int] = None
+    scalar_increment: int = 1
+    possible_values: List[str] = field(default_factory=list)
+    path: str = ""
+
 

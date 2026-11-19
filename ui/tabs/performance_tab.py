@@ -13,12 +13,14 @@ Zero emojis: utiliza exclusivamente ícones vetoriais SVG.
 """
 
 import os
+import shutil
 from typing import Dict, Any, List, Tuple, Optional
 from core.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame,
     QPushButton, QScrollArea, QSlider, QComboBox, QLineEdit,
     Qt, QTimer, Signal, QFont, QMessageBox, QPixmap, QKeySequence,
-    QPainter, QColor, QPen, QBrush, QLinearGradient, QPointF, QPainterPath
+    QPainter, QColor, QPen, QBrush, QLinearGradient, QPointF, QPainterPath,
+    QSizePolicy
 )
 from ui.theme_tokens import ThemeTokens
 from ui.components import ProfileCard, ToggleSwitch, StatusBadge
@@ -27,6 +29,7 @@ ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.
 
 AVAILABLE_KEY_ACTIONS: List[Tuple[str, str]] = [
     ("cycle_profile", "Alternar Modo Térmico (Ciclo com OSD)"),
+    ("cycle_refresh_rate", "Alternar Taxa de Atualização de Tela (Fn+R)"),
     ("toggle_max_power", "Ativar / Desativar Desempenho Máximo (Max-Power)"),
     ("toggle_eco_mode", "Ativar / Desativar Modo Viagem (Eco-Mode Extremo)"),
     ("toggle_window", "Abrir / Minimizar Janela do Ducksvantage"),
@@ -42,6 +45,84 @@ PROFILE_COMBO_ITEMS: List[Tuple[str, str]] = [
     ("balanced", "Modo Equilibrado (Balanced)"),
     ("low-power", "Modo Silencioso (Economia)"),
 ]
+
+
+class GpuModeBlock(QFrame):
+    """Bloco seletor individual de modo para o GPU MUX Switch (Híbrido vs dGPU vs iGPU)."""
+    clicked = Signal(str)
+
+    def __init__(self, mode_id: str, title: str, subtitle: str, accent_color: str, parent=None):
+        super().__init__(parent)
+        self.mode_id = mode_id
+        self.accent_color = accent_color
+        self.is_active = False
+
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(6)
+
+        top = QHBoxLayout()
+        self.badge = QLabel("ATIVO")
+        self.badge.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        self.badge.setVisible(False)
+        top.addStretch()
+        top.addWidget(self.badge)
+        layout.addLayout(top)
+
+        self.title_lbl = QLabel(title)
+        self.title_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self.title_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        layout.addWidget(self.title_lbl)
+
+        self.sub_lbl = QLabel(subtitle)
+        self.sub_lbl.setWordWrap(True)
+        self.sub_lbl.setFont(QFont("Segoe UI", 9))
+        self.sub_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY};")
+        layout.addWidget(self.sub_lbl)
+
+        self.update_style()
+
+    def set_active(self, active: bool):
+        self.is_active = active
+        self.badge.setVisible(active)
+        if active:
+            self.badge.setStyleSheet(f"""
+                background-color: {self.accent_color};
+                color: #0b0f19;
+                padding: 2px 7px;
+                border-radius: 4px;
+            """)
+        self.update_style()
+
+    def update_style(self):
+        if self.is_active:
+            self.setStyleSheet(f"""
+                GpuModeBlock {{
+                    background-color: {ThemeTokens.BG_CARD_ACTIVE};
+                    border: 2px solid {self.accent_color};
+                    border-radius: {ThemeTokens.RADIUS_CARD}px;
+                }}
+            """)
+        else:
+            self.setStyleSheet(f"""
+                GpuModeBlock {{
+                    background-color: {ThemeTokens.BG_CARD_HOVER};
+                    border: 1px solid {ThemeTokens.BORDER_DEFAULT};
+                    border-radius: {ThemeTokens.RADIUS_CARD}px;
+                }}
+                GpuModeBlock:hover {{
+                    border-color: {self.accent_color};
+                }}
+            """)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self.mode_id)
+        super().mousePressEvent(event)
+
 
 
 class FanCurveWidget(QWidget):
@@ -428,12 +509,18 @@ class PerformanceTab(QWidget):
     profile_changed = Signal(str)
     shortcuts_updated = Signal()
     custom_action_requested = Signal(str, str)
+    gpu_mux_changed = Signal(str, bool)
+    refresh_rate_changed = Signal(int)
+    lcd_overdrive_changed = Signal(bool)
 
     def __init__(self, backend, parent=None):
         super().__init__(parent)
         self.backend = backend
         self.cards = {}
         self.gov_buttons = {}
+        self.mux_blocks: Dict[str, GpuModeBlock] = {}
+        self.refresh_rate_buttons: Dict[int, QPushButton] = {}
+        self.bios_attr_widgets: Dict[str, Any] = {}
         self._watchdog_seconds = 0
         self._watchdog_timer = QTimer(self)
         self._watchdog_timer.setInterval(1000)
@@ -452,9 +539,10 @@ class PerformanceTab(QWidget):
         # =====================================================================
         # 1. Controles Avançados da CPU (Turbo Boost + Scaling Governor)
         # =====================================================================
-        cpu_card = QFrame()
-        cpu_card.setProperty("class", "card")
-        cpu_layout = QVBoxLayout(cpu_card)
+        feat = self.backend.features
+        self.cpu_card = QFrame()
+        self.cpu_card.setProperty("class", "card")
+        cpu_layout = QVBoxLayout(self.cpu_card)
         cpu_layout.setContentsMargins(20, 18, 20, 18)
         cpu_layout.setSpacing(14)
 
@@ -471,7 +559,13 @@ class PerformanceTab(QWidget):
         self.cpu_title_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         cpu_titles.addWidget(self.cpu_title_lbl)
 
-        cpu_sub = QLabel("Ajuste direto de frequências dinâmicas (Turbo Boost) e governador do escalonador Linux.")
+        if feat.turbo_boost and feat.cpu_governor:
+            cpu_sub_txt = "Ajuste direto de frequências dinâmicas (Turbo Boost) e governador do escalonador Linux."
+        elif feat.turbo_boost:
+            cpu_sub_txt = "Ajuste direto de frequências dinâmicas (Turbo Boost) do processador."
+        else:
+            cpu_sub_txt = "Seleção do governador de frequência do escalonador Linux."
+        cpu_sub = QLabel(cpu_sub_txt)
         cpu_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         cpu_titles.addWidget(cpu_sub)
         cpu_header.addLayout(cpu_titles)
@@ -482,9 +576,9 @@ class PerformanceTab(QWidget):
         cpu_layout.addLayout(cpu_header)
 
         # Linha 1: Chave CPU Turbo Boost
-        turbo_box = QFrame()
-        turbo_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
-        turbo_row = QHBoxLayout(turbo_box)
+        self.turbo_box = QFrame()
+        self.turbo_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
+        turbo_row = QHBoxLayout(self.turbo_box)
         turbo_row.setContentsMargins(8, 6, 8, 6)
 
         t_info = QVBoxLayout()
@@ -500,15 +594,16 @@ class PerformanceTab(QWidget):
         turbo_row.addStretch()
 
         self.turbo_switch = ToggleSwitch()
-        self.turbo_switch.setEnabled(self.backend.features.turbo_boost)
+        self.turbo_switch.setEnabled(feat.turbo_boost)
         self.turbo_switch.toggled.connect(self._on_turbo_toggled)
         turbo_row.addWidget(self.turbo_switch)
-        cpu_layout.addWidget(turbo_box)
+        self.turbo_box.setVisible(feat.turbo_boost)
+        cpu_layout.addWidget(self.turbo_box)
 
         # Linha 2: Seletor de CPU Scaling Governor
-        gov_box = QFrame()
-        gov_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
-        gov_row = QHBoxLayout(gov_box)
+        self.gov_box = QFrame()
+        self.gov_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
+        gov_row = QHBoxLayout(self.gov_box)
         gov_row.setContentsMargins(8, 6, 8, 6)
 
         g_info = QVBoxLayout()
@@ -524,26 +619,31 @@ class PerformanceTab(QWidget):
         gov_row.addStretch()
 
         avail_govs = self.backend.get_available_cpu_governors()
-        for gov_name in ("powersave", "performance"):
-            if gov_name in avail_govs or not avail_govs:
-                btn = QPushButton(gov_name.upper())
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setFixedHeight(30)
-                btn.setMinimumWidth(115)
-                btn.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
-                btn.clicked.connect(lambda checked, g=gov_name: self._on_governor_selected(g))
-                gov_row.addWidget(btn)
-                self.gov_buttons[gov_name] = btn
+        ordered_govs = [g for g in ("powersave", "performance", "schedutil", "ondemand", "conservative") if g in avail_govs]
+        for g in avail_govs:
+            if g not in ordered_govs:
+                ordered_govs.append(g)
+        for gov_name in ordered_govs:
+            btn = QPushButton(gov_name.upper())
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedHeight(30)
+            btn.setMinimumWidth(115)
+            btn.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            btn.clicked.connect(lambda checked, g=gov_name: self._on_governor_selected(g))
+            gov_row.addWidget(btn)
+            self.gov_buttons[gov_name] = btn
 
-        cpu_layout.addWidget(gov_box)
-        layout.addWidget(cpu_card)
+        self.gov_box.setVisible(bool(feat.cpu_governor and self.gov_buttons))
+        cpu_layout.addWidget(self.gov_box)
+        self.cpu_card.setVisible(bool(feat.turbo_boost or (feat.cpu_governor and self.gov_buttons)))
+        layout.addWidget(self.cpu_card)
 
         # =====================================================================
         # 2. NOVA FUNCIONALIDADE 1: Editor de Curva de Ventoinhas Personalizada + Limites TDP/WMI
         # =====================================================================
-        tdp_card = QFrame()
-        tdp_card.setProperty("class", "card")
-        tdp_layout = QVBoxLayout(tdp_card)
+        self.tdp_card = QFrame()
+        self.tdp_card.setProperty("class", "card")
+        tdp_layout = QVBoxLayout(self.tdp_card)
         tdp_layout.setContentsMargins(20, 18, 20, 18)
         tdp_layout.setSpacing(14)
 
@@ -557,28 +657,36 @@ class PerformanceTab(QWidget):
         tdp_header.addWidget(ic_tdp)
 
         tdp_titles = QVBoxLayout()
-        tdp_t = QLabel("Gestão Térmica • Editor de Curva de Ventoinhas (EC) & Limites TDP (PL1/PL2)")
+        if feat.fan_control and feat.custom_tdp:
+            tdp_title_txt = "Gestão Térmica • Editor de Curva de Ventoinhas (EC) & Limites TDP (PL1/PL2)"
+            tdp_sub_txt = "Arraste os pontos de controle (°C vs PWM% / RPM) e ajuste os limites de potência PL1/PL2 da CPU."
+        elif feat.fan_control:
+            tdp_title_txt = "Gestão Térmica • Editor de Curva de Ventoinhas (EC)"
+            tdp_sub_txt = "Arraste os pontos de controle (°C vs PWM% / RPM) para criar curvas passivas 0 RPM ou rampas agressivas."
+        else:
+            tdp_title_txt = "Gestão Térmica • Limites de Potência TDP (PL1/PL2)"
+            tdp_sub_txt = "Ajuste os limites de potência sustentada (PL1) e de pico (PL2) da CPU via Intel RAPL."
+        tdp_t = QLabel(tdp_title_txt)
         tdp_t.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         tdp_t.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         tdp_titles.addWidget(tdp_t)
 
-        tdp_sub = QLabel(
-            "Arraste os pontos de controle (°C vs PWM% / RPM) para criar curvas passivas 0 RPM ou rampas agressivas no EC da Lenovo."
-        )
+        tdp_sub = QLabel(tdp_sub_txt)
         tdp_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         tdp_titles.addWidget(tdp_sub)
         tdp_header.addLayout(tdp_titles)
         tdp_header.addStretch()
 
         self.tdp_badge = StatusBadge("PL1: --W | PL2: --W", bg_color="#581c87", text_color="#e9d5ff")
+        self.tdp_badge.setVisible(feat.custom_tdp)
         tdp_header.addWidget(self.tdp_badge)
         tdp_layout.addLayout(tdp_header)
 
         # Barra de ativação da Curva Customizada no Embedded Controller
         fan_cfg = self.backend.get_custom_fan_curve()
-        fan_ctrl_box = QFrame()
-        fan_ctrl_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
-        fan_ctrl_layout = QVBoxLayout(fan_ctrl_box)
+        self.fan_ctrl_box = QFrame()
+        self.fan_ctrl_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
+        fan_ctrl_layout = QVBoxLayout(self.fan_ctrl_box)
         fan_ctrl_layout.setSpacing(10)
 
         fc_top = QHBoxLayout()
@@ -608,17 +716,23 @@ class PerformanceTab(QWidget):
         self.fan_curve_widget.curve_changed.connect(self._on_fan_curve_points_dragged)
         fan_ctrl_layout.addWidget(self.fan_curve_widget)
 
-        # Sliders de Limites Térmicos WMI (CPU Temp Limit & GPU Temp Limit)
-        wmi_temp_row = QHBoxLayout()
+        # Sliders de Limites Térmicos WMI (exibidos apenas se o hardware expuser cpu_temp / gpu_temp)
+        self.wmi_temp_widget = QWidget()
+        wmi_temp_row = QHBoxLayout(self.wmi_temp_widget)
+        wmi_temp_row.setContentsMargins(0, 0, 0, 0)
         wmi_temp_row.setSpacing(16)
 
         init_cpu_t = int(fan_cfg.get("cpu_temp_limit", 94))
         init_gpu_t = int(fan_cfg.get("gpu_temp_limit", 87))
 
+        self.wmi_cpu_temp_widget = QWidget()
+        wmi_cpu_l = QHBoxLayout(self.wmi_cpu_temp_widget)
+        wmi_cpu_l.setContentsMargins(0, 0, 0, 0)
+        wmi_cpu_l.setSpacing(8)
         self.lbl_wmi_cpu_temp = QLabel(f"Alvo Térmico WMI CPU: {init_cpu_t}°C")
         self.lbl_wmi_cpu_temp.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         self.lbl_wmi_cpu_temp.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; min-width: 170px;")
-        wmi_temp_row.addWidget(self.lbl_wmi_cpu_temp)
+        wmi_cpu_l.addWidget(self.lbl_wmi_cpu_temp)
 
         self.slider_wmi_cpu_temp = QSlider(Qt.Orientation.Horizontal)
         self.slider_wmi_cpu_temp.setRange(85, 100)
@@ -626,12 +740,18 @@ class PerformanceTab(QWidget):
         self.slider_wmi_cpu_temp.valueChanged.connect(
             lambda v: self.lbl_wmi_cpu_temp.setText(f"Alvo Térmico WMI CPU: {v}°C")
         )
-        wmi_temp_row.addWidget(self.slider_wmi_cpu_temp, stretch=1)
+        wmi_cpu_l.addWidget(self.slider_wmi_cpu_temp, stretch=1)
+        self.wmi_cpu_temp_widget.setVisible(feat.wmi_cpu_temp)
+        wmi_temp_row.addWidget(self.wmi_cpu_temp_widget, stretch=1)
 
+        self.wmi_gpu_temp_widget = QWidget()
+        wmi_gpu_l = QHBoxLayout(self.wmi_gpu_temp_widget)
+        wmi_gpu_l.setContentsMargins(0, 0, 0, 0)
+        wmi_gpu_l.setSpacing(8)
         self.lbl_wmi_gpu_temp = QLabel(f"Alvo Térmico WMI GPU: {init_gpu_t}°C")
         self.lbl_wmi_gpu_temp.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
         self.lbl_wmi_gpu_temp.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; min-width: 170px;")
-        wmi_temp_row.addWidget(self.lbl_wmi_gpu_temp)
+        wmi_gpu_l.addWidget(self.lbl_wmi_gpu_temp)
 
         self.slider_wmi_gpu_temp = QSlider(Qt.Orientation.Horizontal)
         self.slider_wmi_gpu_temp.setRange(75, 87)
@@ -639,13 +759,16 @@ class PerformanceTab(QWidget):
         self.slider_wmi_gpu_temp.valueChanged.connect(
             lambda v: self.lbl_wmi_gpu_temp.setText(f"Alvo Térmico WMI GPU: {v}°C")
         )
-        wmi_temp_row.addWidget(self.slider_wmi_gpu_temp, stretch=1)
-        fan_ctrl_layout.addLayout(wmi_temp_row)
+        wmi_gpu_l.addWidget(self.slider_wmi_gpu_temp, stretch=1)
+        self.wmi_gpu_temp_widget.setVisible(feat.wmi_gpu_temp)
+        wmi_temp_row.addWidget(self.wmi_gpu_temp_widget, stretch=1)
+
+        self.wmi_temp_widget.setVisible(bool(feat.wmi_cpu_temp or feat.wmi_gpu_temp))
+        fan_ctrl_layout.addWidget(self.wmi_temp_widget)
 
         # Linha de Presets da Curva de Ventoinhas + Botão Aplicar no EC
         fc_preset_row = QHBoxLayout()
         fc_preset_row.setSpacing(8)
-        presets = self.backend.get_fan_curve_presets()
         for p_key, p_title in [
             ("passive_gaming", "Passivo 0 RPM + Gaming"),
             ("silent", "Ultra Silencioso"),
@@ -696,13 +819,14 @@ class PerformanceTab(QWidget):
         fc_preset_row.addWidget(self.btn_apply_fan_curve)
         fan_ctrl_layout.addLayout(fc_preset_row)
 
-        tdp_layout.addWidget(fan_ctrl_box)
+        self.fan_ctrl_box.setVisible(feat.fan_control)
+        tdp_layout.addWidget(self.fan_ctrl_box)
 
         # Sliders PL1 e PL2 (Intel RAPL)
         init_pl1, init_pl2 = self.backend.get_cpu_tdp_limits()
-        sliders_box = QFrame()
-        sliders_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 12px;")
-        s_layout = QVBoxLayout(sliders_box)
+        self.sliders_box = QFrame()
+        self.sliders_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 12px;")
+        s_layout = QVBoxLayout(self.sliders_box)
         s_layout.setSpacing(10)
 
         pl1_row = QHBoxLayout()
@@ -714,7 +838,7 @@ class PerformanceTab(QWidget):
         self.slider_pl1 = QSlider(Qt.Orientation.Horizontal)
         self.slider_pl1.setRange(15, 90)
         self.slider_pl1.setValue(init_pl1)
-        self.slider_pl1.setEnabled(self.backend.features.custom_tdp)
+        self.slider_pl1.setEnabled(feat.custom_tdp)
         self.slider_pl1.valueChanged.connect(self._on_pl1_slider_changed)
         pl1_row.addWidget(self.slider_pl1, stretch=1)
         s_layout.addLayout(pl1_row)
@@ -728,7 +852,7 @@ class PerformanceTab(QWidget):
         self.slider_pl2 = QSlider(Qt.Orientation.Horizontal)
         self.slider_pl2.setRange(20, 115)
         self.slider_pl2.setValue(init_pl2)
-        self.slider_pl2.setEnabled(self.backend.features.custom_tdp)
+        self.slider_pl2.setEnabled(feat.custom_tdp)
         self.slider_pl2.valueChanged.connect(self._on_pl2_slider_changed)
         pl2_row.addWidget(self.slider_pl2, stretch=1)
         s_layout.addLayout(pl2_row)
@@ -766,7 +890,7 @@ class PerformanceTab(QWidget):
         self.btn_apply_tdp = QPushButton("Aplicar Limites TDP")
         self.btn_apply_tdp.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_apply_tdp.setFixedHeight(30)
-        self.btn_apply_tdp.setEnabled(self.backend.features.custom_tdp)
+        self.btn_apply_tdp.setEnabled(feat.custom_tdp)
         self.btn_apply_tdp.setStyleSheet(f"""
             QPushButton {{
                 background-color: {ThemeTokens.THERMAL_CUSTOM};
@@ -785,16 +909,22 @@ class PerformanceTab(QWidget):
         preset_row.addWidget(self.btn_apply_tdp)
         s_layout.addLayout(preset_row)
 
-        tdp_layout.addWidget(sliders_box)
-        layout.addWidget(tdp_card)
+        self.sliders_box.setVisible(feat.custom_tdp)
+        tdp_layout.addWidget(self.sliders_box)
+        self.tdp_card.setVisible(bool(feat.fan_control or feat.custom_tdp))
+        layout.addWidget(self.tdp_card)
 
         # =====================================================================
-        # 3. NOVA FUNCIONALIDADE 2: Overclock e Undervolt Dinâmico (Intel HX / AMD)
+        # 3. NOVA FUNCIONALIDADE 2: Overclock e Undervolt Dinâmico (Intel HX / AMD / WMI)
         # =====================================================================
         uv_status = self.backend.get_undervolt_status()
-        uv_card = QFrame()
-        uv_card.setProperty("class", "card")
-        uv_layout = QVBoxLayout(uv_card)
+        has_cpu_uv = feat.cpu_undervolt
+        has_gpu_off = feat.wmi_gpu_ac_offset
+        is_amd_uv = (uv_status.cpu_vendor == "AMD")
+
+        self.uv_card = QFrame()
+        self.uv_card.setProperty("class", "card")
+        uv_layout = QVBoxLayout(self.uv_card)
         uv_layout.setContentsMargins(20, 18, 20, 18)
         uv_layout.setSpacing(12)
 
@@ -806,21 +936,36 @@ class PerformanceTab(QWidget):
         uv_header.addWidget(ic_uv)
 
         uv_titles = QVBoxLayout()
-        uv_t = QLabel(f"Overclock & Undervolt Dinâmico • {uv_status.method}")
+        uv_title_txt = (
+            f"Overclock & Undervolt Dinâmico • {uv_status.method}"
+            if has_cpu_uv
+            else "Boost Dinâmico de Potência GPU (Lenovo WMI)"
+        )
+        uv_t = QLabel(uv_title_txt)
         uv_t.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
         uv_t.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         uv_titles.addWidget(uv_t)
 
-        uv_sub = QLabel(
-            "Offsets negativos seguros de tensão para processadores série HX (Core & Cache) e Boost AC WMI com Watchdog Anti-Kernel Panic."
+        uv_sub_txt = (
+            "Offsets negativos seguros de tensão com Watchdog Anti-Kernel Panic"
+            + (" e Boost AC WMI." if has_gpu_off else ".")
+            if has_cpu_uv
+            else "Ajuste direto do offset dinâmico de potência da GPU NVIDIA via Lenovo WMI."
         )
+        uv_sub = QLabel(uv_sub_txt)
         uv_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         uv_titles.addWidget(uv_sub)
         uv_header.addLayout(uv_titles)
         uv_header.addStretch()
 
+        if has_cpu_uv and not is_amd_uv:
+            uv_badge_txt = f"CORE: {uv_status.core_offset_mv} mV | CACHE: {uv_status.cache_offset_mv} mV"
+        elif has_cpu_uv:
+            uv_badge_txt = f"CURVE OPT: {uv_status.core_offset_mv} mV"
+        else:
+            uv_badge_txt = f"GPU OFFSET: +{uv_status.gpu_ac_offset_w} W"
         self.uv_badge = StatusBadge(
-            f"CORE: {uv_status.core_offset_mv} mV | CACHE: {uv_status.cache_offset_mv} mV",
+            uv_badge_txt,
             bg_color="#1e293b",
             text_color="#00d2ff",
         )
@@ -865,8 +1010,11 @@ class PerformanceTab(QWidget):
         uv_box_layout.setSpacing(10)
 
         # Core Offset (-150 mV a 0 mV)
-        core_row = QHBoxLayout()
-        self.lbl_uv_core = QLabel(f"CPU Core Voltage Offset (Plane 0): {uv_status.core_offset_mv} mV")
+        self.uv_core_row_widget = QWidget()
+        core_row = QHBoxLayout(self.uv_core_row_widget)
+        core_row.setContentsMargins(0, 0, 0, 0)
+        core_lbl_prefix = "AMD Curve Optimizer Offset (All Cores)" if is_amd_uv else "CPU Core Voltage Offset (Plane 0)"
+        self.lbl_uv_core = QLabel(f"{core_lbl_prefix}: {uv_status.core_offset_mv} mV")
         self.lbl_uv_core.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self.lbl_uv_core.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; min-width: 285px;")
         core_row.addWidget(self.lbl_uv_core)
@@ -876,10 +1024,13 @@ class PerformanceTab(QWidget):
         self.slider_uv_core.setValue(uv_status.core_offset_mv)
         self.slider_uv_core.valueChanged.connect(self._on_uv_slider_changed)
         core_row.addWidget(self.slider_uv_core, stretch=1)
-        uv_box_layout.addLayout(core_row)
+        self.uv_core_row_widget.setVisible(has_cpu_uv)
+        uv_box_layout.addWidget(self.uv_core_row_widget)
 
-        # Cache Offset (-150 mV a 0 mV)
-        cache_row = QHBoxLayout()
+        # Cache Offset (-150 mV a 0 mV — exclusivo Intel)
+        self.uv_cache_row_widget = QWidget()
+        cache_row = QHBoxLayout(self.uv_cache_row_widget)
+        cache_row.setContentsMargins(0, 0, 0, 0)
         self.lbl_uv_cache = QLabel(f"CPU Ring/Cache Voltage Offset (Plane 2): {uv_status.cache_offset_mv} mV")
         self.lbl_uv_cache.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self.lbl_uv_cache.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; min-width: 285px;")
@@ -890,10 +1041,13 @@ class PerformanceTab(QWidget):
         self.slider_uv_cache.setValue(uv_status.cache_offset_mv)
         self.slider_uv_cache.valueChanged.connect(self._on_uv_slider_changed)
         cache_row.addWidget(self.slider_uv_cache, stretch=1)
-        uv_box_layout.addLayout(cache_row)
+        self.uv_cache_row_widget.setVisible(bool(has_cpu_uv and not is_amd_uv))
+        uv_box_layout.addWidget(self.uv_cache_row_widget)
 
         # GPU / AC Dynamic Boost Offset (10 W a 30 W via Lenovo WMI Other)
-        ac_off_row = QHBoxLayout()
+        self.uv_gpu_offset_widget = QWidget()
+        ac_off_row = QHBoxLayout(self.uv_gpu_offset_widget)
+        ac_off_row.setContentsMargins(0, 0, 0, 0)
         self.lbl_uv_gpu_offset = QLabel(f"Lenovo WMI GPU / AC Dynamic Power Offset: +{uv_status.gpu_ac_offset_w} W")
         self.lbl_uv_gpu_offset.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self.lbl_uv_gpu_offset.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; min-width: 285px;")
@@ -904,11 +1058,13 @@ class PerformanceTab(QWidget):
         self.slider_uv_gpu_offset.setValue(uv_status.gpu_ac_offset_w)
         self.slider_uv_gpu_offset.valueChanged.connect(self._on_uv_slider_changed)
         ac_off_row.addWidget(self.slider_uv_gpu_offset, stretch=1)
-        uv_box_layout.addLayout(ac_off_row)
+        self.uv_gpu_offset_widget.setVisible(has_gpu_off)
+        uv_box_layout.addWidget(self.uv_gpu_offset_widget)
 
         # Linha de Presets Seguros + Botão de Emergência (0 mV) + Botão Aplicar Undervolt
         uv_actions = QHBoxLayout()
         uv_actions.setSpacing(8)
+        self._uv_preset_buttons: List[QPushButton] = []
         for uv_lbl, c_mv, ca_mv in [
             ("Padrão Seguro (0 mV)", 0, 0),
             ("Undervolt Leve (-50 mV / -40 mV)", -50, -40),
@@ -933,6 +1089,8 @@ class PerformanceTab(QWidget):
                 }}
             """)
             b_uvp.clicked.connect(lambda _c, cm=c_mv, cam=ca_mv: self._set_uv_sliders(cm, cam))
+            b_uvp.setVisible(has_cpu_uv)
+            self._uv_preset_buttons.append(b_uvp)
             uv_actions.addWidget(b_uvp)
 
         uv_actions.addStretch()
@@ -955,9 +1113,10 @@ class PerformanceTab(QWidget):
             }}
         """)
         self.btn_emergency_reset_uv.clicked.connect(self._on_emergency_reset_undervolt)
+        self.btn_emergency_reset_uv.setVisible(has_cpu_uv)
         uv_actions.addWidget(self.btn_emergency_reset_uv)
 
-        self.btn_apply_uv = QPushButton("Aplicar Offsets com Watchdog")
+        self.btn_apply_uv = QPushButton("Aplicar Offsets com Watchdog" if has_cpu_uv else "Aplicar Offset WMI")
         self.btn_apply_uv.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_apply_uv.setFixedHeight(30)
         self.btn_apply_uv.setStyleSheet(f"""
@@ -978,23 +1137,31 @@ class PerformanceTab(QWidget):
         uv_actions.addWidget(self.btn_apply_uv)
         uv_box_layout.addLayout(uv_actions)
 
+        default_uv_note = (
+            "Trava de Segurança: Offsets limitados a [-150 mV, 0 mV]. Em caso de falha, o Watchdog restaura 0 mV no boot."
+            if has_cpu_uv
+            else "Ajusta diretamente o nó Lenovo WMI gpu_nv_ac_offset dentro dos limites seguros da BIOS (10W a 30W)."
+        )
         self.lbl_uv_status = QLabel(
             uv_status.last_emergency_reset
             if uv_status.last_emergency_reset
-            else "Trava de Segurança: Offsets limitados a [-150 mV, 0 mV]. Em caso de falha, o Watchdog restaura 0 mV no boot."
+            else default_uv_note
         )
         self.lbl_uv_status.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px;")
         uv_box_layout.addWidget(self.lbl_uv_status)
 
         uv_layout.addWidget(uv_box)
-        layout.addWidget(uv_card)
+        self.uv_card.setVisible(bool(has_cpu_uv or has_gpu_off))
+        layout.addWidget(self.uv_card)
 
         # =====================================================================
         # 4. NOVA FUNCIONALIDADE 3: Gerenciador de Perfis de Energia por Aplicativo (App Rules)
         # =====================================================================
-        rules_card = QFrame()
-        rules_card.setProperty("class", "card")
-        rules_layout = QVBoxLayout(rules_card)
+        supported_profiles = self.backend.get_supported_canonical_profiles()
+
+        self.rules_card = QFrame()
+        self.rules_card.setProperty("class", "card")
+        rules_layout = QVBoxLayout(self.rules_card)
         rules_layout.setContentsMargins(20, 18, 20, 18)
         rules_layout.setSpacing(12)
 
@@ -1076,7 +1243,8 @@ class PerformanceTab(QWidget):
             }}
         """)
         for prof_id, prof_label in PROFILE_COMBO_ITEMS:
-            self.combo_app_profile.addItem(prof_label, prof_id)
+            if prof_id in supported_profiles:
+                self.combo_app_profile.addItem(prof_label, prof_id)
         add_row.addWidget(self.combo_app_profile)
 
         btn_add_rule = QPushButton("Adicionar Regra")
@@ -1109,14 +1277,15 @@ class PerformanceTab(QWidget):
         rules_layout.addWidget(self.rules_list_container)
         self._rebuild_app_rules_list()
 
-        layout.addWidget(rules_card)
+        self.rules_card.setVisible(bool(feat.platform_profile and supported_profiles))
+        layout.addWidget(self.rules_card)
 
         # =====================================================================
         # 5. ELITE 5: Mapeador de Teclas Personalizadas (Tecla Copilot F23 & Órfãs)
         # =====================================================================
-        remap_card = QFrame()
-        remap_card.setProperty("class", "card")
-        remap_layout = QVBoxLayout(remap_card)
+        self.remap_card = QFrame()
+        self.remap_card.setProperty("class", "card")
+        remap_layout = QVBoxLayout(self.remap_card)
         remap_layout.setContentsMargins(20, 18, 20, 18)
         remap_layout.setSpacing(12)
 
@@ -1146,16 +1315,20 @@ class PerformanceTab(QWidget):
         mappings = self.backend.get_key_mappings()
         for slot_id, slot_cfg in mappings.items():
             row_frame = self._create_key_slot_row(slot_id, slot_cfg)
+            if slot_id == "refresh_rate_hotkey" and not feat.refresh_rate:
+                row_frame.setVisible(False)
+            elif slot_id == "eco_hotkey" and not feat.eco_travel:
+                row_frame.setVisible(False)
             remap_layout.addWidget(row_frame)
 
-        layout.addWidget(remap_card)
+        layout.addWidget(self.remap_card)
 
         # =====================================================================
         # 6. Monitoramento Detalhado da GPU (Estado D3cold / Ativa)
         # =====================================================================
-        gpu_card = QFrame()
-        gpu_card.setProperty("class", "card")
-        gpu_layout = QVBoxLayout(gpu_card)
+        self.gpu_card = QFrame()
+        self.gpu_card.setProperty("class", "card")
+        gpu_layout = QVBoxLayout(self.gpu_card)
         gpu_layout.setContentsMargins(20, 18, 20, 18)
         gpu_layout.setSpacing(12)
 
@@ -1192,14 +1365,262 @@ class PerformanceTab(QWidget):
         self.lbl_gpu_pstate = self._create_stat_box(gpu_grid, 1, 2, "Estado Runtime / P-State", "--")
 
         gpu_layout.addLayout(gpu_grid)
-        layout.addWidget(gpu_card)
+        self.gpu_card.setVisible(feat.gpu_telemetry)
+        layout.addWidget(self.gpu_card)
 
         # =====================================================================
-        # 7. Perfis Térmicos ACPI (Platform Profile)
+        # RECURSO 1: GPU MUX Switch (Exibe apenas os modos realmente liberados!)
         # =====================================================================
-        prof_card = QFrame()
-        prof_card.setProperty("class", "card")
-        prof_layout = QVBoxLayout(prof_card)
+        self.mux_card = QFrame()
+        self.mux_card.setProperty("class", "card")
+        mux_layout = QVBoxLayout(self.mux_card)
+        mux_layout.setContentsMargins(20, 18, 20, 18)
+        mux_layout.setSpacing(14)
+
+        mux_header = QHBoxLayout()
+        ic_mux = QLabel()
+        p_mux = os.path.join(ICON_DIR, "gpu_stack.svg")
+        if os.path.exists(p_mux):
+            ic_mux.setPixmap(QPixmap(p_mux).scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        mux_header.addWidget(ic_mux)
+
+        mux_titles = QVBoxLayout()
+        self.mux_title_lbl = QLabel("GPU MUX Switch • Comutador de Gráficos Lenovo")
+        self.mux_title_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        self.mux_title_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        mux_titles.addWidget(self.mux_title_lbl)
+
+        self.mux_sub_lbl = QLabel("Alterne entre os modos gráficos suportados pelo seu notebook.")
+        self.mux_sub_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        mux_titles.addWidget(self.mux_sub_lbl)
+        mux_header.addLayout(mux_titles)
+        mux_header.addStretch()
+
+        self.mux_backend_badge = StatusBadge("BACKEND: N/A", bg_color="#1e293b", text_color="#00d2ff")
+        mux_header.addWidget(self.mux_backend_badge)
+        mux_layout.addLayout(mux_header)
+
+        self.mux_reboot_banner = QLabel("⚠ A alteração de modo de GPU exige reinicialização do sistema ou da sessão gráfica.")
+        self.mux_reboot_banner.setStyleSheet("""
+            background-color: rgba(239, 68, 68, 0.15);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.35);
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 11px;
+            font-weight: bold;
+        """)
+        self.mux_reboot_banner.setVisible(False)
+        mux_layout.addWidget(self.mux_reboot_banner)
+
+        mux_blocks_layout = QHBoxLayout()
+        mux_blocks_layout.setSpacing(12)
+
+        self.block_mux_hybrid = GpuModeBlock(
+            "hybrid",
+            "Modo Híbrido (Optimus)",
+            "iGPU renderiza a tela. Aceleração dGPU sob demanda em jogos.",
+            ThemeTokens.BORDER_CYAN
+        )
+        self.block_mux_hybrid.clicked.connect(self._on_mux_mode_selected)
+        self.mux_blocks["hybrid"] = self.block_mux_hybrid
+        mux_blocks_layout.addWidget(self.block_mux_hybrid)
+
+        self.block_mux_dedicated = GpuModeBlock(
+            "dedicated",
+            "dGPU Direta (Exclusiva)",
+            "Conexão física direta no monitor. Menor latência & G-Sync.",
+            ThemeTokens.THERMAL_CUSTOM
+        )
+        self.block_mux_dedicated.clicked.connect(self._on_mux_mode_selected)
+        self.mux_blocks["dedicated"] = self.block_mux_dedicated
+        mux_blocks_layout.addWidget(self.block_mux_dedicated)
+
+        self.block_mux_integrated = GpuModeBlock(
+            "integrated",
+            "iGPU Pura (Eco Extremo)",
+            "Placa dedicada desligada em nível PCIe. Autonomia máxima de bateria.",
+            ThemeTokens.STATUS_GREEN
+        )
+        self.block_mux_integrated.clicked.connect(self._on_mux_mode_selected)
+        self.mux_blocks["integrated"] = self.block_mux_integrated
+        mux_blocks_layout.addWidget(self.block_mux_integrated)
+
+        mux_layout.addLayout(mux_blocks_layout)
+        layout.addWidget(self.mux_card)
+
+        # =====================================================================
+        # RECURSO 2: Taxa de Atualização de Tela (Exibido apenas se painel tiver >1 Hz controlável!)
+        # =====================================================================
+        self.ref_card = QFrame()
+        self.ref_card.setProperty("class", "card")
+        ref_layout = QVBoxLayout(self.ref_card)
+        ref_layout.setContentsMargins(20, 18, 20, 18)
+        ref_layout.setSpacing(14)
+
+        ref_header = QHBoxLayout()
+        ic_ref = QLabel()
+        p_ref = os.path.join(ICON_DIR, "refresh.svg")
+        if os.path.exists(p_ref):
+            ic_ref.setPixmap(QPixmap(p_ref).scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        ref_header.addWidget(ic_ref)
+
+        ref_titles = QVBoxLayout()
+        self.ref_title_lbl = QLabel("Taxa de Atualização do Painel • Lenovo Display Control")
+        self.ref_title_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        self.ref_title_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        ref_titles.addWidget(self.ref_title_lbl)
+
+        ref_sub = QLabel("Gerenciamento dinâmico de fluidez (Hz) compatível com Wayland (KDE / wlroots) e X11.")
+        ref_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        ref_titles.addWidget(ref_sub)
+        ref_header.addLayout(ref_titles)
+        ref_header.addStretch()
+
+        self.ref_rate_badge = StatusBadge("-- Hz", bg_color="#1e293b", text_color="#00d2ff")
+        ref_header.addWidget(self.ref_rate_badge)
+        ref_layout.addLayout(ref_header)
+
+        ref_ctrl_box = QFrame()
+        ref_ctrl_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
+        ref_ctrl_row = QHBoxLayout(ref_ctrl_box)
+        ref_ctrl_row.setContentsMargins(8, 6, 8, 6)
+
+        ref_info = QVBoxLayout()
+        self.ref_display_name_lbl = QLabel("Painel Interno (eDP-1)")
+        self.ref_display_name_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self.ref_display_name_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        ref_info.addWidget(self.ref_display_name_lbl)
+
+        ref_desc = QLabel("Selecione a frequência do painel ou use o atalho Fn + R (Alt + R).")
+        ref_desc.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px;")
+        ref_info.addWidget(ref_desc)
+        ref_ctrl_row.addLayout(ref_info)
+        ref_ctrl_row.addStretch()
+
+        self.ref_buttons_layout = QHBoxLayout()
+        self.ref_buttons_layout.setSpacing(8)
+        ref_ctrl_row.addLayout(self.ref_buttons_layout)
+
+        self.btn_cycle_ref = QPushButton("Ciclar Fn + R")
+        self.btn_cycle_ref.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_cycle_ref.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #192338;
+                color: {ThemeTokens.BORDER_CYAN};
+                border: 1px solid {ThemeTokens.BORDER_CYAN};
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-weight: bold;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background-color: {ThemeTokens.BORDER_CYAN};
+                color: #0b0f19;
+            }}
+        """)
+        self.btn_cycle_ref.clicked.connect(self._on_cycle_refresh_rate_clicked)
+        ref_ctrl_row.addWidget(self.btn_cycle_ref)
+        ref_layout.addWidget(ref_ctrl_box)
+
+        self.ref_auto_box = QFrame()
+        self.ref_auto_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
+        ref_auto_row = QHBoxLayout(self.ref_auto_box)
+        ref_auto_row.setContentsMargins(8, 6, 8, 6)
+
+        ra_info = QVBoxLayout()
+        ra_lbl = QLabel("Alternância Automática de Taxa (Carregador AC vs Bateria)")
+        ra_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        ra_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        ra_info.addWidget(ra_lbl)
+
+        self.ra_desc = QLabel("Reduz para a menor taxa ao desconectar da tomada para poupar bateria, e restaura taxa máxima no AC.")
+        self.ra_desc.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px;")
+        ra_info.addWidget(self.ra_desc)
+        ref_auto_row.addLayout(ra_info)
+        ref_auto_row.addStretch()
+
+        self.ref_auto_switch = ToggleSwitch()
+        self.ref_auto_switch.setChecked(self.backend.get_auto_refresh_rate_transition())
+        self.ref_auto_switch.toggled.connect(self._on_ref_auto_toggled)
+        ref_auto_row.addWidget(self.ref_auto_switch)
+        self.ref_auto_box.setVisible(feat.battery)
+        ref_layout.addWidget(self.ref_auto_box)
+
+        layout.addWidget(self.ref_card)
+
+        # =====================================================================
+        # RECURSO 3: LCD Overdrive & Ajustes de BIOS / Lenovo WMI (Zero Hardcoding)
+        # =====================================================================
+        self.bios_card = QFrame()
+        self.bios_card.setProperty("class", "card")
+        bios_layout = QVBoxLayout(self.bios_card)
+        bios_layout.setContentsMargins(20, 18, 20, 18)
+        bios_layout.setSpacing(14)
+
+        bios_header = QHBoxLayout()
+        ic_bios = QLabel()
+        p_bios = os.path.join(ICON_DIR, "tools.svg")
+        if os.path.exists(p_bios):
+            ic_bios.setPixmap(QPixmap(p_bios).scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        bios_header.addWidget(ic_bios)
+
+        bios_titles = QVBoxLayout()
+        self.bios_title_lbl = QLabel("Ajustes de Firmware Lenovo (BIOS / WMI)")
+        self.bios_title_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        self.bios_title_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        bios_titles.addWidget(self.bios_title_lbl)
+
+        self.bios_sub_lbl = QLabel("Nós de BIOS descobertos dinamicamente no hardware deste notebook.")
+        self.bios_sub_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        bios_titles.addWidget(self.bios_sub_lbl)
+        bios_header.addLayout(bios_titles)
+        bios_header.addStretch()
+
+        self.bios_count_badge = StatusBadge("-- ITENS", bg_color="#1e293b", text_color="#38bdf8")
+        bios_header.addWidget(self.bios_count_badge)
+        bios_layout.addLayout(bios_header)
+
+        self.od_box = QFrame()
+        self.od_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
+        od_row = QHBoxLayout(self.od_box)
+        od_row.setContentsMargins(8, 6, 8, 6)
+
+        od_info = QVBoxLayout()
+        od_lbl = QLabel("LCD Overdrive (Tempo de Resposta Acelerado)")
+        od_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        od_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        od_info.addWidget(od_lbl)
+
+        od_desc = QLabel("Reduz o ghosting e motion blur em jogos de ação acelerando a transição de cinza-para-cinza (GtG).")
+        od_desc.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px;")
+        od_info.addWidget(od_desc)
+        od_row.addLayout(od_info)
+        od_row.addStretch()
+
+        self.lcd_overdrive_switch = ToggleSwitch()
+        is_od_supp = self.backend.is_lcd_overdrive_supported()
+        self.lcd_overdrive_switch.setEnabled(is_od_supp)
+        self.lcd_overdrive_switch.setChecked(self.backend.get_lcd_overdrive() if is_od_supp else False)
+        self.lcd_overdrive_switch.toggled.connect(self._on_lcd_overdrive_toggled)
+        od_row.addWidget(self.lcd_overdrive_switch)
+        # Oculta completamente o bloco de LCD Overdrive quando o painel/BIOS não o libera!
+        self.od_box.setVisible(is_od_supp)
+        bios_layout.addWidget(self.od_box)
+
+        self.bios_dyn_container = QVBoxLayout()
+        self.bios_dyn_container.setSpacing(10)
+        bios_layout.addLayout(self.bios_dyn_container)
+
+        self._build_dynamic_bios_attributes()
+        layout.addWidget(self.bios_card)
+
+        # =====================================================================
+        # 7. Perfis Térmicos ACPI (Platform Profile — exibe apenas perfis suportados)
+        # =====================================================================
+        self.prof_card = QFrame()
+        self.prof_card.setProperty("class", "card")
+        prof_layout = QVBoxLayout(self.prof_card)
         prof_layout.setContentsMargins(20, 18, 20, 18)
         prof_layout.setSpacing(12)
 
@@ -1222,6 +1643,7 @@ class PerformanceTab(QWidget):
             accent_color=ThemeTokens.THERMAL_QUIET
         )
         card_quiet.clicked.connect(self._on_card_selected)
+        card_quiet.setVisible("low-power" in supported_profiles)
         prof_layout.addWidget(card_quiet)
         self.cards["low-power"] = card_quiet
         self.cards["quiet"] = card_quiet
@@ -1234,6 +1656,7 @@ class PerformanceTab(QWidget):
             accent_color=ThemeTokens.THERMAL_BALANCED
         )
         card_bal.clicked.connect(self._on_card_selected)
+        card_bal.setVisible("balanced" in supported_profiles)
         prof_layout.addWidget(card_bal)
         self.cards["balanced"] = card_bal
 
@@ -1245,23 +1668,24 @@ class PerformanceTab(QWidget):
             accent_color=ThemeTokens.THERMAL_PERFORMANCE
         )
         card_perf.clicked.connect(self._on_card_selected)
+        card_perf.setVisible("performance" in supported_profiles)
         prof_layout.addWidget(card_perf)
         self.cards["performance"] = card_perf
 
-        choices = self.backend.get_platform_profile_choices()
-        if "max-power" in choices or self.backend.features.max_power_profile:
-            card_max = ProfileCard(
-                profile_id="max-power",
-                icon_source=os.path.join(ICON_DIR, "thermal_max_power.svg"),
-                title="Desempenho Máximo (Max-Power)",
-                desc="Perfil avançado descoberto no kernel (incluído no ciclo Fn + Q) para potência máxima sustentada e rotação máxima das ventoinhas.",
-                accent_color=ThemeTokens.THERMAL_CUSTOM
-            )
-            card_max.clicked.connect(self._on_card_selected)
-            prof_layout.addWidget(card_max)
-            self.cards["max-power"] = card_max
+        card_max = ProfileCard(
+            profile_id="max-power",
+            icon_source=os.path.join(ICON_DIR, "thermal_max_power.svg"),
+            title="Desempenho Máximo (Max-Power)",
+            desc="Perfil avançado descoberto no kernel (incluído no ciclo Fn + Q) para potência máxima sustentada e rotação máxima das ventoinhas.",
+            accent_color=ThemeTokens.THERMAL_CUSTOM
+        )
+        card_max.clicked.connect(self._on_card_selected)
+        card_max.setVisible(bool(feat.max_power_profile or "max-power" in supported_profiles))
+        prof_layout.addWidget(card_max)
+        self.cards["max-power"] = card_max
 
-        layout.addWidget(prof_card)
+        self.prof_card.setVisible(bool(feat.platform_profile and supported_profiles))
+        layout.addWidget(self.prof_card)
         layout.addStretch()
 
         scroll.setWidget(container)
@@ -1317,8 +1741,11 @@ class PerformanceTab(QWidget):
         core_mv = self.slider_uv_core.value()
         cache_mv = self.slider_uv_cache.value()
         gpu_w = self.slider_uv_gpu_offset.value()
-        hex_core = hex(self.backend._encode_intel_msr_undervolt_offset(0, core_mv))
-        self.lbl_uv_core.setText(f"CPU Core Voltage Offset (Plane 0): {core_mv} mV ({hex_core})")
+        if self.backend.get_cpu_vendor() == "AMD":
+            self.lbl_uv_core.setText(f"AMD Curve Optimizer Offset (All Cores): {core_mv} mV")
+        else:
+            hex_core = hex(self.backend._encode_intel_msr_undervolt_offset(0, core_mv))
+            self.lbl_uv_core.setText(f"CPU Core Voltage Offset (Plane 0): {core_mv} mV ({hex_core})")
         self.lbl_uv_cache.setText(f"CPU Ring/Cache Voltage Offset (Plane 2): {cache_mv} mV")
         self.lbl_uv_gpu_offset.setText(f"Lenovo WMI GPU / AC Dynamic Power Offset: +{gpu_w} W")
 
@@ -1327,21 +1754,34 @@ class PerformanceTab(QWidget):
         self.slider_uv_cache.setValue(cache_mv)
 
     def _on_apply_undervolt(self):
-        core_mv = self.slider_uv_core.value()
-        cache_mv = self.slider_uv_cache.value()
-        gpu_w = self.slider_uv_gpu_offset.value()
+        feat = self.backend.features
+        core_mv = self.slider_uv_core.value() if feat.cpu_undervolt else 0
+        cache_mv = (
+            self.slider_uv_cache.value()
+            if (feat.cpu_undervolt and self.backend.get_cpu_vendor() != "AMD")
+            else 0
+        )
+        gpu_w = self.slider_uv_gpu_offset.value() if feat.wmi_gpu_ac_offset else None
         ok, msg = self.backend.apply_undervolt_offsets(core_mv, cache_mv, gpu_w)
         self.lbl_uv_status.setText(msg)
 
         if not ok:
             self._watchdog_timer.stop()
             self.uv_watchdog_frame.setVisible(False)
-            self.uv_badge.setText("CORE: 0 mV | CACHE: 0 mV")
+            if feat.cpu_undervolt:
+                self.uv_badge.setText(
+                    "CURVE OPT: 0 mV" if self.backend.get_cpu_vendor() == "AMD" else "CORE: 0 mV | CACHE: 0 mV"
+                )
             return
 
-        self.uv_badge.setText(f"CORE: {core_mv} mV | CACHE: {cache_mv} mV")
+        if feat.cpu_undervolt and self.backend.get_cpu_vendor() != "AMD":
+            self.uv_badge.setText(f"CORE: {core_mv} mV | CACHE: {cache_mv} mV")
+        elif feat.cpu_undervolt:
+            self.uv_badge.setText(f"CURVE OPT: {core_mv} mV")
+        elif gpu_w is not None:
+            self.uv_badge.setText(f"GPU OFFSET: +{gpu_w} W")
 
-        if core_mv < 0 or cache_mv < 0:
+        if feat.cpu_undervolt and (core_mv < 0 or cache_mv < 0):
             self._watchdog_seconds = 15
             self.uv_watchdog_frame.setVisible(True)
             self.lbl_uv_watchdog.setText(
@@ -1476,6 +1916,32 @@ class PerformanceTab(QWidget):
     # =========================================================================
     # Métodos do Mapeador de Teclas Personalizadas (Copilot Key Remapper)
     # =========================================================================
+    def _get_supported_key_actions(self) -> List[Tuple[str, str]]:
+        """Filtra as ações do remapper exibindo apenas recursos realmente liberados neste sistema."""
+        feat = self.backend.features
+        has_mic_tool = bool(shutil.which("wpctl") or shutil.which("pactl"))
+        filtered: List[Tuple[str, str]] = []
+        for act_id, act_label in AVAILABLE_KEY_ACTIONS:
+            if act_id == "cycle_profile" and not feat.platform_profile:
+                continue
+            if act_id == "cycle_refresh_rate" and not feat.refresh_rate:
+                continue
+            if act_id == "toggle_max_power":
+                if not feat.platform_profile:
+                    continue
+                if not feat.max_power_profile:
+                    act_label = "Ativar / Desativar Modo Desempenho (Performance)"
+            if act_id == "toggle_eco_mode" and not feat.eco_travel:
+                continue
+            if act_id == "toggle_conservation" and not feat.conservation_mode:
+                continue
+            if act_id == "toggle_touchpad" and not feat.touchpad_control:
+                continue
+            if act_id == "toggle_mic_mute" and not has_mic_tool:
+                continue
+            filtered.append((act_id, act_label))
+        return filtered
+
     def _create_key_slot_row(self, slot_id: str, slot_cfg: Dict[str, Any]) -> QFrame:
         box = QFrame()
         box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 12px;")
@@ -1509,8 +1975,9 @@ class PerformanceTab(QWidget):
             }}
         """)
         current_act = str(slot_cfg.get("action", "cycle_profile"))
+        supported_actions = self._get_supported_key_actions()
         sel_idx = 0
-        for idx, (act_id, act_label) in enumerate(AVAILABLE_KEY_ACTIONS):
+        for idx, (act_id, act_label) in enumerate(supported_actions):
             combo.addItem(act_label, act_id)
             if act_id == current_act:
                 sel_idx = idx
@@ -1764,3 +2231,335 @@ class PerformanceTab(QWidget):
         else:
             self.current_badge.setText("EQUILIBRADO")
             self.current_badge.setColor("#155e75", ThemeTokens.THERMAL_BALANCED)
+
+        # 4. Atualizar GPU MUX, Taxa de Atualização e LCD Overdrive / BIOS
+        self.refresh_mux_state()
+        self.refresh_display_state()
+        self.refresh_bios_state()
+
+    # =========================================================================
+    # Métodos do GPU MUX Switch (Recurso 1)
+    # =========================================================================
+    def _on_mux_mode_selected(self, mode: str):
+        ok, msg, req_reboot = self.backend.set_gpu_mux_mode(mode)
+        if ok:
+            self.refresh_mux_state()
+            self.gpu_mux_changed.emit(mode, req_reboot)
+        else:
+            QMessageBox.warning(self, "GPU MUX Switch", f"Não foi possível alterar o modo de GPU:\n{msg}")
+
+    def refresh_mux_state(self):
+        mux = self.backend.get_gpu_mux_info()
+        show_mux = bool(mux.available and mux.available_modes and mux.backend_name not in ("none", "software"))
+        self.mux_card.setVisible(show_mux)
+        if not show_mux:
+            return
+
+        self.mux_backend_badge.setText(f"BACKEND: {mux.backend_name.upper()}")
+        mode_labels = {
+            "hybrid": "Modo Híbrido (Optimus)",
+            "dedicated": "dGPU Exclusiva (Direct)",
+            "integrated": "iGPU Pura (Eco Extremo)",
+        }
+        active_labels = [mode_labels[m] for m in ("hybrid", "dedicated", "integrated") if m in mux.available_modes]
+        if active_labels:
+            self.mux_sub_lbl.setText("Alterne entre " + " e ".join(active_labels) + ".")
+
+        for mid, blk in self.mux_blocks.items():
+            is_supported = (mid in mux.available_modes)
+            blk.setVisible(is_supported)
+            blk.setEnabled(is_supported)
+            blk.set_active(mid == mux.current_mode)
+        self.mux_reboot_banner.setVisible(mux.requires_reboot)
+
+    # =========================================================================
+    # Métodos da Taxa de Atualização de Tela (Recurso 2)
+    # =========================================================================
+    def _on_refresh_rate_button_clicked(self, hz: int):
+        ok, msg = self.backend.set_refresh_rate(hz)
+        if ok:
+            self.refresh_display_state()
+            self.refresh_rate_changed.emit(hz)
+        else:
+            QMessageBox.warning(self, "Taxa de Atualização", f"Não foi possível alterar a taxa para {hz} Hz:\n{msg}")
+
+    def _on_cycle_refresh_rate_clicked(self):
+        ok, new_hz, msg = self.backend.cycle_refresh_rate()
+        if ok:
+            self.refresh_display_state()
+            self.refresh_rate_changed.emit(new_hz)
+        else:
+            QMessageBox.warning(self, "Taxa de Atualização", f"Não foi possível alternar a taxa:\n{msg}")
+
+    def _on_ref_auto_toggled(self, checked: bool):
+        self.backend.set_auto_refresh_rate_transition(checked)
+
+    def refresh_display_state(self):
+        info = self.backend.get_display_refresh_info()
+        can_switch = bool(
+            info.available
+            and info.backend_name in ("kscreen-doctor", "wlr-randr", "xrandr")
+            and len(info.available_rates) > 1
+        )
+        self.ref_card.setVisible(can_switch)
+        if not can_switch:
+            return
+
+        self.ref_rate_badge.setText(f"{info.current_hz} Hz")
+        self.ref_display_name_lbl.setText(f"{info.display_name} • {info.resolution}")
+        self.ref_auto_box.setVisible(self.backend.features.battery)
+        min_hz, max_hz = min(info.available_rates), max(info.available_rates)
+        self.ra_desc.setText(
+            f"Reduz para {min_hz} Hz ao desconectar da tomada para poupar bateria, e restaura {max_hz} Hz no AC."
+        )
+
+        existing_rates = set(self.refresh_rate_buttons.keys())
+        current_rates = set(info.available_rates)
+        if existing_rates != current_rates:
+            while self.ref_buttons_layout.count():
+                item = self.ref_buttons_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            self.refresh_rate_buttons.clear()
+
+            for hz in info.available_rates:
+                btn = QPushButton(f"{hz} Hz")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.clicked.connect(lambda _c=False, h=hz: self._on_refresh_rate_button_clicked(h))
+                self.refresh_rate_buttons[hz] = btn
+                self.ref_buttons_layout.addWidget(btn)
+
+        for hz, btn in self.refresh_rate_buttons.items():
+            is_active = (hz == info.current_hz)
+            if is_active:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {ThemeTokens.BORDER_CYAN};
+                        color: #0b0f19;
+                        border: 1px solid {ThemeTokens.BORDER_CYAN};
+                        border-radius: 6px;
+                        padding: 6px 14px;
+                        font-weight: bold;
+                    }}
+                """)
+            else:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: #192338;
+                        color: {ThemeTokens.TEXT_LIGHT_GRAY};
+                        border: 1px solid {ThemeTokens.BORDER_DEFAULT};
+                        border-radius: 6px;
+                        padding: 6px 14px;
+                    }}
+                    QPushButton:hover {{
+                        border-color: {ThemeTokens.BORDER_CYAN};
+                    }}
+                """)
+
+        self.ref_auto_switch.blockSignals(True)
+        self.ref_auto_switch.setChecked(info.auto_switch_ac)
+        self.ref_auto_switch.blockSignals(False)
+
+    # =========================================================================
+    # Métodos de LCD Overdrive e BIOS / Firmware Attributes (Recurso 3)
+    # =========================================================================
+    def _on_lcd_overdrive_toggled(self, checked: bool):
+        ok, msg = self.backend.set_lcd_overdrive(checked)
+        if ok:
+            self.lcd_overdrive_changed.emit(checked)
+        else:
+            self.lcd_overdrive_switch.blockSignals(True)
+            self.lcd_overdrive_switch.setChecked(not checked)
+            self.lcd_overdrive_switch.blockSignals(False)
+            QMessageBox.warning(self, "LCD Overdrive", f"Não foi possível alterar o LCD Overdrive:\n{msg}")
+
+    def _build_dynamic_bios_attributes(self):
+        """Constrói dinamicamente os controles visuais baseados estritamente nos nós que a BIOS expõe (Zero Hardcoding)."""
+        while self.bios_dyn_container.count():
+            item = self.bios_dyn_container.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        self.bios_attr_widgets.clear()
+        is_od_supp = self.backend.is_lcd_overdrive_supported()
+        self.od_box.setVisible(is_od_supp)
+
+        attrs = self.backend.get_bios_attributes()
+        visible_attrs = [a for a in attrs if a.attr_id.lower() not in ("lcd_overdrive",)]
+        total_items = len(visible_attrs) + (1 if is_od_supp else 0)
+        self.bios_count_badge.setText(f"{total_items} {'ITEM' if total_items == 1 else 'ITENS'}")
+
+        if is_od_supp and visible_attrs:
+            self.bios_title_lbl.setText("LCD Overdrive & Ajustes de Firmware Lenovo (BIOS / WMI)")
+            self.bios_sub_lbl.setText("Aceleração de resposta do monitor (anti-ghosting) e nós de BIOS descobertos dinamicamente no hardware.")
+        elif is_od_supp:
+            self.bios_title_lbl.setText("LCD Overdrive • Aceleração de Painel")
+            self.bios_sub_lbl.setText("Aceleração de tempo de resposta do monitor (anti-ghosting) liberada pela BIOS deste notebook.")
+        else:
+            self.bios_title_lbl.setText("Ajustes de Firmware Lenovo (BIOS / WMI)")
+            self.bios_sub_lbl.setText("Parâmetros de firmware descobertos dinamicamente na BIOS deste notebook.")
+
+        # Oculta o card inteiro se o notebook não liberar nem LCD Overdrive nem atributos WMI da BIOS
+        self.bios_card.setVisible(bool(is_od_supp or visible_attrs))
+        if not visible_attrs:
+            return
+
+        for a in visible_attrs:
+
+            row_box = QFrame()
+            row_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
+            r_layout = QHBoxLayout(row_box)
+            r_layout.setContentsMargins(8, 6, 8, 6)
+
+            info_layout = QVBoxLayout()
+            h_top = QHBoxLayout()
+            title_lbl = QLabel(a.display_name)
+            title_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+            title_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+            h_top.addWidget(title_lbl)
+
+            cat_badge = StatusBadge(a.category.upper(), bg_color="#1e293b", text_color="#38bdf8")
+            h_top.addWidget(cat_badge)
+            h_top.addStretch()
+            info_layout.addLayout(h_top)
+
+            desc_lbl = QLabel(f"Atributo sysfs: {a.attr_id} • Tipo: {a.attr_type.capitalize()}")
+            desc_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px;")
+            info_layout.addWidget(desc_lbl)
+            r_layout.addLayout(info_layout, stretch=2)
+
+            ctrl_layout = QHBoxLayout()
+            ctrl_layout.setSpacing(10)
+
+            if a.attr_type == "boolean":
+                sw = ToggleSwitch()
+                is_on = a.current_value.lower() in ("1", "enabled", "on", "true")
+                sw.setChecked(is_on)
+                sw.toggled.connect(lambda chk, aid=a.attr_id: self._on_toggle_bios_bool_attribute(aid, chk))
+                self.bios_attr_widgets[a.attr_id] = sw
+                ctrl_layout.addWidget(sw)
+
+            elif a.attr_type == "integer":
+                min_v = a.min_value if a.min_value is not None else 0
+                max_v = a.max_value if a.max_value is not None else 100
+                cur_v = int(a.current_value) if a.current_value.isdigit() else min_v
+                if max_v <= min_v:
+                    min_v = 0
+                    max_v = max(100, cur_v + 25) if cur_v > 0 else 100
+
+                val_lbl = QLabel(f"{cur_v}")
+                val_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+                val_lbl.setStyleSheet(f"color: {ThemeTokens.BORDER_CYAN}; min-width: 38px;")
+
+                sl = QSlider(Qt.Orientation.Horizontal)
+                sl.setRange(min_v, max_v)
+                sl.setValue(cur_v)
+                sl.setFixedWidth(130)
+                sl.valueChanged.connect(lambda v, lbl=val_lbl: lbl.setText(str(v)))
+
+                btn_apply = QPushButton("Aplicar")
+                btn_apply.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn_apply.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: #192338;
+                        color: {ThemeTokens.BORDER_CYAN};
+                        border: 1px solid {ThemeTokens.BORDER_CYAN};
+                        border-radius: 6px;
+                        padding: 4px 10px;
+                        font-weight: bold;
+                        font-size: 10px;
+                    }}
+                    QPushButton:hover {{
+                        background-color: {ThemeTokens.BORDER_CYAN};
+                        color: #0b0f19;
+                    }}
+                """)
+                btn_apply.clicked.connect(lambda _c=False, aid=a.attr_id, s=sl, l=val_lbl: self._on_apply_bios_int_attribute(aid, s, l))
+
+                self.bios_attr_widgets[a.attr_id] = (sl, val_lbl)
+                ctrl_layout.addWidget(sl)
+                ctrl_layout.addWidget(val_lbl)
+                ctrl_layout.addWidget(btn_apply)
+
+            else:  # enumeration
+                combo = QComboBox()
+                combo.setStyleSheet(f"""
+                    QComboBox {{
+                        background-color: #192338;
+                        color: {ThemeTokens.TEXT_WHITE_100};
+                        border: 1px solid {ThemeTokens.BORDER_DEFAULT};
+                        border-radius: 6px;
+                        padding: 4px 10px;
+                        min-width: 110px;
+                    }}
+                """)
+                poss = a.possible_values if a.possible_values else [a.current_value]
+                for p in poss:
+                    combo.addItem(p)
+                idx = combo.findText(a.current_value)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+
+                btn_apply = QPushButton("Aplicar")
+                btn_apply.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn_apply.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: #192338;
+                        color: {ThemeTokens.BORDER_CYAN};
+                        border: 1px solid {ThemeTokens.BORDER_CYAN};
+                        border-radius: 6px;
+                        padding: 4px 10px;
+                        font-weight: bold;
+                        font-size: 10px;
+                    }}
+                    QPushButton:hover {{
+                        background-color: {ThemeTokens.BORDER_CYAN};
+                        color: #0b0f19;
+                    }}
+                """)
+                btn_apply.clicked.connect(lambda _c=False, aid=a.attr_id, cmb=combo: self._on_apply_bios_enum_attribute(aid, cmb))
+
+                self.bios_attr_widgets[a.attr_id] = combo
+                ctrl_layout.addWidget(combo)
+                ctrl_layout.addWidget(btn_apply)
+
+            r_layout.addLayout(ctrl_layout)
+            self.bios_dyn_container.addWidget(row_box)
+
+    def _on_apply_bios_int_attribute(self, attr_id: str, slider: QSlider, val_lbl: QLabel):
+        val = slider.value()
+        ok, msg = self.backend.set_bios_attribute(attr_id, str(val))
+        if ok:
+            QMessageBox.information(self, "Ajuste de BIOS Aplicado", f"{attr_id}: {val}\n{msg}")
+        else:
+            QMessageBox.warning(self, "Falha ao Gravar BIOS", f"{attr_id}:\n{msg}")
+
+    def _on_apply_bios_enum_attribute(self, attr_id: str, combo: QComboBox):
+        val = combo.currentText()
+        ok, msg = self.backend.set_bios_attribute(attr_id, val)
+        if ok:
+            QMessageBox.information(self, "Ajuste de BIOS Aplicado", f"{attr_id}: {val}\n{msg}")
+        else:
+            QMessageBox.warning(self, "Falha ao Gravar BIOS", f"{attr_id}:\n{msg}")
+
+    def _on_toggle_bios_bool_attribute(self, attr_id: str, checked: bool):
+        val = "1" if checked else "0"
+        ok, msg = self.backend.set_bios_attribute(attr_id, val)
+        if not ok:
+            sw = self.bios_attr_widgets.get(attr_id)
+            if sw and isinstance(sw, ToggleSwitch):
+                sw.blockSignals(True)
+                sw.setChecked(not checked)
+                sw.blockSignals(False)
+            QMessageBox.warning(self, "Falha ao Gravar BIOS", f"{attr_id}:\n{msg}")
+
+    def refresh_bios_state(self):
+        is_od_supp = self.backend.is_lcd_overdrive_supported()
+        self.od_box.setVisible(is_od_supp)
+        if is_od_supp:
+            self.lcd_overdrive_switch.setEnabled(True)
+            self.lcd_overdrive_switch.blockSignals(True)
+            self.lcd_overdrive_switch.setChecked(self.backend.get_lcd_overdrive())
+            self.lcd_overdrive_switch.blockSignals(False)
+        self.bios_card.setVisible(bool(is_od_supp or self.bios_attr_widgets))
+

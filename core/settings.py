@@ -37,6 +37,14 @@ DEFAULT_KEY_MAPPINGS: Dict[str, Dict[str, Any]] = {
         "custom_command": "",
         "enabled": True,
     },
+    "refresh_rate_hotkey": {
+        "label": "Taxa de Atualização de Tela (Fn+R / Alt+R)",
+        "qt_shortcut": "Alt+R",
+        "evdev_code": 431,  # KEY_DISPLAYTOGGLE (Lenovo Fn+R)
+        "action": "cycle_refresh_rate",
+        "custom_command": "",
+        "enabled": True,
+    },
 }
 
 DEFAULT_APP_POWER_RULES = [
@@ -83,6 +91,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "battery_alerts_enabled": True,
     "battery_temp_alert_c": 42.0,
     "battery_80_alert_enabled": True,
+    "gpu_mux_mode": "hybrid",
+    "auto_refresh_rate_transition": True,
+    "last_refresh_rate": 60,
+    "lcd_overdrive_enabled": False,
     "key_mappings": DEFAULT_KEY_MAPPINGS,
     "battery_history": []
 }
@@ -109,6 +121,10 @@ class SettingsManager:
                 km = self._data.get("key_mappings")
                 if not isinstance(km, dict) or not km:
                     self._data["key_mappings"] = json.loads(json.dumps(DEFAULT_KEY_MAPPINGS))
+                else:
+                    for def_k, def_v in DEFAULT_KEY_MAPPINGS.items():
+                        if def_k not in km:
+                            km[def_k] = json.loads(json.dumps(def_v))
                 if target == LEGACY_CONFIG_FILE and not os.path.exists(CONFIG_FILE):
                     self.save()
             except Exception as e:

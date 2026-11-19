@@ -15,6 +15,7 @@ import os
 import sys
 import re
 import glob
+import json
 import struct
 import datetime
 import time
@@ -27,7 +28,8 @@ from typing import List, Dict, Optional, Tuple, Any
 from core.models import (
     CPUMetrics, GPUMetrics, RAMMetrics, StorageDevice, FanMetrics,
     BatteryInfo, BatteryHistoryEntry, SystemInfo, HardwareFeatures, HardwarePaths,
-    UndervoltStatus, NetworkPowerStatus, AppProfileRule
+    UndervoltStatus, NetworkPowerStatus, AppProfileRule,
+    GpuMuxInfo, DisplayRefreshInfo, BiosAttribute
 )
 from core.permissions import PermissionsManager
 from core.settings import SettingsManager, DEFAULT_FAN_CURVE_POINTS, DEFAULT_APP_POWER_RULES
@@ -192,6 +194,17 @@ class HardwareBackend:
         self._cached_net_power_status: Optional[NetworkPowerStatus] = None
         self._last_net_power_status_time: float = 0.0
 
+        # Caches e estados para GPU MUX, Taxa de Atualização e BIOS WMI
+        self._cached_gpu_mux_info: Optional[GpuMuxInfo] = None
+        self._last_gpu_mux_scan: float = 0.0
+        self._cached_refresh_info: Optional[DisplayRefreshInfo] = None
+        self._last_refresh_scan: float = 0.0
+        self._cached_bios_attrs: Optional[List[BiosAttribute]] = None
+        self._last_bios_attrs_scan: float = 0.0
+        self._last_applied_refresh_hz: Optional[int] = None
+        self._touchpad_event_name: Optional[str] = None
+        self._touchpad_device_name: Optional[str] = None
+
         self.scan_hardware()
         self._check_undervolt_crash_recovery()
 
@@ -262,18 +275,39 @@ class HardwareBackend:
     # Varredura Universal e Feature Discovery (Zero Hardcoding)
     # =========================================================================
     def scan_hardware(self) -> None:
-        """Executa descoberta dinâmica de recursos em qualquer notebook Lenovo."""
-        # 1. ACPI Platform Profile e Descoberta Dinâmica de 'max-power'
+        """Executa descoberta dinâmica e rigorosa de recursos em qualquer notebook Lenovo."""
+        # 1. ACPI / Kernel Platform Profile e Descoberta Dinâmica de 'max-power'
         if os.path.exists("/sys/firmware/acpi/platform_profile"):
             self.paths.platform_profile = "/sys/firmware/acpi/platform_profile"
             self.features.platform_profile = True
-        if os.path.exists("/sys/firmware/acpi/platform_profile_choices"):
-            self.paths.platform_profile_choices = "/sys/firmware/acpi/platform_profile_choices"
-            choices = self.get_platform_profile_choices()
-            if "max-power" in choices:
-                self.features.max_power_profile = True
+            if os.path.exists("/sys/firmware/acpi/platform_profile_choices"):
+                self.paths.platform_profile_choices = "/sys/firmware/acpi/platform_profile_choices"
+        else:
+            # Suporte nativo ao novo subsistema class/platform-profile (Linux 6.14+ / 7.x)
+            pp_dirs = sorted(glob.glob("/sys/class/platform-profile/platform-profile-*"))
+            chosen_pp = None
+            for pp_dir in pp_dirs:
+                if not os.path.exists(os.path.join(pp_dir, "profile")):
+                    continue
+                pp_name = (self._read_file_text(os.path.join(pp_dir, "name")) or "").lower()
+                if any(k in pp_name for k in ("lenovo", "ideapad", "legion", "thinkpad")):
+                    chosen_pp = pp_dir
+                    break
+                if chosen_pp is None:
+                    chosen_pp = pp_dir
+            if chosen_pp:
+                self.paths.platform_profile = os.path.join(chosen_pp, "profile")
+                self.features.platform_profile = True
+                choices_p = os.path.join(chosen_pp, "choices")
+                if os.path.exists(choices_p):
+                    self.paths.platform_profile_choices = choices_p
 
-        # 2. Descoberta Dinâmica do Driver ideapad_acpi (VPC*)
+        if self.features.platform_profile:
+            canonical_choices = self.get_supported_canonical_profiles()
+            self.features.available_profiles = canonical_choices
+            self.features.max_power_profile = ("max-power" in canonical_choices)
+
+        # 2. Descoberta Dinâmica do Driver ideapad_acpi / ideapad_laptop / legion_laptop
         vpc_dirs = sorted(glob.glob("/sys/bus/platform/drivers/ideapad_acpi/VPC*"))
         if not vpc_dirs:
             vpc_dirs = sorted(glob.glob("/sys/devices/platform/VPC*"))
@@ -285,31 +319,48 @@ class HardwareBackend:
                 self.paths.ideapad_dir = vdir
                 break
 
-        if self.paths.ideapad_dir:
-            idir = self.paths.ideapad_dir
-            cons = os.path.join(idir, "conservation_mode")
-            if os.path.exists(cons):
-                self.paths.conservation_mode = cons
-                self.features.conservation_mode = True
+        extra_acpi_dirs = [d for d in (self.paths.ideapad_dir, "/sys/devices/platform/PNP0C09:00") if d and os.path.isdir(d)]
+        extra_acpi_dirs.extend(sorted(glob.glob("/sys/bus/platform/drivers/legion_laptop/*")))
 
-            fn = os.path.join(idir, "fn_lock")
-            if os.path.exists(fn):
-                self.paths.fn_lock = fn
-                self.features.fn_lock = True
+        for idir in extra_acpi_dirs:
+            if not self.paths.conservation_mode:
+                cons = os.path.join(idir, "conservation_mode")
+                if os.path.exists(cons):
+                    self.paths.conservation_mode = cons
+                    self.features.conservation_mode = True
 
-            cam = os.path.join(idir, "camera_power")
-            if os.path.exists(cam):
-                self.paths.camera_power = cam
-                self.features.camera_power = True
+            if not self.paths.rapid_charge:
+                rc = os.path.join(idir, "rapid_charge")
+                if os.path.exists(rc):
+                    self.paths.rapid_charge = rc
 
-            usb = os.path.join(idir, "usb_charging")
-            if os.path.exists(usb):
-                self.paths.usb_charging = usb
-                self.features.usb_charging = True
+            if not self.paths.fn_lock:
+                fn = os.path.join(idir, "fn_lock")
+                if os.path.exists(fn):
+                    self.paths.fn_lock = fn
+                    self.features.fn_lock = True
 
-            fan_m = os.path.join(idir, "fan_mode")
-            if os.path.exists(fan_m):
-                self.paths.fan_mode = fan_m
+            if not self.paths.camera_power:
+                cam = os.path.join(idir, "camera_power")
+                if os.path.exists(cam):
+                    self.paths.camera_power = cam
+                    self.features.camera_power = True
+
+            if not self.paths.usb_charging:
+                usb = os.path.join(idir, "usb_charging")
+                if os.path.exists(usb):
+                    self.paths.usb_charging = usb
+                    self.features.usb_charging = True
+
+            if not self.paths.touchpad:
+                tp = os.path.join(idir, "touchpad")
+                if os.path.exists(tp):
+                    self.paths.touchpad = tp
+
+            if not self.paths.fan_mode:
+                fan_m = os.path.join(idir, "fan_mode")
+                if os.path.exists(fan_m):
+                    self.paths.fan_mode = fan_m
 
         # 3. Retroiluminação do Teclado (Kbd Backlight)
         kbd_candidates = [
@@ -334,11 +385,12 @@ class HardwareBackend:
             self.paths.cpu_turbo_amd = "/sys/devices/system/cpu/cpufreq/boost"
             self.features.turbo_boost = True
 
-        if os.path.exists("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"):
-            self.paths.cpu_governor = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
-            self.features.cpu_governor = True
         if os.path.exists("/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"):
             self.paths.cpu_available_governors = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"
+        if os.path.exists("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"):
+            self.paths.cpu_governor = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+            avail_govs = self.get_available_cpu_governors()
+            self.features.cpu_governor = (len(avail_govs) > 1) if self.paths.cpu_available_governors else True
 
         # Intel RAPL PL1 (long_term) e PL2 (short_term)
         p_pl1 = "/sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw"
@@ -358,21 +410,31 @@ class HardwareBackend:
         for wmi_cand in sorted(glob.glob("/sys/class/firmware-attributes/lenovo-wmi-other-*/attributes")):
             if os.path.isdir(wmi_cand):
                 self.paths.lenovo_wmi_attr_dir = wmi_cand
+                self.features.wmi_cpu_temp = os.path.exists(os.path.join(wmi_cand, "cpu_temp", "current_value"))
+                self.features.wmi_gpu_temp = os.path.exists(os.path.join(wmi_cand, "gpu_temp", "current_value"))
+                self.features.wmi_gpu_ac_offset = os.path.exists(os.path.join(wmi_cand, "gpu_nv_ac_offset", "current_value"))
                 break
 
         # 5. Sensores HWMon (CPU Intel/AMD, NVMe, DDR5 RAM, Ventoinhas e PWM)
         self._scan_hwmon()
+        self.features.fan_control = bool(self.paths.hwmon_pwm1 or self.paths.fan_mode)
 
         # 6. Bateria e Fonte AC (/sys/class/power_supply/)
         for bat_cand in sorted(glob.glob("/sys/class/power_supply/BAT*")):
             if os.path.isdir(bat_cand):
                 self.paths.battery_dir = bat_cand
+                self.features.battery = True
                 ct = os.path.join(bat_cand, "charge_types")
                 if os.path.exists(ct):
                     self.paths.charge_types = ct
                 break
 
-        self.features.rapid_charge = bool(self.paths.charge_types or self.paths.conservation_mode)
+        has_fast_charge_type = False
+        if self.paths.charge_types:
+            ct_txt = (self._read_file_text(self.paths.charge_types) or "").lower()
+            ct_tokens = [tok.strip("[]") for tok in ct_txt.split()]
+            has_fast_charge_type = "fast" in ct_tokens
+        self.features.rapid_charge = bool(self.paths.rapid_charge or has_fast_charge_type)
 
         for ac_cand in sorted(glob.glob("/sys/class/power_supply/ADP*") + glob.glob("/sys/class/power_supply/AC*")):
             online_p = os.path.join(ac_cand, "online")
@@ -382,9 +444,172 @@ class HardwareBackend:
 
         # 7. Placas Gráficas (DRM + NVIDIA NVML / nvidia-smi + PCI Runtime Power Management)
         self._scan_gpus()
+        self.features.gpu_telemetry = bool(self.nvidia_available or self.paths.igpu_drm_card)
 
         # 8. DMI, BIOS e Identificação Dinâmica da Linha Lenovo
         self._scan_system_info()
+
+        # 9. Touchpad, Undervolt e Interfaces de Rede
+        self._scan_touchpad()
+        self._scan_undervolt()
+        self._scan_network_power()
+
+        # 10. GPU MUX Switch (supergfxctl, envycontrol, prime-select, sysfs, pcie-runtime)
+        self._scan_gpu_mux()
+
+        # 11. Taxa de Atualização de Tela (kscreen-doctor, wlr-randr, xrandr)
+        self._scan_display_refresh()
+
+        # 12. LCD Overdrive e Firmware Attributes Lenovo BIOS WMI
+        self._scan_bios_attributes()
+
+        # 13. Modo Viagem (Eco-Mode Extremo): só habilita se houver ao menos 1 recurso de economia real
+        self.features.eco_travel = bool(
+            self.features.platform_profile
+            or self.features.conservation_mode
+            or self.features.turbo_boost
+            or self.features.cpu_governor
+            or self.features.custom_tdp
+            or self.paths.nvidia_pci_power_control
+            or self.features.kbd_backlight
+        )
+
+    def _scan_touchpad(self) -> None:
+        """Detecta se o notebook possui touchpad físico e backend real para bloqueá-lo."""
+        self._touchpad_event_name = None
+        self._touchpad_device_name = None
+
+        if self.paths.touchpad and os.path.exists(self.paths.touchpad):
+            self.features.touchpad_control = True
+            return
+
+        tp_keywords = ("touchpad", "synaptics", "elan", "alps", "cirq", "trackpad")
+        for ev_path in sorted(glob.glob("/sys/class/input/event*/device/name")):
+            dev_name = self._read_file_text(ev_path) or ""
+            if any(k in dev_name.lower() for k in tp_keywords):
+                parts = ev_path.split(os.sep)
+                ev_dir = next((p for p in parts if p.startswith("event")), None)
+                if ev_dir:
+                    self._touchpad_event_name = ev_dir
+                    self._touchpad_device_name = dev_name
+                    break
+
+        if not self._touchpad_event_name:
+            self.features.touchpad_control = False
+            return
+
+        desktop = (os.environ.get("XDG_CURRENT_DESKTOP") or os.environ.get("DESKTOP_SESSION") or "").lower()
+        has_kde = bool(shutil.which("qdbus6") or shutil.which("qdbus")) and ("kde" in desktop or "plasma" in desktop or not desktop)
+        has_x11 = bool(shutil.which("xinput") and os.environ.get("DISPLAY"))
+        has_gnome = bool(shutil.which("gsettings") and "gnome" in desktop)
+        self.features.touchpad_control = bool(has_kde or has_x11 or has_gnome)
+
+    def _scan_undervolt(self) -> None:
+        """Verifica se o processador e o sistema realmente suportam ajuste de tensão (Undervolt)."""
+        vendor = self.get_cpu_vendor()
+        if vendor == "Intel":
+            model = self.system_info.cpu_model or ""
+            is_locked_gen = False
+            m_core = re.search(r"\bi[3579]-1[234]\d{2,3}([A-Za-z0-9]*)\b", model)
+            if m_core:
+                suffix = m_core.group(1).upper()
+                if suffix not in ("HX", "HK", "K", "KF", "KS"):
+                    is_locked_gen = True
+            else:
+                m_u = re.search(r"\bUltra\s+\d\s+\d{3}([A-Za-z]*)\b", model, re.IGNORECASE)
+                if m_u and m_u.group(1).upper() not in ("HX", "HK", "K", "KF", "KS"):
+                    is_locked_gen = True
+            has_msr = bool(glob.glob("/dev/cpu/[0-9]*/msr") or shutil.which("wrmsr") or shutil.which("intel-undervolt"))
+            self.features.cpu_undervolt = bool(has_msr and not is_locked_gen)
+        elif vendor == "AMD":
+            self.features.cpu_undervolt = bool(shutil.which("ryzenadj"))
+        else:
+            self.features.cpu_undervolt = False
+
+    def _scan_network_power(self) -> None:
+        """Detecta interfaces reais de Wi-Fi e Ethernet para controle de economia de energia."""
+        wifi_if, eth_if = self._discover_network_interfaces()
+        self.features.wifi_power_save = bool(wifi_if)
+        self.features.eth_power_save = bool(eth_if)
+
+    def get_eco_travel_summary(self) -> str:
+        """Retorna descrição dinâmica do Modo Viagem listando apenas ações suportadas neste notebook."""
+        parts: List[str] = []
+        if self.features.conservation_mode:
+            parts.append("Conservação 80%")
+        if self.paths.nvidia_pci_power_control:
+            parts.append("GPU D3cold")
+        if self.features.turbo_boost:
+            parts.append("Turbo Off")
+        if self.features.platform_profile:
+            parts.append("Low Power")
+        if self.features.kbd_backlight:
+            parts.append("Teclado Off")
+        if self.features.custom_tdp:
+            parts.append("TDP 15W")
+        if not parts:
+            return "Economia de energia rápida em 1 clique."
+        return "1-Clique: " + " + ".join(parts[:4])
+
+    def get_detected_capabilities(self) -> List[Dict[str, str]]:
+        """Retorna a lista de capacidades de hardware efetivamente liberadas por este notebook."""
+        f = self.features
+        caps: List[Dict[str, str]] = []
+        if f.platform_profile:
+            profs = ", ".join(p.upper() for p in (f.available_profiles or self.get_supported_canonical_profiles()))
+            caps.append({"name": "Perfis Térmicos ACPI", "detail": profs or "Suportado"})
+        if f.conservation_mode:
+            caps.append({"name": "Conservação da Bateria", "detail": "Limite ~80% via EC"})
+        if f.rapid_charge:
+            caps.append({"name": "Carregamento Rápido", "detail": "Rapid Charge / Fast"})
+        if f.fn_lock:
+            caps.append({"name": "Trava de Teclas Fn", "detail": "Fn-Lock ACPI"})
+        if f.camera_power:
+            caps.append({"name": "Obturador da Câmera", "detail": "Privacy E-Shutter"})
+        if f.usb_charging:
+            caps.append({"name": "Always-On USB", "detail": "Carga USB em repouso"})
+        if f.kbd_backlight:
+            caps.append({"name": "Luz do Teclado", "detail": f"0..{f.kbd_max_brightness} níveis"})
+        if f.touchpad_control:
+            caps.append({"name": "Trava do Touchpad", "detail": "Controle ativo"})
+        if f.turbo_boost:
+            caps.append({"name": "CPU Turbo Boost", "detail": "Intel/AMD Boost"})
+        if f.cpu_governor:
+            caps.append({"name": "CPU Scaling Governor", "detail": ", ".join(self.get_available_cpu_governors()[:3])})
+        if f.custom_tdp:
+            caps.append({"name": "Custom TDP (RAPL)", "detail": "Controle PL1 / PL2"})
+        if f.fan_control:
+            caps.append({"name": "Curva de Ventoinhas", "detail": "Controle EC / PWM"})
+        if f.cpu_undervolt or f.wmi_gpu_ac_offset:
+            uv_parts = []
+            if f.cpu_undervolt:
+                uv_parts.append("CPU Voltage")
+            if f.wmi_gpu_ac_offset:
+                uv_parts.append("WMI GPU Offset")
+            caps.append({"name": "Undervolt / Power Offset", "detail": " + ".join(uv_parts)})
+        if f.gpu_mux:
+            mux = self.get_gpu_mux_info()
+            if mux.available and mux.available_modes:
+                caps.append({"name": "GPU MUX / Comutação", "detail": f"{mux.backend_name} ({'/'.join(mux.available_modes)})"})
+        if f.refresh_rate:
+            ref = self.get_display_refresh_info()
+            if ref.available and len(ref.available_rates) > 1:
+                rates_s = " / ".join(f"{r}Hz" for r in ref.available_rates)
+                caps.append({"name": "Taxa de Atualização", "detail": rates_s})
+        if f.lcd_overdrive:
+            caps.append({"name": "LCD Overdrive", "detail": "Tempo de resposta GtG"})
+        if f.bios_attributes:
+            attrs = [a for a in self.get_bios_attributes() if a.attr_id.lower() != "lcd_overdrive"]
+            if attrs:
+                caps.append({"name": "BIOS Lenovo WMI", "detail": f"{len(attrs)} parâmetros"})
+        if f.wifi_power_save or f.eth_power_save:
+            nets = []
+            if f.wifi_power_save:
+                nets.append("Wi-Fi")
+            if f.eth_power_save:
+                nets.append("Ethernet")
+            caps.append({"name": "Economia de Rede", "detail": " & ".join(nets)})
+        return caps
 
     def _scan_hwmon(self) -> None:
         """Mapeia sensores térmicos e de rotação em /sys/class/hwmon/."""
@@ -745,6 +970,23 @@ class HardwareBackend:
                     target = self.settings.get("ac_profile", "performance")
                     self.set_platform_profile(target)
 
+            # Transição Automática de Taxa de Atualização de Tela (AC vs Bateria)
+            if self.get_auto_refresh_rate_transition() and self.features.refresh_rate:
+                try:
+                    info = self.get_display_refresh_info()
+                    if info.available and len(info.available_rates) > 1:
+                        target_hz = min(info.available_rates) if current_ac == 0 else max(info.available_rates)
+                        if target_hz != info.current_hz:
+                            ok_hz, _ = self.set_refresh_rate(target_hz)
+                            if ok_hz:
+                                events.append({
+                                    "type": "refresh_rate_changed",
+                                    "hz": target_hz,
+                                    "reason": "battery" if current_ac == 0 else "ac"
+                                })
+                except Exception:
+                    pass
+
         # 3. Verificar Fn-Lock
         if self.paths.fn_lock:
             cur_fn = self.get_fn_lock()
@@ -780,6 +1022,8 @@ class HardwareBackend:
 
         return events
 
+    poll_hardware_events = fast_poll_changes
+
     # =========================================================================
     # ELITE 1: Perfis Dinâmicos do Kernel (Suporte nativo a 'max-power')
     # =========================================================================
@@ -802,7 +1046,25 @@ class HardwareBackend:
         val = self._read_file_text(self.paths.platform_profile_choices)
         if val:
             return val.split()
-        return ["low-power", "balanced", "performance"]
+        if self.features.platform_profile:
+            return ["low-power", "balanced", "performance"]
+        return []
+
+    def get_supported_canonical_profiles(self) -> List[str]:
+        """Retorna os perfis canônicos ('low-power', 'balanced', 'performance', 'max-power') realmente suportados pelo kernel."""
+        if not self.features.platform_profile:
+            return []
+        raw_choices = [c.lower().strip() for c in self.get_platform_profile_choices()]
+        ordered: List[str] = []
+        if any(c in raw_choices for c in ("low-power", "quiet", "low_power", "power-saver")):
+            ordered.append("low-power")
+        if any(c in raw_choices for c in ("balanced", "balanced_performance")):
+            ordered.append("balanced")
+        if "performance" in raw_choices:
+            ordered.append("performance")
+        if any(c in raw_choices for c in ("max-power", "max_power", "maxpower", "extreme")):
+            ordered.append("max-power")
+        return ordered
 
     def set_platform_profile(self, profile: str, allow_elevation: bool = True) -> Tuple[bool, str]:
         """
@@ -1268,7 +1530,9 @@ class HardwareBackend:
             txt = self._read_file_text(self.paths.cpu_available_governors)
             if txt:
                 return txt.split()
-        return ["performance", "powersave"]
+        if self.features.cpu_governor:
+            return ["performance", "powersave"]
+        return []
 
     def set_cpu_governor(self, governor: str, allow_elevation: bool = True) -> Tuple[bool, str]:
         return PermissionsManager.write_cpu_governor_all(governor, allow_elevation=allow_elevation)
@@ -1361,6 +1625,19 @@ class HardwareBackend:
         if action_id == "cycle_profile":
             ok, new_prof = self.cycle_next_profile()
             return {"action": action_id, "ok": ok, "osd_type": "profile", "value": new_prof}
+
+        if action_id == "cycle_refresh_rate":
+            ok, new_hz, msg = self.cycle_refresh_rate()
+            return {
+                "action": action_id,
+                "ok": ok,
+                "osd_type": "refresh_rate",
+                "hz": new_hz,
+                "title": f"Taxa de Atualização: {new_hz} Hz",
+                "subtitle": "Fn + R • Painel de Vídeo",
+                "icon": "refresh.svg",
+                "accent": "#00d2ff" if new_hz > 60 else "#2fe08c"
+            }
 
         if action_id == "toggle_max_power":
             choices = self.get_platform_profile_choices()
@@ -1469,8 +1746,9 @@ class HardwareBackend:
 
             if self.paths.platform_profile:
                 choices = self.get_platform_profile_choices()
-                low_p = "low-power" if "low-power" in choices else ("quiet" if "quiet" in choices else choices[0])
-                pairs.append((self.paths.platform_profile, low_p))
+                if choices:
+                    low_p = "low-power" if "low-power" in choices else ("quiet" if "quiet" in choices else choices[0])
+                    pairs.append((self.paths.platform_profile, low_p))
 
             if self.paths.cpu_turbo_intel:
                 pairs.append((self.paths.cpu_turbo_intel, "1"))  # 1 = no_turbo (Turbo OFF)
@@ -1487,9 +1765,11 @@ class HardwareBackend:
                 pairs.append((self.paths.rapl_pl1, str(15 * 1_000_000)))
                 pairs.append((self.paths.rapl_pl2, str(25 * 1_000_000)))
 
-            ok, msg = PermissionsManager.write_multiple_sysfs_values(pairs)
+            ok, msg = PermissionsManager.write_multiple_sysfs_values(pairs) if pairs else (True, "")
             if self.features.cpu_governor:
-                self.set_cpu_governor("powersave")
+                gov_ok, gov_msg = self.set_cpu_governor("powersave")
+                if not pairs:
+                    ok, msg = gov_ok, gov_msg
 
             self.settings.set("eco_travel_mode", True)
             self._max_power_active = False
@@ -1559,13 +1839,17 @@ class HardwareBackend:
         return ok, msg
 
     def get_rapid_charge(self) -> bool:
-        """Verifica se o Carregamento Rápido está ativo via charge_types ou settings."""
+        """Verifica se o Carregamento Rápido está ativo via rapid_charge sysfs ou charge_types."""
+        if self.paths.rapid_charge and os.path.exists(self.paths.rapid_charge):
+            return self._read_file_int(self.paths.rapid_charge, default=0) == 1
         if self.paths.charge_types:
             ct = self._read_file_text(self.paths.charge_types) or ""
             if "[Fast]" in ct:
                 return True
-            if "[Long_Life]" in ct:
+            if "[Long_Life]" in ct or "[Standard]" in ct:
                 return False
+        if not self.features.rapid_charge:
+            return False
         return bool(self.settings.get("rapid_charge", False))
 
     def set_rapid_charge(self, enable: bool) -> Tuple[bool, str]:
@@ -1573,20 +1857,28 @@ class HardwareBackend:
         Ativa/desativa o Carregamento Rápido (Rapid Charge).
         Regra de Exclusão Mútua: se ativar Rapid Charge, desativa Modo de Conservação.
         """
+        if not self.features.rapid_charge and not self.paths.rapid_charge and not self.paths.charge_types:
+            return False, "Carregamento Rápido não suportado por este modelo."
+
         if enable and self.get_conservation_mode():
             if self.paths.conservation_mode:
                 PermissionsManager.write_sysfs_value(self.paths.conservation_mode, "0")
                 self._last_conservation = False
 
-        if self.paths.charge_types and os.access(self.paths.charge_types, os.W_OK):
-            try:
-                with open(self.paths.charge_types, "w", encoding="utf-8") as f:
-                    f.write("Fast" if enable else "Standard")
-            except Exception:
-                pass
+        if self.paths.rapid_charge and os.path.exists(self.paths.rapid_charge):
+            ok, msg = PermissionsManager.write_sysfs_value(self.paths.rapid_charge, "1" if enable else "0")
+            if ok:
+                self.settings.set("rapid_charge", enable)
+            return ok, msg
 
-        self.settings.set("rapid_charge", enable)
-        return True, f"Carregamento Rápido {'ativado' if enable else 'desativado'}."
+        if self.paths.charge_types and os.path.exists(self.paths.charge_types):
+            ok, msg = PermissionsManager.write_sysfs_value(self.paths.charge_types, "Fast" if enable else "Standard")
+            if ok:
+                self.settings.set("rapid_charge", enable)
+                return True, f"Carregamento Rápido {'ativado' if enable else 'desativado'}."
+            return False, msg
+
+        return False, "Interface de Carregamento Rápido não encontrada no kernel."
 
     # =========================================================================
     # Controles do Painel EDGE (Fn-Lock, Câmera, USB Charging, Kbd Backlight, Touchpad)
@@ -1644,19 +1936,74 @@ class HardwareBackend:
         return ok, msg
 
     def get_touchpad_status(self) -> bool:
+        """Retorna True se o Touchpad estiver bloqueado (desativado)."""
+        if self.paths.touchpad and os.path.exists(self.paths.touchpad):
+            # ideapad_acpi/touchpad: 1 = ativo, 0 = bloqueado
+            return self._read_file_int(self.paths.touchpad, default=1) == 0
         return bool(self.settings.get("touchpad_locked", False))
 
     def set_touchpad_status(self, locked: bool) -> Tuple[bool, str]:
-        self.settings.set("touchpad_locked", locked)
-        if shutil.which("qdbus6") or shutil.which("qdbus"):
+        if not self.features.touchpad_control:
+            return False, "Controle de bloqueio do Touchpad não suportado neste dispositivo."
+
+        applied = False
+        if self.paths.touchpad and os.path.exists(self.paths.touchpad):
+            ok, msg = PermissionsManager.write_sysfs_value(self.paths.touchpad, "0" if locked else "1")
+            if ok:
+                self.settings.set("touchpad_locked", locked)
+                return True, f"Bloqueio do Touchpad {'ativado' if locked else 'desativado'}."
+            return False, msg
+
+        if (shutil.which("qdbus6") or shutil.which("qdbus")) and self._touchpad_event_name:
             qdbus_bin = "qdbus6" if shutil.which("qdbus6") else "qdbus"
             try:
-                subprocess.run(
-                    [qdbus_bin, "org.kde.KWin", "/org/kde/KWin/InputDevice", "org.freedesktop.DBus.Properties.GetAll"],
-                    capture_output=True, timeout=1
+                res = subprocess.run(
+                    [
+                        qdbus_bin,
+                        "org.kde.KWin",
+                        f"/org/kde/KWin/InputDevice/{self._touchpad_event_name}",
+                        "org.freedesktop.DBus.Properties.Set",
+                        "org.kde.KWin.InputDevice",
+                        "enabled",
+                        "false" if locked else "true",
+                    ],
+                    capture_output=True, text=True, timeout=2
                 )
+                if res.returncode == 0:
+                    applied = True
             except Exception:
                 pass
+
+        if not applied and shutil.which("xinput") and self._touchpad_device_name and os.environ.get("DISPLAY"):
+            try:
+                res = subprocess.run(
+                    ["xinput", "disable" if locked else "enable", self._touchpad_device_name],
+                    capture_output=True, text=True, timeout=2
+                )
+                if res.returncode == 0:
+                    applied = True
+            except Exception:
+                pass
+
+        if not applied and shutil.which("gsettings"):
+            desktop = (os.environ.get("XDG_CURRENT_DESKTOP") or "").lower()
+            if "gnome" in desktop:
+                try:
+                    res = subprocess.run(
+                        [
+                            "gsettings", "set",
+                            "org.gnome.desktop.peripherals.touchpad",
+                            "send-events",
+                            "disabled" if locked else "enabled",
+                        ],
+                        capture_output=True, text=True, timeout=2
+                    )
+                    if res.returncode == 0:
+                        applied = True
+                except Exception:
+                    pass
+
+        self.settings.set("touchpad_locked", locked)
         return True, f"Bloqueio do Touchpad {'ativado' if locked else 'desativado'}."
 
     def get_auto_power_transition(self) -> bool:
@@ -2320,12 +2667,20 @@ class HardwareBackend:
         """Retorna o estado atual de Undervolt (Core/Cache) e Offset AC da GPU."""
         cpu_m = self.get_cpu_metrics()
         vendor = cpu_m.vendor
-        if vendor == "AMD":
-            method = "AMD Curve Optimizer (ryzenadj) + Lenovo WMI"
-        elif os.path.exists("/dev/cpu/0/msr") or shutil.which("intel-undervolt") or shutil.which("wrmsr"):
-            method = "MSR 0x150 (Intel HX OC Mailbox) + Lenovo WMI"
+        if self.features.cpu_undervolt and self.features.wmi_gpu_ac_offset:
+            if vendor == "AMD":
+                method = "AMD Curve Optimizer (ryzenadj) + Lenovo WMI"
+            else:
+                method = "MSR 0x150 (Intel HX OC Mailbox) + Lenovo WMI"
+        elif self.features.cpu_undervolt:
+            if vendor == "AMD":
+                method = "AMD Curve Optimizer (ryzenadj)"
+            else:
+                method = "MSR 0x150 (Intel OC Mailbox)"
+        elif self.features.wmi_gpu_ac_offset:
+            method = "Lenovo WMI GPU / AC Power Offset"
         else:
-            method = "Lenovo WMI Power Offset + MSR 0x150"
+            method = "Não suportado neste hardware"
 
         core_mv = max(-150, min(0, int(self.settings.get("undervolt_core_mv", 0))))
         cache_mv = max(-150, min(0, int(self.settings.get("undervolt_cache_mv", 0))))
@@ -2338,7 +2693,7 @@ class HardwareBackend:
                 gpu_offset_w = val
 
         return UndervoltStatus(
-            supported=True,
+            supported=bool(self.features.cpu_undervolt or self.features.wmi_gpu_ac_offset),
             cpu_vendor=vendor,
             method=method,
             core_offset_mv=core_mv,
@@ -2826,9 +3181,15 @@ class HardwareBackend:
         candidates = [
             self.paths.platform_profile,
             self.paths.conservation_mode,
+            self.paths.rapid_charge,
+            self.paths.charge_types,
             self.paths.fn_lock,
             self.paths.camera_power,
             self.paths.usb_charging,
+            self.paths.touchpad,
+            self.paths.fan_mode,
+            self.paths.hwmon_pwm1,
+            self.paths.hwmon_pwm1_enable,
             self.paths.kbd_backlight,
             self.paths.cpu_turbo_intel,
             self.paths.cpu_turbo_amd,
@@ -2836,6 +3197,8 @@ class HardwareBackend:
             self.paths.rapl_pl1,
             self.paths.rapl_pl2,
             self.paths.nvidia_pci_power_control,
+            self.paths.lcd_overdrive,
+            self.paths.gpu_mode,
         ]
         return [p for p in candidates if p is not None and os.path.exists(p)]
 
@@ -2927,3 +3290,742 @@ class HardwareBackend:
             return True, f"Inicialização automática configurada em {desktop_path}"
         except OSError as e:
             return False, f"Erro ao criar o arquivo de autostart: {e}"
+
+    # =========================================================================
+    # RECURSO 1: GPU MUX Switch (Modo Híbrido vs dGPU Direta vs iGPU Pura)
+    # =========================================================================
+    def _scan_gpu_mux(self) -> None:
+        """Descobre ferramentas e nós do kernel para alternância de modos de GPU (MUX Switch)."""
+        # 1. Nós do kernel Lenovo WMI / ACPI
+        for cand in (
+            "/sys/bus/platform/drivers/ideapad_acpi/VPC2004:00/gpu_mode",
+            "/sys/devices/platform/ideapad_acpi/gpu_mode",
+        ) + tuple(glob.glob("/sys/bus/platform/drivers/ideapad_acpi/VPC*/gpu_mode")) + tuple(glob.glob("/sys/class/firmware-attributes/*/attributes/gpu_mode/current_value")):
+            if os.path.exists(cand):
+                self.paths.gpu_mode = cand
+                break
+
+        # 2. Somente ativa GPU MUX se houver ferramenta dedicada, nó sysfs ou PCIe Runtime PM (iGPU + dGPU)
+        has_tool = any(shutil.which(cmd) for cmd in ("supergfxctl", "envycontrol", "prime-select"))
+        has_pcie_pm = bool(self.paths.nvidia_pci_power_control and self.paths.igpu_drm_card)
+        self.features.gpu_mux = bool(has_tool or self.paths.gpu_mode or has_pcie_pm)
+
+    def get_gpu_mux_info(self) -> GpuMuxInfo:
+        """Retorna o estado atual do GPU MUX Switch, modos suportados e backend ativo."""
+        now = time.time()
+        if self._cached_gpu_mux_info and (now - self._last_gpu_mux_scan < 4.0):
+            return self._cached_gpu_mux_info
+
+        modes = ["hybrid", "dedicated", "integrated"]
+        cur_mode = self.settings.get("gpu_mux_mode", "hybrid")
+        backend_name = "none"
+        req_reboot = False
+        msg = ""
+
+        # 1. supergfxctl (ASUS / Lenovo ROG / Legion com daemon supergfxctl)
+        if shutil.which("supergfxctl"):
+            backend_name = "supergfxctl"
+            try:
+                res_g = subprocess.run(["supergfxctl", "-g"], capture_output=True, text=True, timeout=3)
+                if res_g.returncode == 0:
+                    raw = res_g.stdout.strip().lower()
+                    if "dedicated" in raw or "discrete" in raw:
+                        cur_mode = "dedicated"
+                    elif "integrated" in raw:
+                        cur_mode = "integrated"
+                    else:
+                        cur_mode = "hybrid"
+
+                res_s = subprocess.run(["supergfxctl", "-s"], capture_output=True, text=True, timeout=3)
+                if "reboot" in (res_s.stdout + res_s.stderr).lower() or "action" in (res_s.stdout + res_s.stderr).lower():
+                    req_reboot = True
+                    msg = "Reinicialização necessária para efetivar a troca de GPU no supergfxctl."
+            except Exception:
+                pass
+
+        # 2. envycontrol
+        elif shutil.which("envycontrol"):
+            backend_name = "envycontrol"
+            try:
+                res = subprocess.run(["envycontrol", "--query"], capture_output=True, text=True, timeout=3)
+                if res.returncode == 0:
+                    raw = res.stdout.strip().lower()
+                    if "nvidia" in raw:
+                        cur_mode = "dedicated"
+                    elif "integrated" in raw:
+                        cur_mode = "integrated"
+                    else:
+                        cur_mode = "hybrid"
+            except Exception:
+                pass
+
+        # 3. prime-select (Ubuntu / Debian / Linux Mint)
+        elif shutil.which("prime-select"):
+            backend_name = "prime-select"
+            try:
+                res = subprocess.run(["prime-select", "query"], capture_output=True, text=True, timeout=3)
+                if res.returncode == 0:
+                    raw = res.stdout.strip().lower()
+                    if "nvidia" in raw:
+                        cur_mode = "dedicated"
+                    elif "intel" in raw:
+                        cur_mode = "integrated"
+                    else:
+                        cur_mode = "hybrid"
+            except Exception:
+                pass
+
+        # 4. Nó Lenovo ACPI / WMI (gpu_mode)
+        elif self.paths.gpu_mode and os.path.exists(self.paths.gpu_mode):
+            backend_name = "lenovo-wmi"
+            val = self._read_file_text(self.paths.gpu_mode) or "0"
+            val = val.strip().lower()
+            if val in ("1", "discrete", "dedicated"):
+                cur_mode = "dedicated"
+            elif val in ("2", "igpu", "integrated"):
+                cur_mode = "integrated"
+            else:
+                cur_mode = "hybrid"
+
+        # 5. Fallback via PCI Runtime Power Management (somente em sistemas híbridos com dGPU + iGPU)
+        elif self.paths.nvidia_pci_power_control and self.paths.igpu_drm_card:
+            backend_name = "pcie-runtime"
+            modes = ["hybrid", "integrated"]
+            rt_status_p = os.path.join(os.path.dirname(self.paths.nvidia_pci_power_control), "runtime_status")
+            rt_status = (self._read_file_text(rt_status_p) or "").strip().lower()
+            ctrl = (self._read_file_text(self.paths.nvidia_pci_power_control) or "").strip().lower()
+            if rt_status == "suspended" and ctrl == "auto":
+                cur_mode = "integrated"
+            else:
+                cur_mode = "hybrid"
+        else:
+            backend_name = "none"
+            modes = []
+
+        is_avail = backend_name != "none" and len(modes) > 0
+        self.features.gpu_mux = is_avail
+
+        info = GpuMuxInfo(
+            available=is_avail,
+            current_mode=cur_mode,
+            available_modes=modes,
+            backend_name=backend_name,
+            requires_reboot=req_reboot,
+            message=msg
+        )
+        self._cached_gpu_mux_info = info
+        self._last_gpu_mux_scan = now
+        return info
+
+    def set_gpu_mux_mode(self, mode: str) -> Tuple[bool, str, bool]:
+        """
+        Altera o modo de trabalho da GPU (hybrid, dedicated, integrated).
+        Retorna (sucesso, mensagem, requer_reboot).
+        """
+        mode = mode.lower().strip()
+        if mode not in ("hybrid", "dedicated", "integrated"):
+            return False, f"Modo '{mode}' inválido. Escolha entre: hybrid, dedicated ou integrated.", False
+
+        info = self.get_gpu_mux_info()
+        backend = info.backend_name
+
+        if mode not in info.available_modes:
+            return False, f"O modo '{mode}' não é suportado pelo backend ativo ({backend}). Instale 'envycontrol' ou 'supergfxctl' para comutação de hardware.", False
+
+        if backend == "supergfxctl":
+            mapped = {"hybrid": "Hybrid", "dedicated": "Dedicated", "integrated": "Integrated"}[mode]
+            try:
+                res = subprocess.run(["supergfxctl", "-m", mapped], capture_output=True, text=True, timeout=8)
+                if res.returncode == 0:
+                    self.settings.set("gpu_mux_mode", mode)
+                    self._cached_gpu_mux_info = None
+                    req = "reboot" in res.stdout.lower() or "logout" in res.stdout.lower()
+                    msg = f"Modo {mapped} configurado via supergfxctl."
+                    if req:
+                        msg += " Reinicialização de sessão necessária."
+                    return True, msg, req
+                return False, f"supergfxctl retornou erro: {res.stderr or res.stdout}", False
+            except Exception as e:
+                return False, f"Falha ao executar supergfxctl: {e}", False
+
+        elif backend == "envycontrol":
+            mapped = {"hybrid": "hybrid", "dedicated": "nvidia", "integrated": "integrated"}[mode]
+            cmd = ["envycontrol", "-s", mapped, "--no-confirm"]
+            if os.geteuid() != 0 and shutil.which("pkexec"):
+                cmd = ["pkexec"] + cmd
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                if res.returncode == 0:
+                    self.settings.set("gpu_mux_mode", mode)
+                    self._cached_gpu_mux_info = None
+                    return True, f"Modo {mode.upper()} gravado via EnvyControl. Reinicie o sistema para aplicar.", True
+                return False, f"EnvyControl erro: {res.stderr or res.stdout}", False
+            except Exception as e:
+                return False, f"Falha ao executar envycontrol: {e}", False
+
+        elif backend == "prime-select":
+            mapped = {"hybrid": "on-demand", "dedicated": "nvidia", "integrated": "intel"}[mode]
+            cmd = ["prime-select", mapped]
+            if os.geteuid() != 0 and shutil.which("pkexec"):
+                cmd = ["pkexec"] + cmd
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+                if res.returncode == 0:
+                    self.settings.set("gpu_mux_mode", mode)
+                    self._cached_gpu_mux_info = None
+                    return True, f"Modo {mapped} gravado via prime-select. Reinicie a sessão para aplicar.", True
+                return False, f"prime-select erro: {res.stderr or res.stdout}", False
+            except Exception as e:
+                return False, f"Falha ao executar prime-select: {e}", False
+
+        elif backend == "lenovo-wmi" and self.paths.gpu_mode:
+            mapped_val = {"hybrid": "0", "dedicated": "1", "integrated": "2"}[mode]
+            ok, msg = PermissionsManager.write_sysfs_value(self.paths.gpu_mode, mapped_val, allow_elevation=True)
+            if ok:
+                self.settings.set("gpu_mux_mode", mode)
+                self._cached_gpu_mux_info = None
+                return True, f"Modo GPU {mode.upper()} gravado na BIOS Lenovo. Reinicie o notebook.", True
+            return False, f"Erro ao gravar no nó Lenovo gpu_mode: {msg}", False
+
+        elif backend == "pcie-runtime" and self.paths.nvidia_pci_power_control:
+            val = "auto" if mode == "integrated" else "on"
+            ok, msg = PermissionsManager.write_sysfs_value(self.paths.nvidia_pci_power_control, val, allow_elevation=False)
+            if ok:
+                self.settings.set("gpu_mux_mode", mode)
+                self._cached_gpu_mux_info = None
+                return True, f"Estado PCIe dGPU ajustado para {val} ({mode.upper()}).", False
+            return False, f"Erro ao ajustar controle PCIe: {msg}", False
+
+        return False, "Comutação de GPU MUX não é suportada pelo hardware/sistema atual.", False
+
+    # =========================================================================
+    # RECURSO 2: Taxa de Atualização Automática (144Hz/165Hz ↔ 60Hz e Fn+R)
+    # =========================================================================
+    def _scan_display_refresh(self) -> None:
+        """Detecta se o ambiente e painel suportam troca real entre múltiplas taxas de atualização."""
+        info = self.get_display_refresh_info()
+        self.features.refresh_rate = bool(
+            info.available
+            and info.backend_name in ("kscreen-doctor", "wlr-randr", "xrandr")
+            and len(info.available_rates) > 1
+        )
+        # Não poluir o cache durante a inicialização para permitir consultas atualizadas sob demanda
+        self._cached_refresh_info = None
+        self._last_refresh_scan = 0.0
+
+    def get_display_refresh_info(self) -> DisplayRefreshInfo:
+        """Detecta display ativo, resolução atual e taxas de atualização suportadas."""
+        now = time.time()
+        if self._cached_refresh_info and (now - self._last_refresh_scan < 3.0):
+            return self._cached_refresh_info
+
+        # 1. KDE Plasma (Wayland / X11) via kscreen-doctor
+        if shutil.which("kscreen-doctor"):
+            try:
+                env = os.environ.copy()
+                if "QT_QPA_PLATFORM" not in env and not env.get("WAYLAND_DISPLAY") and not env.get("DISPLAY"):
+                    env["QT_QPA_PLATFORM"] = "offscreen"
+                res = subprocess.run(["kscreen-doctor", "-j"], capture_output=True, text=True, env=env, timeout=3)
+                if res.returncode == 0:
+                    data = json.loads(res.stdout)
+                    outputs = data.get("outputs", [])
+                    candidates = [o for o in outputs if o.get("connected") and o.get("enabled")]
+                    internal = [o for o in candidates if any(p in o.get("name", "").upper() for p in ("EDP", "LVDS", "DSI"))]
+                    chosen = internal[0] if internal else (candidates[0] if candidates else None)
+
+                    if chosen:
+                        d_name = chosen.get("name", "Display")
+                        cur_mode_id = chosen.get("currentModeId")
+                        modes = chosen.get("modes", [])
+                        cur_mode = next((m for m in modes if m.get("id") == cur_mode_id), None)
+                        if cur_mode:
+                            w = cur_mode.get("size", {}).get("width", 1920)
+                            h = cur_mode.get("size", {}).get("height", 1080)
+                            cur_res = f"{w}x{h}"
+                            rates_set = set()
+                            for m in modes:
+                                if m.get("size", {}).get("width") == w and m.get("size", {}).get("height") == h:
+                                    r_raw = m.get("refreshRate", 60)
+                                    hz = round(r_raw / 1000.0) if r_raw > 1000 else round(r_raw)
+                                    if hz > 0:
+                                        rates_set.add(hz)
+
+                            raw_cur_hz = cur_mode.get("refreshRate", 60)
+                            cur_hz = round(raw_cur_hz / 1000.0) if raw_cur_hz > 1000 else round(raw_cur_hz)
+                            rates = sorted(list(rates_set)) if rates_set else [60]
+
+                            info = DisplayRefreshInfo(
+                                available=True,
+                                current_hz=cur_hz,
+                                available_rates=rates,
+                                display_name=d_name,
+                                resolution=cur_res,
+                                backend_name="kscreen-doctor",
+                                auto_switch_ac=self.get_auto_refresh_rate_transition()
+                            )
+                            self._cached_refresh_info = info
+                            self._last_refresh_scan = now
+                            return info
+            except Exception:
+                pass
+
+        # 2. wlroots Wayland via wlr-randr (com agrupamento por saída para multi-monitor)
+        if shutil.which("wlr-randr"):
+            try:
+                res = subprocess.run(["wlr-randr"], capture_output=True, text=True, timeout=3)
+                if res.returncode == 0:
+                    lines = res.stdout.splitlines()
+                    displays = []
+                    curr_disp = None
+                    for line in lines:
+                        if line and not line.startswith(" ") and not line.startswith("\t"):
+                            parts = line.split()
+                            if parts:
+                                d_name = parts[0]
+                                curr_disp = {
+                                    "name": d_name,
+                                    "is_internal": any(p in d_name.upper() for p in ("EDP", "LVDS", "DSI")),
+                                    "cur_res": "1920x1080",
+                                    "cur_hz": 60,
+                                    "rates": set()
+                                }
+                                displays.append(curr_disp)
+                                continue
+                        if curr_disp:
+                            m = re.search(r"(\d+x\d+)\s+px,\s+([\d\.]+)\s+Hz(?:\s+\((current)\))?", line)
+                            if m:
+                                res_str, hz_str, is_cur = m.group(1), m.group(2), m.group(3)
+                                hz_val = round(float(hz_str))
+                                curr_disp["rates"].add(hz_val)
+                                if is_cur:
+                                    curr_disp["cur_res"] = res_str
+                                    curr_disp["cur_hz"] = hz_val
+
+                    internal = [d for d in displays if d["is_internal"]]
+                    chosen = internal[0] if internal else (displays[0] if displays else None)
+                    if chosen:
+                        rates = sorted(list(chosen["rates"])) if chosen["rates"] else [chosen["cur_hz"]]
+                        info = DisplayRefreshInfo(
+                            available=True,
+                            current_hz=chosen["cur_hz"],
+                            available_rates=rates,
+                            display_name=chosen["name"],
+                            resolution=chosen["cur_res"],
+                            backend_name="wlr-randr",
+                            auto_switch_ac=self.get_auto_refresh_rate_transition()
+                        )
+                        self._cached_refresh_info = info
+                        self._last_refresh_scan = now
+                        return info
+            except Exception:
+                pass
+
+        # 3. X11 via xrandr (com agrupamento por saída para suporte perfeito a multi-monitor)
+        if shutil.which("xrandr"):
+            try:
+                res = subprocess.run(["xrandr", "--current"], capture_output=True, text=True, timeout=3)
+                if res.returncode == 0:
+                    lines = res.stdout.splitlines()
+                    displays = []
+                    curr_disp = None
+                    for line in lines:
+                        if " connected" in line:
+                            parts = line.split()
+                            d_name = parts[0]
+                            is_primary = "primary" in parts
+                            curr_disp = {
+                                "name": d_name,
+                                "is_internal": any(p in d_name.upper() for p in ("EDP", "LVDS", "DSI")),
+                                "is_primary": is_primary,
+                                "cur_res": "1920x1080",
+                                "cur_hz": 60,
+                                "rates": set()
+                            }
+                            displays.append(curr_disp)
+                            continue
+                        elif line and not line.startswith("   ") and not line.startswith("\t"):
+                            curr_disp = None
+
+                        if curr_disp:
+                            m_res = re.match(r"^\s*(\d+x\d+)\s+(.+)$", line)
+                            if m_res:
+                                r_str, rest = m_res.group(1), m_res.group(2)
+                                rate_matches = re.findall(r"([\d\.]+)([\*\+]*)", rest)
+                                for r_val, marks in rate_matches:
+                                    try:
+                                        hz = round(float(r_val))
+                                        if "*" in marks:
+                                            curr_disp["cur_res"] = r_str
+                                            curr_disp["cur_hz"] = hz
+                                        if "*" in marks or curr_disp["cur_res"] == r_str:
+                                            curr_disp["rates"].add(hz)
+                                    except ValueError:
+                                        pass
+
+                    internal = [d for d in displays if d["is_internal"]]
+                    primary = [d for d in displays if d["is_primary"]]
+                    chosen = internal[0] if internal else (primary[0] if primary else (displays[0] if displays else None))
+
+                    if chosen:
+                        rates = sorted(list(chosen["rates"])) if chosen["rates"] else [chosen["cur_hz"]]
+                        info = DisplayRefreshInfo(
+                            available=True,
+                            current_hz=chosen["cur_hz"],
+                            available_rates=rates,
+                            display_name=chosen["name"],
+                            resolution=chosen["cur_res"],
+                            backend_name="xrandr",
+                            auto_switch_ac=self.get_auto_refresh_rate_transition()
+                        )
+                        self._cached_refresh_info = info
+                        self._last_refresh_scan = now
+                        return info
+            except Exception:
+                pass
+
+        # 4. Fallback DRM sysfs & EDID binário do painel
+        cur_res = "1920x1080"
+        drm_rates = set()
+        for edid_f in sorted(glob.glob("/sys/class/drm/card*-eDP-*/edid") + glob.glob("/sys/class/drm/card*/edid")):
+            try:
+                with open(edid_f, "rb") as ef:
+                    edid_bytes = ef.read()
+                if len(edid_bytes) >= 128:
+                    for desc_offset in (54, 72, 90, 108):
+                        d = edid_bytes[desc_offset:desc_offset + 18]
+                        if len(d) == 18:
+                            pix_clk = d[0] | (d[1] << 8)
+                            if pix_clk > 0:
+                                pix_clk_khz = pix_clk * 10
+                                h_act = d[2] | ((d[4] & 0xF0) << 4)
+                                h_blk = d[3] | ((d[4] & 0x0F) << 8)
+                                v_act = d[5] | ((d[7] & 0xF0) << 4)
+                                v_blk = d[6] | ((d[7] & 0x0F) << 8)
+                                h_tot = h_act + h_blk
+                                v_tot = v_act + v_blk
+                                if h_tot > 0 and v_tot > 0:
+                                    hz_calc = round((pix_clk_khz * 1000.0) / (h_tot * v_tot))
+                                    if 24 <= hz_calc <= 360:
+                                        drm_rates.add(hz_calc)
+                                        if not cur_res or cur_res == "1920x1080":
+                                            cur_res = f"{h_act}x{v_act}"
+            except Exception:
+                pass
+            if drm_rates:
+                break
+
+        for modes_f in sorted(glob.glob("/sys/class/drm/card*-eDP-*/modes") + glob.glob("/sys/class/drm/card*/modes")):
+            m_text = self._read_file_text(modes_f) or ""
+            if m_text.strip():
+                cur_res = m_text.strip().splitlines()[0]
+                break
+
+        last_hz = int(self.settings.get("last_refresh_rate", 60))
+        if drm_rates:
+            rates = sorted(list(drm_rates))
+            cur_hz = last_hz if last_hz in rates else rates[0]
+        else:
+            rates = [60]
+            cur_hz = 60
+
+        info = DisplayRefreshInfo(
+            available=False,
+            current_hz=cur_hz,
+            available_rates=rates,
+            display_name="eDP-1",
+            resolution=cur_res,
+            backend_name="drm-fallback",
+            auto_switch_ac=self.get_auto_refresh_rate_transition()
+        )
+        self._cached_refresh_info = info
+        self._last_refresh_scan = now
+        return info
+
+    def set_refresh_rate(self, hz: int) -> Tuple[bool, str]:
+        """Aplica a taxa de atualização selecionada (ex: 60 ou 144) no display ativo."""
+        info = self.get_display_refresh_info()
+        target_hz = int(hz)
+        backend = info.backend_name
+
+        if backend == "kscreen-doctor":
+            env = os.environ.copy()
+            if "QT_QPA_PLATFORM" not in env and not env.get("WAYLAND_DISPLAY") and not env.get("DISPLAY"):
+                env["QT_QPA_PLATFORM"] = "offscreen"
+
+            cmd = ["kscreen-doctor", f"output.{info.display_name}.mode.{info.resolution}@{target_hz}"]
+            res = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=5)
+            if res.returncode == 0:
+                self.settings.set("last_refresh_rate", target_hz)
+                self._cached_refresh_info = None
+                return True, f"Taxa de atualização ajustada para {target_hz} Hz."
+
+            try:
+                res_j = subprocess.run(["kscreen-doctor", "-j"], capture_output=True, text=True, env=env, timeout=5)
+                if res_j.returncode == 0:
+                    data = json.loads(res_j.stdout)
+                    for out in data.get("outputs", []):
+                        if out.get("name") == info.display_name:
+                            for m in out.get("modes", []):
+                                m_hz = round(m.get("refreshRate", 0) / 1000.0) if m.get("refreshRate", 0) > 1000 else round(m.get("refreshRate", 0))
+                                if m_hz == target_hz and f"{m.get('size', {}).get('width')}x{m.get('size', {}).get('height')}" == info.resolution:
+                                    m_id = m.get("id")
+                                    res_set = subprocess.run(["kscreen-doctor", f"output.{info.display_name}.mode.{m_id}"], capture_output=True, text=True, env=env, timeout=5)
+                                    if res_set.returncode == 0:
+                                        self.settings.set("last_refresh_rate", target_hz)
+                                        self._cached_refresh_info = None
+                                        return True, f"Taxa de atualização ajustada para {target_hz} Hz."
+            except Exception:
+                pass
+            return False, f"kscreen-doctor não conseguiu aplicar {target_hz} Hz no painel {info.display_name}."
+
+        elif backend == "wlr-randr":
+            cmd = ["wlr-randr", "--output", info.display_name, "--mode", f"{info.resolution}@{target_hz}Hz"]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if res.returncode == 0:
+                self.settings.set("last_refresh_rate", target_hz)
+                self._cached_refresh_info = None
+                return True, f"Taxa de atualização ajustada para {target_hz} Hz."
+            return False, f"wlr-randr não conseguiu aplicar {target_hz} Hz: {res.stderr or res.stdout}"
+
+        elif backend == "xrandr":
+            cmd = ["xrandr", "--output", info.display_name, "--mode", info.resolution, "--rate", str(target_hz)]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if res.returncode == 0:
+                self.settings.set("last_refresh_rate", target_hz)
+                self._cached_refresh_info = None
+                return True, f"Taxa de atualização ajustada para {target_hz} Hz."
+            return False, f"xrandr não conseguiu aplicar {target_hz} Hz: {res.stderr or res.stdout}"
+
+        return False, "Nenhum backend gráfico ativo (kscreen-doctor / wlr-randr / xrandr) suporta troca de taxa de atualização."
+
+    def cycle_refresh_rate(self) -> Tuple[bool, int, str]:
+        """Cicla para a próxima taxa suportada (ex: 60Hz ↔ 144Hz) ao estilo Fn+R Lenovo."""
+        info = self.get_display_refresh_info()
+        rates = sorted(info.available_rates) if info.available_rates else [60, 144]
+        cur = info.current_hz
+
+        if cur == rates[-1]:
+            target = rates[0]
+        else:
+            higher = [r for r in rates if r > cur]
+            target = higher[0] if higher else rates[0]
+
+        ok, msg = self.set_refresh_rate(target)
+        return ok, target, msg
+
+    def get_auto_refresh_rate_transition(self) -> bool:
+        return bool(self.settings.get("auto_refresh_rate_transition", True))
+
+    def set_auto_refresh_rate_transition(self, enable: bool) -> None:
+        self.settings.set("auto_refresh_rate_transition", bool(enable))
+
+    # =========================================================================
+    # RECURSO 3: LCD Overdrive & Ajustes de BIOS / Lenovo WMI (Zero Hardcoding)
+    # =========================================================================
+    def _scan_bios_attributes(self) -> None:
+        """Descobre nós de firmware attributes da BIOS Lenovo e LCD Overdrive."""
+        for cand in (
+            glob.glob("/sys/class/firmware-attributes/lenovo-wmi-other-*/attributes/lcd_overdrive/current_value")
+            + glob.glob("/sys/class/firmware-attributes/thinklmi/attributes/LcdOverdrive/current_value")
+            + glob.glob("/sys/class/firmware-attributes/*/attributes/*lcd_overdrive*/current_value")
+            + glob.glob("/sys/bus/platform/drivers/ideapad_acpi/*/lcd_overdrive")
+            + glob.glob("/sys/devices/platform/ideapad_acpi/lcd_overdrive")
+            + glob.glob("/sys/bus/platform/drivers/legion_laptop/*/overdrive")
+            + glob.glob("/sys/devices/platform/PNP0C09:00/overdrive")
+        ):
+            if os.path.exists(cand):
+                self.paths.lcd_overdrive = cand
+                self.features.lcd_overdrive = True
+                break
+
+        wmi_attrs = glob.glob("/sys/class/firmware-attributes/*/attributes/*/current_value")
+        non_od = [p for p in wmi_attrs if os.path.basename(os.path.dirname(p)).lower() != "lcd_overdrive"]
+        self.features.bios_attributes = bool(non_od)
+
+    def is_lcd_overdrive_supported(self) -> bool:
+        """Indica se a tela suporta aceleração de tempo de resposta (Overdrive)."""
+        return bool(self.paths.lcd_overdrive or self.features.lcd_overdrive)
+
+    def get_lcd_overdrive(self) -> bool:
+        """Lê o estado atual do LCD Overdrive."""
+        if self.paths.lcd_overdrive and os.path.exists(self.paths.lcd_overdrive):
+            txt = (self._read_file_text(self.paths.lcd_overdrive) or "").strip().lower()
+            return txt in ("1", "enabled", "on", "true")
+        return False
+
+    def set_lcd_overdrive(self, enabled: bool) -> Tuple[bool, str]:
+        """Ativa ou desativa a aceleração de tempo de resposta dos pixels do LCD."""
+        if self.paths.lcd_overdrive and os.path.exists(self.paths.lcd_overdrive):
+            poss_file = os.path.join(os.path.dirname(self.paths.lcd_overdrive), "possible_values")
+            poss = self._read_file_text(poss_file) or ""
+            if "Enabled" in poss or "Disabled" in poss:
+                val = "Enabled" if enabled else "Disabled"
+            else:
+                val = "1" if enabled else "0"
+            ok, msg = PermissionsManager.write_sysfs_value(self.paths.lcd_overdrive, val, allow_elevation=True)
+            if ok:
+                self.settings.set("lcd_overdrive_enabled", bool(enabled))
+                return True, f"LCD Overdrive {'ativado' if enabled else 'desativado'} com sucesso."
+            return False, f"Falha ao aplicar LCD Overdrive: {msg}"
+        return False, "LCD Overdrive não suportado pelo painel ou BIOS deste notebook."
+
+    def get_bios_attributes(self) -> List[BiosAttribute]:
+        """
+        Inspeciona dinamicamente TODOS os atributos expostos pela BIOS da máquina em
+        /sys/class/firmware-attributes/*/attributes/ (Zero Hardcoding).
+        """
+        now = time.time()
+        if self._cached_bios_attrs and (now - self._last_bios_attrs_scan < 4.0):
+            return self._cached_bios_attrs
+
+        attrs: List[BiosAttribute] = []
+        wmi_base_dirs = sorted(glob.glob("/sys/class/firmware-attributes/*/attributes"))
+        if not wmi_base_dirs:
+            return attrs
+
+        known_labels = {
+            "flip_to_boot": ("Ligar ao Abrir a Tampa (Flip to Boot)", "Energia & Boot"),
+            "usb_charging": ("Energia USB em Suspensão (Always-On USB)", "Energia & Boot"),
+            "usb_power_in_sleep": ("Energia USB em Suspensão (Always-On USB)", "Energia & Boot"),
+            "zero_rpm_fan_boot": ("Ventoinhas em Zero RPM no Boot", "Ajustes Térmicos & Potência"),
+            "lcd_overdrive": ("LCD Overdrive (Tempo de Resposta)", "Tela & Vídeo"),
+            "cpu_temp": ("Limite Térmico da CPU (Thermal Limit)", "Ajustes Térmicos & Potência"),
+            "gpu_temp": ("Limite Térmico da GPU (Thermal Limit)", "Ajustes Térmicos & Potência"),
+            "gpu_nv_ac_offset": ("GPU NVIDIA AC Baseline Offset", "Ajustes Térmicos & Potência"),
+            "gpu_nv_ctgp": ("GPU Configurable TGP (cTGP)", "Ajustes Térmicos & Potência"),
+            "gpu_nv_cpu_boost": ("NVIDIA Dynamic CPU Boost", "Ajustes Térmicos & Potência"),
+            "gpu_nv_ppab": ("NVIDIA Power Performance Boost (PPAB)", "Ajustes Térmicos & Potência"),
+            "ppt_cpu_cl": ("CPU Cross Loading Power Limit", "Ajustes Térmicos & Potência"),
+            "ppt_pl1_spl": ("CPU Sustained Power Limit (PL1 SPL)", "Ajustes Térmicos & Potência"),
+            "ppt_pl1_tau": ("CPU Sustained Limit Duration (PL1 Tau)", "Ajustes Térmicos & Potência"),
+            "ppt_pl2_sppt": ("CPU Slow Package Limit (PL2 SPPT)", "Ajustes Térmicos & Potência"),
+        }
+
+        seen = set()
+        for bdir in wmi_base_dirs:
+            try:
+                for attr_name in sorted(os.listdir(bdir)):
+                    if attr_name in seen:
+                        continue
+                    a_path = os.path.join(bdir, attr_name)
+                    if not os.path.isdir(a_path):
+                        continue
+                    cur_file = os.path.join(a_path, "current_value")
+                    if not os.path.exists(cur_file):
+                        continue
+                    try:
+                        if not (os.stat(cur_file).st_mode & 0o222):
+                            continue
+                    except OSError:
+                        pass
+
+                    seen.add(attr_name)
+                    cur_val = (self._read_file_text(cur_file) or "").strip()
+                    type_val = (self._read_file_text(os.path.join(a_path, "type")) or "enumeration").strip().lower()
+                    disp_name = (self._read_file_text(os.path.join(a_path, "display_name")) or "").strip()
+                    def_val = (self._read_file_text(os.path.join(a_path, "default_value")) or "").strip()
+
+                    if attr_name in known_labels:
+                        title, cat = known_labels[attr_name]
+                    elif disp_name:
+                        title = disp_name
+                        cat = "Ajustes da BIOS"
+                    else:
+                        title = attr_name.replace("_", " ").title()
+                        cat = "Ajustes da BIOS"
+
+                    min_v, max_v, step_v = None, None, 1
+                    poss_list: List[str] = []
+
+                    if type_val == "integer":
+                        min_v = self._read_file_int(os.path.join(a_path, "min_value"), 0)
+                        max_v = self._read_file_int(os.path.join(a_path, "max_value"), 100)
+                        step_v = self._read_file_int(os.path.join(a_path, "scalar_increment"), 1)
+                        if step_v <= 0:
+                            step_v = 1
+                        # Corrige nós de firmware onde o driver expõe min=0 max=0 (ex: cTGP, PPAB)
+                        if max_v <= min_v:
+                            cur_int = int(cur_val) if (cur_val and cur_val.isdigit()) else 0
+                            min_v = 0
+                            max_v = max(100, cur_int + 25) if cur_int > 0 else 100
+                    else:
+                        poss_raw = self._read_file_text(os.path.join(a_path, "possible_values")) or ""
+                        if ";" in poss_raw:
+                            poss_list = [p.strip() for p in poss_raw.split(";") if p.strip()]
+                        elif "," in poss_raw:
+                            poss_list = [p.strip() for p in poss_raw.split(",") if p.strip()]
+                        else:
+                            poss_list = [p.strip() for p in poss_raw.splitlines() if p.strip()]
+
+                        poss_lower = [p.lower() for p in poss_list]
+                        if (
+                            set(poss_lower) in ({"0", "1"}, {"disabled", "enabled"}, {"off", "on"}, {"no", "yes"})
+                            or (not poss_list and cur_val.lower() in ("0", "1", "disabled", "enabled", "off", "on"))
+                        ):
+                            type_val = "boolean"
+
+                    attrs.append(BiosAttribute(
+                        attr_id=attr_name,
+                        display_name=title,
+                        category=cat,
+                        attr_type=type_val,
+                        current_value=cur_val,
+                        default_value=def_val,
+                        min_value=min_v,
+                        max_value=max_v,
+                        scalar_increment=step_v,
+                        possible_values=poss_list,
+                        path=cur_file
+                    ))
+            except Exception:
+                pass
+
+        self._cached_bios_attrs = attrs
+        self._last_bios_attrs_scan = now
+        return attrs
+
+    def set_bios_attribute(self, attr_id: str, new_value: str) -> Tuple[bool, str]:
+        """Aplica um novo valor para um atributo de BIOS Lenovo via sysfs firmware-attributes."""
+        clean_val = str(new_value).strip()
+        attrs = self.get_bios_attributes()
+        target = next((a for a in attrs if a.attr_id == attr_id), None)
+        path = target.path if target else None
+
+        if not path:
+            for bdir in glob.glob("/sys/class/firmware-attributes/*/attributes"):
+                cand = os.path.join(bdir, attr_id, "current_value")
+                if os.path.exists(cand):
+                    path = cand
+                    break
+
+        if not path:
+            return False, f"Atributo de firmware '{attr_id}' não encontrado no sistema."
+
+        # Mapeamento estrito para atributos booleanos de acordo com os possíveis valores da BIOS
+        poss = target.possible_values if (target and target.possible_values) else []
+        if not poss and path:
+            poss_f = os.path.join(os.path.dirname(path), "possible_values")
+            poss_txt = self._read_file_text(poss_f) or ""
+            if poss_txt:
+                poss = [p.strip() for p in re.split(r"[;\n,]+", poss_txt) if p.strip()]
+
+        if (target and target.attr_type == "boolean") or (poss and set(p.lower() for p in poss) in ({"0", "1"}, {"disabled", "enabled"}, {"off", "on"}, {"no", "yes"})):
+            is_true = clean_val.lower() in ("1", "enabled", "on", "true", "yes")
+            if poss:
+                for p in poss:
+                    p_low = p.lower()
+                    if is_true and p_low in ("1", "enabled", "on", "true", "yes"):
+                        clean_val = p
+                        break
+                    elif not is_true and p_low in ("0", "disabled", "off", "false", "no"):
+                        clean_val = p
+                        break
+            else:
+                clean_val = "1" if is_true else "0"
+
+        ok, msg = PermissionsManager.write_sysfs_value(path, clean_val, allow_elevation=True)
+        if ok:
+            self._cached_bios_attrs = None
+            return True, f"Atributo '{attr_id}' atualizado para '{clean_val}' com sucesso."
+        return False, msg
+
