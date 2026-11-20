@@ -677,6 +677,13 @@ class BatteryTab(QWidget):
     def _on_wifi_low_latency_toggled(self, low_latency_active: bool):
         # low_latency_active == True significa Power Save OFF (enable_saving = False)
         ok, msg = self.backend.set_wifi_power_saving(enable_saving=not low_latency_active)
+        if not ok:
+            self.sw_wifi_low_latency.blockSignals(True)
+            self.sw_wifi_low_latency.setChecked(not low_latency_active)
+            self.sw_wifi_low_latency.blockSignals(False)
+            self.lbl_wifi_ps_desc.setText(msg)
+            QMessageBox.warning(self, "Economia de Rede Wi-Fi", msg)
+            return
         self.lbl_wifi_ps_desc.setText(msg)
         self.refresh_display()
 

@@ -1672,11 +1672,16 @@ class PerformanceTab(QWidget):
         prof_layout.addWidget(card_perf)
         self.cards["performance"] = card_perf
 
+        max_power_desc = (
+            "Perfil avançado descoberto no kernel (incluído no ciclo Fn + Q) para potência máxima sustentada e rotação máxima das ventoinhas."
+            if feat.fan_control
+            else "Perfil avançado descoberto no kernel (incluído no ciclo Fn + Q) para potência máxima sustentada (ventoinhas controladas pelo EC)."
+        )
         card_max = ProfileCard(
             profile_id="max-power",
             icon_source=os.path.join(ICON_DIR, "thermal_max_power.svg"),
             title="Desempenho Máximo (Max-Power)",
-            desc="Perfil avançado descoberto no kernel (incluído no ciclo Fn + Q) para potência máxima sustentada e rotação máxima das ventoinhas.",
+            desc=max_power_desc,
             accent_color=ThemeTokens.THERMAL_CUSTOM
         )
         card_max.clicked.connect(self._on_card_selected)
@@ -2530,6 +2535,7 @@ class PerformanceTab(QWidget):
         val = slider.value()
         ok, msg = self.backend.set_bios_attribute(attr_id, str(val))
         if ok:
+            self.refresh_profile_state()
             QMessageBox.information(self, "Ajuste de BIOS Aplicado", f"{attr_id}: {val}\n{msg}")
         else:
             QMessageBox.warning(self, "Falha ao Gravar BIOS", f"{attr_id}:\n{msg}")
@@ -2538,6 +2544,7 @@ class PerformanceTab(QWidget):
         val = combo.currentText()
         ok, msg = self.backend.set_bios_attribute(attr_id, val)
         if ok:
+            self.refresh_profile_state()
             QMessageBox.information(self, "Ajuste de BIOS Aplicado", f"{attr_id}: {val}\n{msg}")
         else:
             QMessageBox.warning(self, "Falha ao Gravar BIOS", f"{attr_id}:\n{msg}")
@@ -2545,7 +2552,9 @@ class PerformanceTab(QWidget):
     def _on_toggle_bios_bool_attribute(self, attr_id: str, checked: bool):
         val = "1" if checked else "0"
         ok, msg = self.backend.set_bios_attribute(attr_id, val)
-        if not ok:
+        if ok:
+            self.refresh_profile_state()
+        else:
             sw = self.bios_attr_widgets.get(attr_id)
             if sw and isinstance(sw, ToggleSwitch):
                 sw.blockSignals(True)

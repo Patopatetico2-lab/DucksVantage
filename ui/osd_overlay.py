@@ -31,6 +31,7 @@ class VantageOSDOverlay(QWidget):
         self._accent_color = ThemeTokens.BORDER_CYAN
         self._opacity = 1.0
         self._last_kwin_rule_pos = None
+        self._pos_changed_for_remap = False
 
         # Usa Qt.WindowType.Tool (xdg_toplevel no Wayland) em vez de ToolTip (xdg_popup),
         # garantindo que o OSD apareça mesmo sem janela-pai visível (ex: app minimizado na bandeja).
@@ -218,10 +219,12 @@ class VantageOSDOverlay(QWidget):
                     bus = QDBusConnection.sessionBus()
                     if bus.isConnected():
                         msg = QDBusMessage.createMethodCall("org.kde.KWin", "/KWin", "org.kde.KWin", "reconfigure")
-                        bus.send(msg)
+                        bus.call(msg)
                 except Exception:
                     pass
 
+            if self._last_kwin_rule_pos is not None and self._last_kwin_rule_pos != pos_str:
+                self._pos_changed_for_remap = True
             self._last_kwin_rule_pos = pos_str
         except Exception:
             pass
@@ -269,6 +272,9 @@ class VantageOSDOverlay(QWidget):
                 pass
 
         self._reposition()
+        if self._pos_changed_for_remap and self.isVisible():
+            self.hide()
+        self._pos_changed_for_remap = False
         self.show()
         self.raise_()
         self.update()
@@ -286,7 +292,7 @@ class VantageOSDOverlay(QWidget):
         if mode_lower == "max-power" or "max" in mode_lower or "extrem" in mode_lower:
             self.show_osd(
                 title="Desempenho Máximo (Max-Power)",
-                subtitle="Fn + Q • Rotação Máxima & Potência Total",
+                subtitle="Fn + Q • Envelope Térmico & Potência Máxima",
                 icon_path=os.path.join(ICON_DIR, "thermal_max_power.svg"),
                 accent_color=ThemeTokens.THERMAL_CUSTOM
             )

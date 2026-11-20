@@ -357,6 +357,209 @@ class TestDucksVantageFixes(unittest.TestCase):
             except psutil.ZombieProcess:
                 self.fail("_terminate_previous_instances não capturou psutil.ZombieProcess!")
 
+    # -------------------------------------------------------------------------
+    # 10. Ciclo Completo Fn+Q (inclui retorno ao Modo Silencioso após Max-Power)
+    # -------------------------------------------------------------------------
+    def test_fn_q_cycle_reaches_low_power_after_max_power_promotion(self):
+        """Quando Fn+Q promove low-power para max-power, o próximo toque deve entrar em low-power antes de balanced."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_pp = os.path.join(tmpdir, "profile")
+            with open(tmp_pp, "w", encoding="utf-8") as f:
+                f.write("balanced\n")
+
+            self.backend.paths.platform_profile = tmp_pp
+            self.backend._platform_profile_paths = [tmp_pp]
+            self.backend._last_profile_by_path = {tmp_pp: "balanced"}
+            self.backend._last_raw_profile = "balanced"
+            self.backend._last_profile = "balanced"
+            self.backend._max_power_active = False
+            self.backend._promoted_max_power_from_low = False
+            self.backend.features.max_power_profile = True
+
+            with patch.object(self.backend, "get_platform_profile_choices", return_value=["low-power", "balanced", "performance", "max-power", "custom"]):
+                # 1. EC passa de balanced -> performance
+                with open(tmp_pp, "w", encoding="utf-8") as f:
+                    f.write("performance\n")
+                ev1 = self.backend.fast_poll_changes()
+                self.assertEqual([e["new"] for e in ev1 if e["type"] == "profile_changed"], ["performance"])
+
+                # 2. EC tenta ciclar performance -> low-power: app promove para max-power
+                with open(tmp_pp, "w", encoding="utf-8") as f:
+                    f.write("low-power\n")
+                ev2 = self.backend.fast_poll_changes()
+                self.assertEqual([e["new"] for e in ev2 if e["type"] == "profile_changed"], ["max-power"])
+                with open(tmp_pp, "r", encoding="utf-8") as f:
+                    self.assertEqual(f.read().strip(), "max-power")
+
+                # 3. Próximo Fn+Q: EC escreve balanced, app redireciona para low-power (Silencioso)!
+                with open(tmp_pp, "w", encoding="utf-8") as f:
+                    f.write("balanced\n")
+                ev3 = self.backend.fast_poll_changes()
+                self.assertEqual([e["new"] for e in ev3 if e["type"] == "profile_changed"], ["low-power"])
+                with open(tmp_pp, "r", encoding="utf-8") as f:
+                    self.assertEqual(f.read().strip(), "low-power")
+                self.assertEqual(self.backend._last_profile, "low-power")
+
+                # 4. Próximo Fn+Q: EC escreve balanced e app entra em balanced normalmente
+                with open(tmp_pp, "w", encoding="utf-8") as f:
+                    f.write("balanced\n")
+                ev4 = self.backend.fast_poll_changes()
+                self.assertEqual([e["new"] for e in ev4 if e["type"] == "profile_changed"], ["balanced"])
+
+    # -------------------------------------------------------------------------
+    # 11. Detecção Ampliada de Jogos (Sober, Wine/Proton .exe, Heroic/Games, GameMode)
+    # -------------------------------------------------------------------------
+    def test_detect_running_game_sober_wine_heroic_and_gamemode(self):
+        """Auto-switch deve reconhecer Sober, jogos Wine/Proton (.exe C:\\), ~/Games nativos e GameMode."""
+        def make_proc(name, exe="", cmdline=None, cwd=""):
+            p = MagicMock()
+            p.info = {"name": name, "exe": exe, "cmdline": cmdline or [], "cwd": cwd}
+            return p
+
+        # A) Sober (Roblox Flatpak)
+        with patch("psutil.process_iter", return_value=[
+            make_proc("bwrap", "/usr/bin/bwrap", ["bwrap", "--dev-bind"]),
+            make_proc("sober", "/app/bin/sober", ["/app/bin/sober"]),
+        ]):
+            self.assertEqual(self.backend.detect_running_game(force=True), "Roblox (Sober)")
+
+        # B) Jogo Wine / Heroic com caminho Windows (C:\...)
+        with patch("psutil.process_iter", return_value=[
+            make_proc("services.exe", "/usr/bin/wine64-preloader", ["C:\\windows\\system32\\services.exe"]),
+            make_proc("wine64-preloader", "/home/user/.config/heroic/tools/proton/wine", ["/usr/bin/wine", "C:\\Games\\Cyberpunk\\Cyberpunk2077.exe"]),
+        ]):
+            self.assertEqual(self.backend.detect_running_game(force=True), "Cyberpunk2077.exe")
+
+        # C) Jogo nativo em ~/Games sem sufixo .exe/.bin/.x86_64
+        with patch("psutil.process_iter", return_value=[
+            make_proc("HollowKnight", "/home/user/Games/Heroic/HollowKnight/HollowKnight", ["/home/user/Games/Heroic/HollowKnight/HollowKnight"]),
+        ]):
+            self.assertEqual(self.backend.detect_running_game(force=True), "HollowKnight")
+
+        # D) Helpers isolados não geram falso positivo
+        with patch("psutil.process_iter", return_value=[
+            make_proc("steamwebhelper", "/home/user/.steam/ubuntu12_64/steamwebhelper", ["steamwebhelper"]),
+            make_proc("services.exe", "/usr/bin/wine", ["C:\\windows\\system32\\services.exe"]),
+        ]):
+            self.assertIsNone(self.backend.detect_running_game(force=True))
+
+        # E) Feral GameMode D-Bus fallback
+        with patch("psutil.process_iter", return_value=[make_proc("gamemoded", "/usr/bin/gamemoded", ["/usr/bin/gamemoded"])]), \
+             patch("shutil.which", side_effect=lambda c: "/usr/bin/gdbus" if c == "gdbus" else None), \
+             patch("core.backend.subprocess.run", return_value=MagicMock(returncode=0, stdout="(uint32 1,)\n")):
+            self.assertEqual(self.backend.detect_running_game(force=True), "GameMode (Jogo Ativo)")
+
+    # -------------------------------------------------------------------------
+    # 12. BIOS Lenovo WMI: alterna automaticamente para perfil 'custom' antes de gravar
+    # -------------------------------------------------------------------------
+    def test_set_bios_attribute_switches_to_custom_for_lenovo_wmi_other(self):
+        """Atributos de lenovo-wmi-other falham com EBUSY fora de custom; backend deve alternar para custom antes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pp_file = os.path.join(tmpdir, "profile")
+            pp_choices = os.path.join(tmpdir, "choices")
+            wmi_attr_file = os.path.join(tmpdir, "lenovo-wmi-other-0", "attributes", "cpu_temp", "current_value")
+            os.makedirs(os.path.dirname(wmi_attr_file), exist_ok=True)
+            with open(pp_file, "w", encoding="utf-8") as f:
+                f.write("balanced\n")
+            with open(pp_choices, "w", encoding="utf-8") as f:
+                f.write("low-power balanced performance max-power custom\n")
+            with open(wmi_attr_file, "w", encoding="utf-8") as f:
+                f.write("94\n")
+
+            self.backend.paths.platform_profile = pp_file
+            self.backend.paths.platform_profile_choices = pp_choices
+            self.backend._platform_profile_paths = [pp_file]
+            self.backend._last_profile_by_path = {pp_file: "balanced"}
+
+            from core.models import BiosAttribute
+            fake_attr = BiosAttribute(
+                attr_id="cpu_temp", display_name="CPU Temp", attr_type="integer",
+                current_value="94", min_value=85, max_value=100, path=wmi_attr_file
+            )
+            with patch.object(self.backend, "get_bios_attributes", return_value=[fake_attr]), \
+                 patch("core.backend.time.sleep"):
+                ok, msg = self.backend.set_bios_attribute("cpu_temp", "90")
+                self.assertTrue(ok)
+                self.assertIn("Custom", msg)
+                with open(pp_file, "r", encoding="utf-8") as f:
+                    self.assertEqual(f.read().strip(), "custom")
+                with open(wmi_attr_file, "r", encoding="utf-8") as f:
+                    self.assertEqual(f.read().strip(), "90")
+
+    # -------------------------------------------------------------------------
+    # 13. Touchpad: priorizar Touchpad real em vez de Mouse na mesma interface CIRQ
+    # -------------------------------------------------------------------------
+    def test_scan_touchpad_prefers_touchpad_over_cirq_mouse(self):
+        """Entre event18 (... Mouse) e event19 (... Touchpad), deve selecionar event19."""
+        self.backend.paths.touchpad = None
+        names = {
+            "/sys/class/input/event18/device/name": "CIRQ1080:00 0488:107B Mouse",
+            "/sys/class/input/event19/device/name": "CIRQ1080:00 0488:107B Touchpad",
+        }
+        with patch("glob.glob", return_value=list(names.keys())), \
+             patch.object(self.backend, "_read_file_text", side_effect=lambda p: names.get(p, "")), \
+             patch("shutil.which", side_effect=lambda c: "/usr/bin/qdbus6" if c == "qdbus6" else None):
+            self.backend._scan_touchpad()
+            self.assertEqual(self.backend._touchpad_event_name, "event19")
+            self.assertIn("Touchpad", self.backend._touchpad_device_name)
+            self.assertTrue(self.backend.features.touchpad_control)
+
+    # -------------------------------------------------------------------------
+    # 14. Wi-Fi Power Save: não fingir sucesso se 'iw set power_save' falhar
+    # -------------------------------------------------------------------------
+    def test_wifi_power_saving_requires_iw_success(self):
+        """Quando iw existe e falha por permissão (mesmo com PCI PM gravável), retorna False."""
+        with patch.object(self.backend, "_discover_network_interfaces", return_value=("wlan0", None)), \
+             patch("shutil.which", side_effect=lambda c: f"/usr/bin/{c}" if c in ("iw", "pkexec") else None), \
+             patch("os.path.exists", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch("core.permissions.PermissionsManager.write_sysfs_value", return_value=(True, "OK")), \
+             patch("core.backend.subprocess.run", side_effect=[
+                 MagicMock(returncode=255, stderr="Operation not permitted"),
+                 MagicMock(returncode=1, stderr="Auth failed"),
+             ]):
+            ok, msg = self.backend.set_wifi_power_saving(False)
+            self.assertFalse(ok)
+            self.assertIn("Permissão necessária", msg)
+
+    # -------------------------------------------------------------------------
+    # 15. Intel Undervolt: fallback nativo via pkexec + python sem precisar de wrmsr
+    # -------------------------------------------------------------------------
+    def test_intel_undervolt_pkexec_python_fallback_when_msr_not_writable(self):
+        """Se /dev/cpu/*/msr existe sem W_OK e não há wrmsr, tenta gravar via pkexec python3."""
+        with patch.object(self.backend, "get_cpu_vendor", return_value="Intel"), \
+             patch("glob.glob", return_value=["/dev/cpu/0/msr"]), \
+             patch("os.access", return_value=False), \
+             patch("shutil.which", side_effect=lambda c: "/usr/bin/pkexec" if c == "pkexec" else None), \
+             patch("core.backend.subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")) as mock_sub:
+            ok, msg = self.backend.apply_undervolt_offsets(core_mv=-50, cache_mv=-50)
+            self.assertTrue(ok)
+            self.assertIn("Polkit", msg)
+            mock_sub.assert_called()
+            self.assertEqual(mock_sub.call_args[0][0][0], "pkexec")
+
+    # -------------------------------------------------------------------------
+    # 16. GPU MUX pcie-runtime reflete estado real de power/control (auto vs on)
+    # -------------------------------------------------------------------------
+    def test_gpu_mux_pcie_runtime_reflects_control_file(self):
+        """Em pcie-runtime, power/control='auto' -> integrated; 'on' -> hybrid."""
+        self.backend.paths.gpu_mode = None
+        self.backend.paths.nvidia_pci_power_control = "/fake/pci/power/control"
+        self.backend.paths.igpu_drm_card = "/fake/drm/card1"
+        self.backend._cached_gpu_mux_info = None
+
+        with patch("shutil.which", return_value=None):
+            with patch.object(self.backend, "_read_file_text", side_effect=lambda p: "auto" if p.endswith("control") else "active"):
+                self.backend._cached_gpu_mux_info = None
+                info_auto = self.backend.get_gpu_mux_info()
+                self.assertEqual(info_auto.backend_name, "pcie-runtime")
+                self.assertEqual(info_auto.current_mode, "integrated")
+
+            with patch.object(self.backend, "_read_file_text", side_effect=lambda p: "on" if p.endswith("control") else "active"):
+                self.backend._cached_gpu_mux_info = None
+                info_on = self.backend.get_gpu_mux_info()
+                self.assertEqual(info_on.current_mode, "hybrid")
+
 
 if __name__ == "__main__":
     unittest.main()

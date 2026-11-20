@@ -160,6 +160,8 @@ class HardwareBackend:
         self._last_profile = "balanced"
         self._last_raw_profile = "balanced"
         self._max_power_active = False
+        self._promoted_max_power_from_low: bool = False
+        self._is_wmi_gamezone: bool = False
         self._last_ac_online = 1
         self._last_conservation = False
         self._last_fn_lock = False
@@ -175,6 +177,8 @@ class HardwareBackend:
         # Estado da Curva de Ventoinhas e Undervolt Seguro
         self._last_applied_pwm: int = -1
         self._last_emergency_reset: str = ""
+        self._hwmon_pwm_nodes: List[Tuple[str, Optional[str]]] = []
+        self._fan_fullspeed_path: Optional[str] = None
 
         # Estado de Alertas Inteligentes da Bateria
         self._alerted_80_this_session: bool = False
@@ -204,6 +208,8 @@ class HardwareBackend:
         self._last_applied_refresh_hz: Optional[int] = None
         self._touchpad_event_name: Optional[str] = None
         self._touchpad_device_name: Optional[str] = None
+        self._cached_touchpad_status: Optional[bool] = None
+        self._last_touchpad_scan: float = 0.0
         self._platform_profile_paths: List[str] = []
         self._last_profile_by_path: Dict[str, str] = {}
 
@@ -282,8 +288,10 @@ class HardwareBackend:
         # Suporte simultâneo ao subsistema class/platform-profile (Linux 6.14+ / 7.x, ex: lenovo-wmi-gamezone)
         # e à interface clássica /sys/firmware/acpi/platform_profile.
         self._platform_profile_paths = []
+        self._is_wmi_gamezone = False
         pp_dirs = sorted(glob.glob("/sys/class/platform-profile/platform-profile-*"))
         chosen_pp = None
+        chosen_pp_name = ""
         for pp_dir in pp_dirs:
             prof_p = os.path.join(pp_dir, "profile")
             if not os.path.exists(prof_p):
@@ -293,8 +301,10 @@ class HardwareBackend:
             if any(k in pp_name for k in ("lenovo", "ideapad", "legion", "thinkpad", "gamezone")):
                 if chosen_pp is None:
                     chosen_pp = pp_dir
+                    chosen_pp_name = pp_name
             elif chosen_pp is None:
                 chosen_pp = pp_dir
+                chosen_pp_name = pp_name
 
         if os.path.exists("/sys/firmware/acpi/platform_profile"):
             self._platform_profile_paths.append("/sys/firmware/acpi/platform_profile")
@@ -302,6 +312,7 @@ class HardwareBackend:
         if chosen_pp:
             self.paths.platform_profile = os.path.join(chosen_pp, "profile")
             self.features.platform_profile = True
+            self._is_wmi_gamezone = ("gamezone" in chosen_pp_name or "lenovo-wmi" in chosen_pp_name)
             choices_p = os.path.join(chosen_pp, "choices")
             if os.path.exists(choices_p):
                 self.paths.platform_profile_choices = choices_p
@@ -378,6 +389,13 @@ class HardwareBackend:
                 if os.path.exists(fan_m):
                     self.paths.fan_mode = fan_m
 
+            if not self._fan_fullspeed_path:
+                for fs_name in ("fan_fullspeed", "full_fan_speed"):
+                    fs_p = os.path.join(idir, fs_name)
+                    if os.path.exists(fs_p):
+                        self._fan_fullspeed_path = fs_p
+                        break
+
         # 3. Retroiluminação do Teclado (Kbd Backlight)
         kbd_candidates = [
             "/sys/class/leds/platform::kbd_backlight/brightness",
@@ -433,7 +451,12 @@ class HardwareBackend:
 
         # 5. Sensores HWMon (CPU Intel/AMD, NVMe, DDR5 RAM, Ventoinhas e PWM)
         self._scan_hwmon()
-        self.features.fan_control = bool(self.paths.hwmon_pwm1 or self.paths.fan_mode)
+        self.features.fan_control = bool(
+            self.paths.hwmon_pwm1
+            or self._hwmon_pwm_nodes
+            or self._fan_fullspeed_path
+            or (self.paths.fan_mode and not self._is_wmi_gamezone)
+        )
 
         # 6. Bateria e Fonte AC (/sys/class/power_supply/)
         for bat_cand in sorted(glob.glob("/sys/class/power_supply/BAT*")):
@@ -494,20 +517,37 @@ class HardwareBackend:
         """Detecta se o notebook possui touchpad físico e backend real para bloqueá-lo."""
         self._touchpad_event_name = None
         self._touchpad_device_name = None
+        self._cached_touchpad_status = None
+        self._last_touchpad_scan = 0.0
 
         if self.paths.touchpad and os.path.exists(self.paths.touchpad):
             self.features.touchpad_control = True
             return
 
         tp_keywords = ("touchpad", "synaptics", "elan", "alps", "cirq", "trackpad")
+        best_priority = 99
         for ev_path in sorted(glob.glob("/sys/class/input/event*/device/name")):
             dev_name = self._read_file_text(ev_path) or ""
-            if any(k in dev_name.lower() for k in tp_keywords):
-                parts = ev_path.split(os.sep)
-                ev_dir = next((p for p in parts if p.startswith("event")), None)
-                if ev_dir:
-                    self._touchpad_event_name = ev_dir
-                    self._touchpad_device_name = dev_name
+            dev_low = dev_name.lower()
+            if not any(k in dev_low for k in tp_keywords):
+                continue
+            parts = ev_path.split(os.sep)
+            ev_dir = next((p for p in parts if p.startswith("event")), None)
+            if not ev_dir:
+                continue
+
+            if "touchpad" in dev_low or "trackpad" in dev_low:
+                priority = 1
+            elif not dev_low.endswith((" mouse", " keyboard")):
+                priority = 2
+            else:
+                priority = 3
+
+            if priority < best_priority:
+                best_priority = priority
+                self._touchpad_event_name = ev_dir
+                self._touchpad_device_name = dev_name
+                if priority == 1:
                     break
 
         if not self._touchpad_event_name:
@@ -629,6 +669,7 @@ class HardwareBackend:
 
     def _scan_hwmon(self) -> None:
         """Mapeia sensores térmicos e de rotação em /sys/class/hwmon/."""
+        self._hwmon_pwm_nodes = []
         hwmon_dirs = sorted(glob.glob("/sys/class/hwmon/hwmon*"))
         cpu_sensor_names = ("coretemp", "k10temp", "zenpower", "cpu_thermal", "acpitz")
         fan_sensor_names = ("yogafan", "legion", "ideapad", "thinkpad", "asus", "dell_smm")
@@ -654,21 +695,30 @@ class HardwareBackend:
                 if os.path.exists(t1):
                     self.paths.ram_temp_input = t1
 
-            # Ventoinhas (Fan 1, Fan 2 e PWM)
+            # Ventoinhas (Fan 1, Fan 2 e todos os nós PWM)
             f1 = os.path.join(hdir, "fan1_input")
             f2 = os.path.join(hdir, "fan2_input")
-            pwm1 = os.path.join(hdir, "pwm1")
-            pwm1_en = os.path.join(hdir, "pwm1_enable")
             if os.path.exists(f1):
                 if any(k in name for k in fan_sensor_names) or not self.paths.fan1_input:
                     self.paths.fan1_input = f1
             if os.path.exists(f2):
                 if any(k in name for k in fan_sensor_names) or not self.paths.fan2_input:
                     self.paths.fan2_input = f2
-            if os.path.exists(pwm1) and not self.paths.hwmon_pwm1:
-                self.paths.hwmon_pwm1 = pwm1
-            if os.path.exists(pwm1_en) and not self.paths.hwmon_pwm1_enable:
-                self.paths.hwmon_pwm1_enable = pwm1_en
+
+            try:
+                dir_entries = sorted(os.listdir(hdir))
+            except OSError:
+                dir_entries = []
+            for fn in dir_entries:
+                if re.fullmatch(r"pwm\d+", fn):
+                    pwm_p = os.path.join(hdir, fn)
+                    en_p = os.path.join(hdir, f"{fn}_enable")
+                    en_real = en_p if os.path.exists(en_p) else None
+                    self._hwmon_pwm_nodes.append((pwm_p, en_real))
+                    if not self.paths.hwmon_pwm1:
+                        self.paths.hwmon_pwm1 = pwm_p
+                    if en_real and not self.paths.hwmon_pwm1_enable:
+                        self.paths.hwmon_pwm1_enable = en_real
 
     def _scan_gpus(self) -> None:
         """Identifica GPUs dedicadas (NVIDIA/AMD) e integradas (Intel/AMD) via DRM e NVML."""
@@ -890,6 +940,71 @@ class HardwareBackend:
         norm = cls.normalize_profile(profile)
         return dict(cls.PROFILE_DETAILS.get(norm, cls.PROFILE_DETAILS["balanced"]))
 
+    def _sync_platform_profile_cache(self, raw_norm: str) -> None:
+        """Mantém a cache de todos os nós monitorados de platform_profile sincronizada após escrita programática."""
+        for p in self._platform_profile_paths:
+            self._last_profile_by_path[p] = raw_norm
+
+    def _ensure_custom_profile_for_wmi(self, path: Optional[str], allow_elevation: bool = True) -> bool:
+        """
+        No driver kernel `lenovo_wmi_other`, atributos de firmware (limites térmicos, PPT, cTGP, AC Offset)
+        exigem que `platform_profile` esteja em 'custom' (retornando EBUSY caso contrário).
+        Alterna automaticamente para 'custom' quando necessário antes da escrita.
+        """
+        if not path or "lenovo-wmi-other" not in path or not self.paths.platform_profile:
+            return False
+        choices = [c.lower().strip() for c in self.get_platform_profile_choices()]
+        if "custom" not in choices:
+            return False
+        if self._read_raw_platform_profile() == "custom":
+            return False
+
+        ok, _ = PermissionsManager.write_sysfs_value(self.paths.platform_profile, "custom", allow_elevation=allow_elevation)
+        if ok:
+            self._max_power_active = False
+            self._promoted_max_power_from_low = False
+            self._last_raw_profile = "custom"
+            self._last_profile = "custom"
+            self._sync_platform_profile_cache("custom")
+            time.sleep(0.05)
+            return True
+        return False
+
+    def _apply_max_power_fan_boost(self, enable: bool, allow_elevation: bool = False) -> None:
+        """
+        Quando o perfil 'max-power' é ativado (e não há curva customizada ativa), aciona o modo de
+        rotação máxima nos nós reais de hardware suportados (fan_fullspeed, hwmon pwm* ou fan_mode legado).
+        """
+        if bool(self.settings.get("custom_fan_curve_enabled", False)):
+            return
+
+        if self._fan_fullspeed_path and os.path.exists(self._fan_fullspeed_path):
+            target = "1" if enable else "0"
+            if allow_elevation or os.access(self._fan_fullspeed_path, os.W_OK):
+                PermissionsManager.write_sysfs_value(self._fan_fullspeed_path, target, allow_elevation=allow_elevation)
+            return
+
+        pwm_nodes = list(self._hwmon_pwm_nodes)
+        if not pwm_nodes and self.paths.hwmon_pwm1:
+            pwm_nodes = [(self.paths.hwmon_pwm1, self.paths.hwmon_pwm1_enable)]
+
+        if pwm_nodes:
+            for pwm_p, en_p in pwm_nodes:
+                if enable:
+                    if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
+                        PermissionsManager.write_sysfs_value(en_p, "1", allow_elevation=allow_elevation)
+                    if os.path.exists(pwm_p) and (allow_elevation or os.access(pwm_p, os.W_OK)):
+                        PermissionsManager.write_sysfs_value(pwm_p, "255", allow_elevation=allow_elevation)
+                else:
+                    if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
+                        PermissionsManager.write_sysfs_value(en_p, "2", allow_elevation=allow_elevation)
+            return
+
+        if self.paths.fan_mode and os.path.exists(self.paths.fan_mode) and not self._is_wmi_gamezone:
+            target = "2" if enable else "1"
+            if allow_elevation or os.access(self.paths.fan_mode, os.W_OK):
+                PermissionsManager.write_sysfs_value(self.paths.fan_mode, target, allow_elevation=allow_elevation)
+
     def _read_raw_platform_profile(self) -> str:
         """
         Lê diretamente o nó ativo de platform_profile (class/platform-profile e/ou acpi/platform_profile)
@@ -948,16 +1063,16 @@ class HardwareBackend:
             prev_raw = self._last_raw_profile
             current_prof = raw_prof
 
-            # Caso A: O próprio kernel retornou 'max-power' diretamente em /sys/firmware/acpi/platform_profile
+            # Caso A: O próprio kernel retornou 'max-power' diretamente em platform_profile
             if raw_prof == "max-power":
                 current_prof = "max-power"
                 self._max_power_active = True
+                self._promoted_max_power_from_low = False
                 self._last_raw_profile = "max-power"
                 self._last_profile = "max-power"
+                self._apply_max_power_fan_boost(True, allow_elevation=False)
 
-            # Caso B: Se o hardware suporta 'max-power' e o usuário pressionou Fn+Q estando em 'performance',
-            # mas o controlador embarcado (EC) tentou ciclar de 'performance' direto para 'low-power',
-            # promovemos para 'max-power' para incluir o Desempenho Máximo no ciclo físico do Fn+Q.
+            # Caso B: Hardware suporta 'max-power' e o EC cicla apenas 3 modos (low-power <-> balanced <-> performance)
             elif self.features.max_power_profile and self.paths.platform_profile:
                 if old_p == "performance" and raw_prof in ("low-power", "quiet"):
                     ok, _ = PermissionsManager.write_sysfs_value(self.paths.platform_profile, "max-power", allow_elevation=False)
@@ -965,16 +1080,27 @@ class HardwareBackend:
                         raw_after = self._read_raw_platform_profile()
                         current_prof = "max-power"
                         self._max_power_active = True
+                        self._promoted_max_power_from_low = True
                         self._last_raw_profile = raw_after
                         self._last_profile = "max-power"
+                        self._sync_platform_profile_cache(raw_after)
+                        self._apply_max_power_fan_boost(True, allow_elevation=False)
                     else:
                         self._max_power_active = False
+                        self._promoted_max_power_from_low = False
                         self._last_raw_profile = raw_prof
                         self._last_profile = current_prof
                 elif old_p == "max-power":
-                    # Saindo de 'max-power' pelo próximo Fn+Q físico:
+                    # Saindo de 'max-power' pelo próximo Fn+Q físico: garante retorno ao Modo Silencioso
                     self._max_power_active = False
-                    if prev_raw in ("low-power", "quiet") and raw_prof == "balanced":
+                    self._apply_max_power_fan_boost(False, allow_elevation=False)
+                    was_promoted = self._promoted_max_power_from_low
+                    self._promoted_max_power_from_low = False
+                    if raw_prof in ("low-power", "quiet"):
+                        current_prof = "low-power"
+                        self._last_raw_profile = raw_prof
+                        self._last_profile = "low-power"
+                    elif (was_promoted or prev_raw in ("max-power", "low-power", "quiet")) and raw_prof == "balanced":
                         choices = self.get_platform_profile_choices()
                         low_target = "low-power" if "low-power" in choices else ("quiet" if "quiet" in choices else raw_prof)
                         ok, _ = PermissionsManager.write_sysfs_value(self.paths.platform_profile, low_target, allow_elevation=False)
@@ -983,6 +1109,7 @@ class HardwareBackend:
                             current_prof = "low-power"
                             self._last_raw_profile = raw_after
                             self._last_profile = "low-power"
+                            self._sync_platform_profile_cache(raw_after)
                         else:
                             self._last_raw_profile = raw_prof
                             self._last_profile = current_prof
@@ -991,12 +1118,16 @@ class HardwareBackend:
                         self._last_profile = current_prof
                 else:
                     self._max_power_active = False
+                    self._promoted_max_power_from_low = False
                     self._last_raw_profile = raw_prof
                     self._last_profile = current_prof
+                    self._apply_max_power_fan_boost(False, allow_elevation=False)
             else:
                 self._max_power_active = (current_prof == "max-power")
+                self._promoted_max_power_from_low = False
                 self._last_raw_profile = raw_prof
                 self._last_profile = current_prof
+                self._apply_max_power_fan_boost(current_prof == "max-power", allow_elevation=False)
 
             events.append({
                 "type": "profile_changed",
@@ -1148,8 +1279,11 @@ class HardwareBackend:
         if ok:
             raw_after = self._read_raw_platform_profile()
             self._max_power_active = (norm_profile == "max-power")
+            self._promoted_max_power_from_low = False
             self._last_raw_profile = raw_after
             self._last_profile = norm_profile
+            self._sync_platform_profile_cache(raw_after)
+            self._apply_max_power_fan_boost(norm_profile == "max-power", allow_elevation=False)
             # Se o usuário trocou manualmente para performance/max-power, desmarca Eco-Mode
             if norm_profile in ("performance", "max-power") and self.get_eco_travel_mode():
                 self.settings.set("eco_travel_mode", False)
@@ -1197,7 +1331,7 @@ class HardwareBackend:
     def detect_running_game(self, force: bool = False) -> Optional[str]:
         """
         Monitora processos ativos em busca de jogos abertos via Steam (Proton/Nativo),
-        Heroic Games Launcher, Lutris, Wine, Gamescope ou GameMode.
+        Heroic Games Launcher, Lutris, Wine/UMU, Sober (Roblox), Emuladores, Gamescope ou GameMode.
         Aplica cache seguro de 4s para evitar micro-travamentos (stutters) na interface.
         """
         now = time.time()
@@ -1206,21 +1340,52 @@ class HardwareBackend:
 
         ignored_bins = {
             "steam", "steamwebhelper", "steamservice", "steam-runtime",
-            "heroic", "lutris", "wineserver", "services.exe", "explorer.exe",
-            "plugplay.exe", "svchost.exe", "rpcss.exe", "tabtip.exe",
-            "conhost.exe", "start.exe", "wineboot.exe", "steam.exe",
-            "crashhandler", "crashhandler64", " pressure-vessel", "bwrap"
+            "heroic", "lutris", "wineserver", "services.exe", "winedevice.exe",
+            "explorer.exe", "plugplay.exe", "svchost.exe", "rpcss.exe",
+            "tabtip.exe", "conhost.exe", "start.exe", "wineboot.exe",
+            "rundll32.exe", "msiexec.exe", "regsvr32.exe", "regedit.exe",
+            "cmd.exe", "taskmgr.exe", "steam.exe", "steamwebhelper.exe",
+            "epicgameslauncher.exe", "epicwebhelper.exe", "eadesktop.exe",
+            "ealauncher.exe", "eabackgroundservice.exe", "upc.exe",
+            "ubisoftconnect.exe", "battle.net.exe", "agent.exe",
+            "galaxyclient.exe", "crashhandler", "crashhandler64",
+            "crashhandler.exe", "crashhandler64.exe",
+            "unitycrashhandler64.exe", "ue4prereqsetup_x64.exe",
+            "pressure-vessel", "bwrap", "srt-bwrap", "xdg-dbus-proxy",
+            "fossilize_replay", "gamemoded", "proton", "umu-run",
+            "python", "python3", "bash", "sh", "zsh", "fish",
         }
+        runtime_wrappers = {
+            "wine", "wine64", "wine-preloader", "wine64-preloader",
+            "sniper", "soldier", "pv-adverb", "pressure-vessel-wrap",
+            "reaper",
+        }
+        native_games = {
+            "rpcs3", "pcsx2", "pcsx2-qt", "dolphin-emu", "yuzu", "ryujinx",
+            "cemu", "retroarch", "cs2", "dota2", "hl2_linux", "factorio",
+            "stardewvalley", "terraria", "celeste", "osu!", "veloren-voxygen",
+            "supertuxkart", "xonotic-linux64-glx",
+        }
+        lib_markers = (
+            "/steamapps/common/", "/games/heroic/", "/heroic/prefixes/",
+            "/games/", "/lutris/", "/epic games/", "/gog games/", "/compatdata/",
+        )
 
         found_game = None
+        saw_gamemoded = False
         try:
-            for proc in psutil.process_iter(["name", "exe", "cmdline"]):
+            for proc in psutil.process_iter(["name", "exe", "cmdline", "cwd"]):
                 try:
                     pname = (proc.info.get("name") or "").strip()
                     p_low = pname.lower()
+                    if p_low == "gamemoded":
+                        saw_gamemoded = True
                     if not pname or p_low in ignored_bins:
                         continue
 
+                    exe_str = (proc.info.get("exe") or "").strip()
+                    exe_low = exe_str.lower()
+                    cwd_str = (proc.info.get("cwd") or "").strip()
                     cmdline = proc.info.get("cmdline") or []
                     cmd_str = " ".join(cmdline)
                     cmd_low = cmd_str.lower()
@@ -1229,7 +1394,6 @@ class HardwareBackend:
                     if p_low == "reaper" and "appid=" in cmd_low:
                         m = re.search(r"appid=(\d+)", cmd_low)
                         app_id = m.group(1) if m else "Steam"
-                        # Tentar extrair nome do executável após '--'
                         if "--" in cmdline:
                             idx = cmdline.index("--")
                             if idx + 1 < len(cmdline):
@@ -1245,20 +1409,79 @@ class HardwareBackend:
                         found_game = f"Sessão {pname}"
                         break
 
-                    # 3. Executáveis rodando de steamapps/common, Heroic ou Games
-                    if any(marker in cmd_low for marker in ("/steamapps/common/", "/games/heroic/", "/heroic/prefixes/")):
+                    # 3. Jogos Flatpak (Sober/Roblox), Minecraft e Emuladores/Nativos conhecidos
+                    if p_low == "sober" or "/app/bin/sober" in cmd_low or exe_low.endswith("/sober"):
+                        found_game = "Roblox (Sober)"
+                        break
+                    if p_low in ("java", "javaw") and any(k in cmd_low for k in ("net.minecraft", "minecraft", "prismlauncher", "mojang", "fabricmc")):
+                        found_game = "Minecraft"
+                        break
+                    if p_low in native_games:
+                        found_game = pname
+                        break
+
+                    # 4. Executáveis rodando a partir de bibliotecas de jogos (Steam, Heroic, Lutris, ~/Games, etc.)
+                    exe_norm = exe_str.replace("\\", "/").lower()
+                    cmd_norm = cmd_str.replace("\\", "/").lower()
+                    cwd_norm = cwd_str.replace("\\", "/").lower()
+                    if any(m in txt for m in lib_markers for txt in (cmd_norm, exe_norm, cwd_norm)):
                         for arg in reversed(cmdline):
-                            clean_arg = os.path.basename(arg.replace("\\", "/"))
+                            arg_norm = arg.replace("\\", "/")
+                            if "/windows/system32/" in arg_norm.lower() or "/windows/syswow64/" in arg_norm.lower():
+                                continue
+                            clean_arg = os.path.basename(arg_norm)
                             c_low = clean_arg.lower()
-                            if c_low.endswith((".exe", ".x86_64", ".bin")) and c_low not in ignored_bins:
+                            if c_low.endswith((".exe", ".x86_64", ".bin")) and c_low not in ignored_bins and c_low not in runtime_wrappers:
                                 found_game = clean_arg
                                 break
+                        if not found_game and p_low not in runtime_wrappers:
+                            cand_bin = os.path.basename(exe_norm) if exe_str else pname
+                            if cand_bin.lower() not in ignored_bins and cand_bin.lower() not in runtime_wrappers:
+                                found_game = os.path.basename(exe_str.replace("\\", "/")) or pname
+                        if found_game:
+                            break
+
+                    # 5. Executável Windows .exe rodando via Wine / Proton / UMU (ex: C:\Games\...)
+                    is_wine_proc = p_low.endswith(".exe") or "wine" in p_low or "wine" in exe_low or "proton" in cmd_low or "umu" in cmd_low
+                    if is_wine_proc:
+                        for arg in reversed(cmdline):
+                            arg_norm = arg.replace("\\", "/")
+                            arg_low = arg_norm.lower()
+                            if "/windows/system32/" in arg_low or "/windows/syswow64/" in arg_low:
+                                continue
+                            clean_arg = os.path.basename(arg_norm)
+                            c_low = clean_arg.lower()
+                            if c_low.endswith(".exe") and c_low not in ignored_bins and c_low not in runtime_wrappers:
+                                found_game = clean_arg
+                                break
+                        if not found_game and p_low.endswith(".exe") and p_low not in ignored_bins:
+                            found_game = pname
                         if found_game:
                             break
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
         except Exception:
             pass
+
+        # 6. Fallback Feral GameMode via D-Bus (caso gamemoded esteja ativo com algum cliente)
+        if not found_game and saw_gamemoded and shutil.which("gdbus"):
+            try:
+                res = subprocess.run(
+                    [
+                        "gdbus", "call", "--session",
+                        "--dest", "com.feralinteractive.GameMode",
+                        "--object-path", "/com/feralinteractive/GameMode",
+                        "--method", "org.freedesktop.DBus.Properties.Get",
+                        "com.feralinteractive.GameMode", "ClientCount",
+                    ],
+                    capture_output=True, text=True, timeout=0.5,
+                )
+                if res.returncode == 0 and res.stdout:
+                    m_cnt = re.search(r"(\d+)", res.stdout)
+                    if m_cnt and int(m_cnt.group(1)) > 0:
+                        found_game = "GameMode (Jogo Ativo)"
+            except Exception:
+                pass
 
         self._cached_running_game = found_game
         self._last_game_scan_time = now
@@ -1437,7 +1660,7 @@ class HardwareBackend:
             self._active_game_name = target_name
             self._active_rule_exec = rule_exec
 
-            self.set_platform_profile(target_prof or "performance", allow_elevation=False)
+            ok_prof, _ = self.set_platform_profile(target_prof or "performance", allow_elevation=False)
             if self.features.cpu_governor:
                 gov = "performance" if target_prof in ("performance", "max-power") else "powersave"
                 self.set_cpu_governor(gov, allow_elevation=False)
@@ -1446,7 +1669,8 @@ class HardwareBackend:
                 "type": "app_rule_started" if rule_exec else "game_started",
                 "game": target_name,
                 "executable": rule_exec or "",
-                "profile": target_prof or "performance"
+                "profile": target_prof or "performance",
+                "applied": ok_prof,
             }
 
         # Jogo ou aplicativo mapeado fechou
@@ -1459,14 +1683,15 @@ class HardwareBackend:
             if restore_prof in ("performance", "max-power"):
                 restore_prof = "balanced" if self._get_ac_online() == 1 else "low-power"
 
-            self.set_platform_profile(restore_prof, allow_elevation=False)
+            ok_restore, _ = self.set_platform_profile(restore_prof, allow_elevation=False)
             if self.features.cpu_governor:
                 self.set_cpu_governor("powersave", allow_elevation=False)
 
             return {
                 "type": "game_stopped",
                 "game": finished_game,
-                "profile": restore_prof
+                "profile": restore_prof,
+                "applied": ok_restore,
             }
 
         return None
@@ -1993,6 +2218,37 @@ class HardwareBackend:
         if self.paths.touchpad and os.path.exists(self.paths.touchpad):
             # ideapad_acpi/touchpad: 1 = ativo, 0 = bloqueado
             return self._read_file_int(self.paths.touchpad, default=1) == 0
+
+        now = time.time()
+        if self._cached_touchpad_status is not None and (now - self._last_touchpad_scan < 3.0):
+            return self._cached_touchpad_status
+
+        if self._touchpad_event_name and (shutil.which("qdbus6") or shutil.which("qdbus")):
+            plat = os.environ.get("QT_QPA_PLATFORM", "").lower()
+            if plat not in ("offscreen", "minimal") and (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")):
+                qdbus_bin = "qdbus6" if shutil.which("qdbus6") else "qdbus"
+                try:
+                    res = subprocess.run(
+                        [
+                            qdbus_bin,
+                            "org.kde.KWin",
+                            f"/org/kde/KWin/InputDevice/{self._touchpad_event_name}",
+                            "org.freedesktop.DBus.Properties.Get",
+                            "org.kde.KWin.InputDevice",
+                            "enabled",
+                        ],
+                        capture_output=True, text=True, timeout=1.5
+                    )
+                    if res.returncode == 0:
+                        val_low = res.stdout.strip().lower()
+                        if val_low in ("true", "false"):
+                            locked = (val_low == "false")
+                            self._cached_touchpad_status = locked
+                            self._last_touchpad_scan = now
+                            return locked
+                except Exception:
+                    pass
+
         return bool(self.settings.get("touchpad_locked", False))
 
     def set_touchpad_status(self, locked: bool) -> Tuple[bool, str]:
@@ -2004,6 +2260,8 @@ class HardwareBackend:
             ok, msg = PermissionsManager.write_sysfs_value(self.paths.touchpad, "0" if locked else "1")
             if ok:
                 self.settings.set("touchpad_locked", locked)
+                self._cached_touchpad_status = locked
+                self._last_touchpad_scan = time.time()
                 return True, f"Bloqueio do Touchpad {'ativado' if locked else 'desativado'}."
             return False, msg
 
@@ -2056,7 +2314,12 @@ class HardwareBackend:
                 except Exception:
                     pass
 
+        if not applied:
+            return False, "Não foi possível alterar o estado do Touchpad no compositor atual."
+
         self.settings.set("touchpad_locked", locked)
+        self._cached_touchpad_status = locked
+        self._last_touchpad_scan = time.time()
         return True, f"Bloqueio do Touchpad {'ativado' if locked else 'desativado'}."
 
     def get_auto_power_transition(self) -> bool:
@@ -2580,6 +2843,18 @@ class HardwareBackend:
         self.settings.set("custom_cpu_temp_limit", cpu_temp_limit)
         self.settings.set("custom_gpu_temp_limit", gpu_temp_limit)
 
+        if enabled and self.paths.platform_profile:
+            choices = [c.lower().strip() for c in self.get_platform_profile_choices()]
+            if "custom" in choices and self._read_raw_platform_profile() != "custom":
+                ok_c, _ = PermissionsManager.write_sysfs_value(self.paths.platform_profile, "custom")
+                if ok_c:
+                    self._max_power_active = False
+                    self._promoted_max_power_from_low = False
+                    self._last_raw_profile = "custom"
+                    self._last_profile = "custom"
+                    self._sync_platform_profile_cache("custom")
+                    time.sleep(0.05)
+
         pairs: List[Tuple[str, str]] = []
         if self.paths.lenovo_wmi_attr_dir:
             c_path = os.path.join(self.paths.lenovo_wmi_attr_dir, "cpu_temp", "current_value")
@@ -2588,11 +2863,6 @@ class HardwareBackend:
                 pairs.append((c_path, str(cpu_temp_limit)))
             if os.path.exists(g_path):
                 pairs.append((g_path, str(gpu_temp_limit)))
-
-        if enabled:
-            choices = self.get_platform_profile_choices()
-            if "custom" in choices and self.paths.platform_profile:
-                pairs.append((self.paths.platform_profile, "custom"))
 
         if pairs:
             PermissionsManager.write_multiple_sysfs_values(pairs)
@@ -2606,9 +2876,13 @@ class HardwareBackend:
             )
         else:
             # Restaurar controle automático do EC
-            if self.paths.hwmon_pwm1_enable and os.path.exists(self.paths.hwmon_pwm1_enable):
-                PermissionsManager.write_sysfs_value(self.paths.hwmon_pwm1_enable, "2", allow_elevation=False)
-            elif self.paths.fan_mode and os.path.exists(self.paths.fan_mode):
+            pwm_nodes = list(self._hwmon_pwm_nodes)
+            if not pwm_nodes and self.paths.hwmon_pwm1:
+                pwm_nodes = [(self.paths.hwmon_pwm1, self.paths.hwmon_pwm1_enable)]
+            for _, en_p in pwm_nodes:
+                if en_p and os.path.exists(en_p):
+                    PermissionsManager.write_sysfs_value(en_p, "2", allow_elevation=False)
+            if not pwm_nodes and self.paths.fan_mode and os.path.exists(self.paths.fan_mode) and not self._is_wmi_gamezone:
                 PermissionsManager.write_sysfs_value(self.paths.fan_mode, "1", allow_elevation=False)
             self._last_applied_pwm = -1
             return True, "Curva customizada desativada. Controle automático original do EC restaurado."
@@ -2638,17 +2912,19 @@ class HardwareBackend:
         self._last_applied_pwm = target_pwm_pct
         pwm_byte = int(round((target_pwm_pct / 100.0) * 255))
 
-        # 1. Escrita direta em hwmon pwm1 se exposto pelo kernel
-        if self.paths.hwmon_pwm1 and os.path.exists(self.paths.hwmon_pwm1):
-            if self.paths.hwmon_pwm1_enable and os.path.exists(self.paths.hwmon_pwm1_enable):
-                if os.access(self.paths.hwmon_pwm1_enable, os.W_OK):
-                    PermissionsManager.write_sysfs_value(self.paths.hwmon_pwm1_enable, "1", allow_elevation=False)
-            if os.access(self.paths.hwmon_pwm1, os.W_OK) or force:
-                PermissionsManager.write_sysfs_value(self.paths.hwmon_pwm1, str(pwm_byte), allow_elevation=False)
+        # 1. Escrita direta em todos os nós hwmon pwm* expostos pelo kernel
+        pwm_nodes = list(self._hwmon_pwm_nodes)
+        if not pwm_nodes and self.paths.hwmon_pwm1:
+            pwm_nodes = [(self.paths.hwmon_pwm1, self.paths.hwmon_pwm1_enable)]
 
-        # 2. Escrita no nó fan_mode do driver ideapad_acpi (VPC2004)
-        # 0 = Passivo / Super Silent (0 RPM em baixas temperaturas), 1 = Standard, 4 = Thermal Efficient, 2 = Max Speed / Full Blast
-        if self.paths.fan_mode and os.path.exists(self.paths.fan_mode):
+        for pwm_p, en_p in pwm_nodes:
+            if en_p and os.path.exists(en_p) and os.access(en_p, os.W_OK):
+                PermissionsManager.write_sysfs_value(en_p, "1", allow_elevation=False)
+            if os.path.exists(pwm_p) and (os.access(pwm_p, os.W_OK) or force):
+                PermissionsManager.write_sysfs_value(pwm_p, str(pwm_byte), allow_elevation=False)
+
+        # 2. Escrita no nó fan_mode do driver ideapad_acpi legado (apenas quando não há lenovo-wmi-gamezone)
+        if self.paths.fan_mode and os.path.exists(self.paths.fan_mode) and not self._is_wmi_gamezone:
             if target_pwm_pct == 0 and hottest_temp < 52.0:
                 ec_mode = "0"
             elif target_pwm_pct < 55:
@@ -2790,6 +3066,9 @@ class HardwareBackend:
         if self.paths.lenovo_wmi_attr_dir:
             ac_off_path = os.path.join(self.paths.lenovo_wmi_attr_dir, "gpu_nv_ac_offset", "current_value")
             if os.path.exists(ac_off_path):
+                cur_ac_off = (self._read_file_text(ac_off_path) or "").strip()
+                if cur_ac_off != str(gpu_ac_offset_w):
+                    self._ensure_custom_profile_for_wmi(ac_off_path, allow_elevation=False)
                 ok_wmi, _ = PermissionsManager.write_sysfs_value(ac_off_path, str(gpu_ac_offset_w), allow_elevation=False)
                 if ok_wmi:
                     applied_details.append(f"WMI AC Offset: +{gpu_ac_offset_w}W")
@@ -2804,10 +3083,12 @@ class HardwareBackend:
         if vendor == "Intel":
             # Escrita direta em /dev/cpu/*/msr (Plane 0 Core & Plane 2 Cache) se acessível
             msr_nodes = sorted(glob.glob("/dev/cpu/[0-9]*/msr"))
+            direct_msr_attempted = False
+            val_core = self._encode_intel_msr_undervolt_offset(0, core_mv)
+            val_cache = self._encode_intel_msr_undervolt_offset(2, cache_mv)
             if msr_nodes and os.access(msr_nodes[0], os.W_OK):
+                direct_msr_attempted = True
                 try:
-                    val_core = self._encode_intel_msr_undervolt_offset(0, core_mv)
-                    val_cache = self._encode_intel_msr_undervolt_offset(2, cache_mv)
                     packed_core = struct.pack("<Q", val_core)
                     packed_cache = struct.pack("<Q", val_cache)
                     for mpath in msr_nodes:
@@ -2830,7 +3111,7 @@ class HardwareBackend:
                     msr_written = False
                     applied_details.append(f"MSR Exception ({e})")
 
-            # Fallback para Intel via wrmsr / intel-undervolt
+            # Fallback para Intel via wrmsr, intel-undervolt ou escrita direta MSR via pkexec + python3
             if not msr_written and (core_mv != 0 or cache_mv != 0):
                 if shutil.which("wrmsr") and shutil.which("pkexec"):
                     try:
@@ -2851,6 +3132,37 @@ class HardwareBackend:
                             applied_details.append("intel-undervolt service")
                     except Exception:
                         pass
+                elif not direct_msr_attempted and msr_nodes and shutil.which("pkexec"):
+                    py_script = (
+                        "import glob, os, struct, sys\n"
+                        "vc, vca = int(sys.argv[1]), int(sys.argv[2])\n"
+                        "pc, pca = struct.pack('<Q', vc), struct.pack('<Q', vca)\n"
+                        "for p in sorted(glob.glob('/dev/cpu/[0-9]*/msr')):\n"
+                        "    fd = os.open(p, os.O_WRONLY)\n"
+                        "    try:\n"
+                        "        os.pwrite(fd, pc, 0x150)\n"
+                        "        os.pwrite(fd, pca, 0x150)\n"
+                        "    finally:\n"
+                        "        os.close(fd)\n"
+                    )
+                    try:
+                        res = subprocess.run(
+                            ["pkexec", sys.executable or "/usr/bin/python3", "-c", py_script, str(val_core), str(val_cache)],
+                            capture_output=True, text=True, timeout=20
+                        )
+                        if res.returncode == 0:
+                            msr_written = True
+                            applied_details.append(f"MSR 0x150 via Polkit ({msr_core_hex})")
+                        else:
+                            err_txt = (res.stderr or res.stdout or "").lower()
+                            if any(k in err_txt for k in ("operation not permitted", "input/output error", "permission denied", "eperm", "eio")):
+                                applied_details.append("MSR 0x150 bloqueado (OC Lock / Undervolt Protection ativo na BIOS)")
+                            elif res.returncode in (126, 127) or "dismissed" in err_txt or "cancel" in err_txt or "not authorized" in err_txt:
+                                applied_details.append("Elevação Polkit cancelada pelo usuário")
+                            else:
+                                applied_details.append(f"MSR 0x150 falhou via Polkit (código {res.returncode})")
+                    except Exception as e:
+                        applied_details.append(f"Falha ao executar Polkit MSR ({e})")
 
         elif vendor == "AMD":
             # CPUs AMD: JAMAIS escrever no MSR 0x150! Usar ryzenadj Curve Optimizer
@@ -3046,16 +3358,16 @@ class HardwareBackend:
         self._cached_net_power_status = None
         self._last_net_power_status_time = 0.0
         wifi_if, _ = self._discover_network_interfaces()
-        self.settings.set("wifi_low_latency_gaming", not enable_saving)
         if not wifi_if:
             return False, "Nenhuma interface Wi-Fi detectada neste sistema."
 
         state_word = "on" if enable_saving else "off"
         pm_word = "auto" if enable_saving else "on"
         pm_path = f"/sys/class/net/{wifi_if}/device/power/control"
+        has_iw = bool(shutil.which("iw"))
 
         iw_ok = False
-        if shutil.which("iw"):
+        if has_iw:
             try:
                 res = subprocess.run(
                     ["iw", "dev", wifi_if, "set", "power_save", state_word],
@@ -3070,11 +3382,11 @@ class HardwareBackend:
         if os.path.exists(pm_path) and os.access(pm_path, os.W_OK):
             sysfs_ok, _ = PermissionsManager.write_sysfs_value(pm_path, pm_word)
 
-        if not iw_ok and not sysfs_ok and shutil.which("pkexec"):
+        if ((has_iw and not iw_ok) or (not has_iw and not sysfs_ok)) and shutil.which("pkexec"):
             cmds = []
-            if shutil.which("iw"):
+            if has_iw and not iw_ok:
                 cmds.append(f"iw dev {wifi_if} set power_save {state_word}")
-            if os.path.exists(pm_path):
+            if not sysfs_ok and os.path.exists(pm_path):
                 cmds.append(f"echo '{pm_word}' > '{pm_path}' && chmod 0666 '{pm_path}'")
             if cmds:
                 try:
@@ -3082,10 +3394,19 @@ class HardwareBackend:
                         ["pkexec", "sh", "-c", " && ".join(cmds)],
                         capture_output=True, text=True, timeout=20
                     )
-                    iw_ok = (res.returncode == 0)
+                    if res.returncode == 0:
+                        if has_iw:
+                            iw_ok = True
+                        sysfs_ok = True
                 except Exception:
                     pass
 
+        if has_iw and not iw_ok:
+            return False, f"Permissão necessária para alterar o Power Save do Wi-Fi ({wifi_if}) via iw."
+        if not has_iw and not sysfs_ok:
+            return False, f"Sem permissão de escrita em {pm_path}."
+
+        self.settings.set("wifi_low_latency_gaming", not enable_saving)
         mode_desc = (
             f"Economia de Energia Wi-Fi ({wifi_if}) ATIVADA (Ideal para bateria)"
             if enable_saving
@@ -3447,10 +3768,13 @@ class HardwareBackend:
             rt_status_p = os.path.join(os.path.dirname(self.paths.nvidia_pci_power_control), "runtime_status")
             rt_status = (self._read_file_text(rt_status_p) or "").strip().lower()
             ctrl = (self._read_file_text(self.paths.nvidia_pci_power_control) or "").strip().lower()
-            if rt_status == "suspended" and ctrl == "auto":
-                cur_mode = "integrated"
+            cur_mode = "integrated" if ctrl == "auto" else "hybrid"
+            if ctrl == "auto" and rt_status == "suspended":
+                msg = "PCIe Runtime PM = auto (dGPU em D3cold / suspensa)"
+            elif ctrl == "auto":
+                msg = "PCIe Runtime PM = auto (dGPU entrará em D3cold quando ociosa)"
             else:
-                cur_mode = "hybrid"
+                msg = "PCIe Runtime PM = on (dGPU mantida sempre ativa)"
         else:
             backend_name = "none"
             modes = []
@@ -4076,9 +4400,11 @@ class HardwareBackend:
             else:
                 clean_val = "1" if is_true else "0"
 
+        switched_custom = self._ensure_custom_profile_for_wmi(path, allow_elevation=True)
         ok, msg = PermissionsManager.write_sysfs_value(path, clean_val, allow_elevation=True)
         if ok:
             self._cached_bios_attrs = None
-            return True, f"Atributo '{attr_id}' atualizado para '{clean_val}' com sucesso."
+            extra = " (Perfil alterado para Custom para liberar escrita WMI)" if switched_custom else ""
+            return True, f"Atributo '{attr_id}' atualizado para '{clean_val}' com sucesso.{extra}"
         return False, msg
 

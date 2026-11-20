@@ -500,7 +500,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Permissão Necessária", msg)
 
     def _apply_touchpad(self, locked: bool):
-        self.backend.set_touchpad_status(locked)
+        ok, msg = self.backend.set_touchpad_status(locked)
+        if not ok and getattr(self.dashboard_tab, "item_touchpad", None):
+            self.dashboard_tab.item_touchpad.set_checked(not locked)
+            QMessageBox.warning(self, "Touchpad", f"Não foi possível alterar o estado do Touchpad:\n{msg}")
 
     def _apply_auto_power(self, enabled: bool):
         self.backend.set_auto_power_transition(enabled)
@@ -644,6 +647,10 @@ class MainWindow(QMainWindow):
                     icon_name="game_controller.svg",
                     accent_color=ThemeTokens.THERMAL_BALANCED
                 )
+            self._update_header_profile_pill()
+            self.dashboard_tab.update_telemetry()
+            self.performance_tab.refresh_profile_state()
+            self.tray_manager.update_tray_state()
 
         # 3. Verificar Alertas Inteligentes de Ciclo de Vida e Temperatura da Bateria
         bat_alerts = self.backend.check_battery_smart_alerts(force_test=False)

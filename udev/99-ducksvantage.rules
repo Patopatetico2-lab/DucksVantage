@@ -1,6 +1,6 @@
 # ====================================================================
 # Ducksvantage - Regras UDEV Universais Lenovo (Legion, LOQ, IdeaPad, Yoga)
-# Permite escrita nos nós de ACPI, CPU, Teclado e Bateria sem sudo manual
+# Permite escrita nos nós de ACPI, CPU, TDP, GPU D3cold, Teclado e Bateria
 # ====================================================================
 
 # 1. Perfil de Plataforma ACPI (Quiet, Balanced, Performance, Max-Power)
@@ -19,4 +19,18 @@ ACTION=="add|change", SUBSYSTEM=="leds", RUN+="/bin/sh -c 'chmod 0666 /sys/class
 
 # 5. Controle de CPU Turbo Boost (Intel P-State / AMD CPUFreq) e Scaling Governor
 ACTION=="add|change", SUBSYSTEM=="cpu", RUN+="/bin/sh -c 'chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo /sys/devices/system/cpu/cpufreq/boost /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null || true'"
+
+# 6. Limites de TDP Customizados (Intel RAPL PL1 / PL2) e Suspensão D3cold PCI
+ACTION=="add|change", SUBSYSTEM=="powercap", RUN+="/bin/sh -c 'chmod 0666 /sys/class/powercap/intel-rapl*/constraint_*_power_limit_uw 2>/dev/null || true'"
+ACTION=="add|change", SUBSYSTEM=="pci", RUN+="/bin/sh -c 'chmod 0666 /sys/bus/pci/devices/*/power/control 2>/dev/null || true'"
+
+# 7. Leitura de Eventos de Teclas Especiais (Tecla Copilot F23 / WMI Hotkeys)
+ACTION=="add|change", SUBSYSTEM=="input", RUN+="/bin/sh -c 'chmod 0644 /dev/input/by-path/*kbd* /dev/input/by-path/*VPC* 2>/dev/null || true'"
+
+# 8. Atributos Térmicos e de Potência Lenovo WMI Other (CPU/GPU Temp Limits, AC Offset, PPT, Overdrive) e Hwmon PWM
+ACTION=="add|change", SUBSYSTEM=="firmware-attributes", RUN+="/bin/sh -c 'chmod 0666 /sys/class/firmware-attributes/*/attributes/*/current_value 2>/dev/null || true'"
+ACTION=="add|change", SUBSYSTEM=="hwmon", RUN+="/bin/sh -c 'chmod 0666 /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null || true'"
+
+# 9. Controle de Economia de Energia de Rede (Wi-Fi / Ethernet PCIe Runtime PM)
+ACTION=="add|change", SUBSYSTEM=="net", RUN+="/bin/sh -c 'chmod 0666 /sys/class/net/*/device/power/control 2>/dev/null || true'"
 
