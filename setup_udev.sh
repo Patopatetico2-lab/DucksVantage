@@ -24,15 +24,34 @@ fi
 
 USER_APP_DIR="${USER_HOME}/.local/share/applications"
 
-# 1. Instalar o atalho do usuário com caminhos absolutos
-if [ -f "$DESKTOP_SRC" ]; then
-    echo "[+] Instalando atalho Ducksvantage em ${USER_APP_DIR}/ducksvantage.desktop..."
-    mkdir -p "${USER_APP_DIR}"
+# 1. Instalar o atalho do usuário (universal: /usr/bin/ducksvantage ou pasta clonada)
+echo "[+] Instalando atalho Ducksvantage em ${USER_APP_DIR}/ducksvantage.desktop..."
+mkdir -p "${USER_APP_DIR}"
+if [ -x "/usr/bin/ducksvantage" ] && [ -f "$DESKTOP_SRC" ]; then
     cp "$DESKTOP_SRC" "${USER_APP_DIR}/ducksvantage.desktop"
-    chmod 0644 "${USER_APP_DIR}/ducksvantage.desktop"
-    if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
-        chown -R "$TARGET_USER":"$TARGET_USER" "${USER_APP_DIR}/ducksvantage.desktop"
-    fi
+else
+    cat << EOF > "${USER_APP_DIR}/ducksvantage.desktop"
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Ducksvantage
+GenericName=Lenovo Hardware & Power Control
+GenericName[pt_BR]=Controle de Hardware e Energia Lenovo
+Comment=Universal Lenovo Vantage replacement for Linux (Legion, LOQ, IdeaPad Gaming, IdeaPad & Yoga)
+Comment[pt_BR]=Substituto universal e leve do Lenovo Vantage para Linux (Legion, LOQ, IdeaPad Gaming, IdeaPad e Yoga)
+Exec=/usr/bin/python3 ${SCRIPT_DIR}/main.py
+Icon=${SCRIPT_DIR}/assets/app_icon.svg
+Path=${SCRIPT_DIR}
+Terminal=false
+Categories=System;Settings;HardwareSettings;Utility;Qt;
+Keywords=Lenovo;Legion;LOQ;IdeaPad;Vantage;Battery;Thermal;Performance;Max-Power;Ducksvantage;
+StartupNotify=true
+StartupWMClass=Ducksvantage
+EOF
+fi
+chmod 0644 "${USER_APP_DIR}/ducksvantage.desktop"
+if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
+    chown -R "$TARGET_USER":"$TARGET_USER" "${USER_APP_DIR}/ducksvantage.desktop"
 fi
 
 # 2. Instalar regras UDEV se executado como root / sudo
@@ -48,17 +67,28 @@ if [ "$EUID" -eq 0 ]; then
 
     echo "[+] Aplicando permissões imediatas nos nós /sys/..."
     chmod 0666 /sys/firmware/acpi/platform_profile 2>/dev/null || true
+    chmod 0666 /sys/class/platform-profile/*/profile 2>/dev/null || true
     chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/conservation_mode 2>/dev/null || true
+    chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/rapid_charge 2>/dev/null || true
     chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/fn_lock 2>/dev/null || true
     chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/camera_power 2>/dev/null || true
     chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/usb_charging 2>/dev/null || true
+    chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/touchpad 2>/dev/null || true
     chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/fan_mode 2>/dev/null || true
+    chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/lcd_overdrive 2>/dev/null || true
+    chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/gpu_mode 2>/dev/null || true
     chmod 0666 /sys/class/power_supply/BAT*/charge_types 2>/dev/null || true
     chmod 0666 /sys/class/leds/*kbd_backlight*/brightness 2>/dev/null || true
     chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || true
     chmod 0666 /sys/devices/system/cpu/cpufreq/boost 2>/dev/null || true
     chmod 0666 /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null || true
+    chmod 0666 /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference 2>/dev/null || true
     chmod 0666 /sys/class/powercap/intel-rapl*/constraint_*_power_limit_uw 2>/dev/null || true
+    chmod 0666 /sys/bus/pci/devices/*/power/control 2>/dev/null || true
+    chmod 0666 /sys/class/firmware-attributes/*/attributes/*/current_value 2>/dev/null || true
+    chmod 0666 /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null || true
+    chmod 0666 /sys/class/net/*/device/power/control 2>/dev/null || true
+    chmod 0644 /dev/input/by-path/*kbd* /dev/input/by-path/*VPC* 2>/dev/null || true
 else
     echo "[i] Para instalar as regras de permissão UDEV em /etc/udev/rules.d/, execute: sudo $0"
 fi

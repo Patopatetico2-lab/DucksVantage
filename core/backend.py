@@ -1005,6 +1005,51 @@ class HardwareBackend:
             if allow_elevation or os.access(self.paths.fan_mode, os.W_OK):
                 PermissionsManager.write_sysfs_value(self.paths.fan_mode, target, allow_elevation=allow_elevation)
 
+    def _sync_cpu_epp_for_profile(self, profile: str) -> bool:
+        """
+        Sincroniza `energy_performance_preference` (EPP) da CPU de acordo com o perfil térmico.
+        Corrige o fallback do power-profiles-daemon que derruba 'max-power' para 'balance_performance'.
+        """
+        norm = self.normalize_profile(profile)
+        target_map = {
+            "max-power": "performance",
+            "performance": "performance",
+            "balanced": "balance_performance",
+            "low-power": "power",
+            "quiet": "power",
+        }
+        target_epp = target_map.get(norm)
+        if not target_epp:
+            return False
+
+        epp_files = sorted(glob.glob("/sys/devices/system/cpu/cpu[0-9]*/cpufreq/energy_performance_preference"))
+        if not epp_files or not os.access(epp_files[0], os.W_OK):
+            return False
+
+        avail_path = os.path.join(os.path.dirname(epp_files[0]), "energy_performance_available_preferences")
+        avail_txt = (self._read_file_text(avail_path) or "").split()
+        if avail_txt:
+            if target_epp not in avail_txt:
+                if target_epp == "power" and "balance_power" in avail_txt:
+                    target_epp = "balance_power"
+                else:
+                    return False
+
+        cur_epp = (self._read_file_text(epp_files[0]) or "").strip()
+        if cur_epp == target_epp:
+            return False
+
+        wrote_any = False
+        for ef in epp_files:
+            try:
+                if os.access(ef, os.W_OK):
+                    with open(ef, "w", encoding="utf-8") as f:
+                        f.write(target_epp)
+                    wrote_any = True
+            except OSError:
+                continue
+        return wrote_any
+
     def _read_raw_platform_profile(self) -> str:
         """
         Lê diretamente o nó ativo de platform_profile (class/platform-profile e/ou acpi/platform_profile)
@@ -1129,12 +1174,16 @@ class HardwareBackend:
                 self._last_profile = current_prof
                 self._apply_max_power_fan_boost(current_prof == "max-power", allow_elevation=False)
 
+            self._sync_cpu_epp_for_profile(current_prof)
             events.append({
                 "type": "profile_changed",
                 "old": old_p,
                 "new": current_prof,
                 "info": self.get_profile_info(current_prof)
             })
+        elif self._last_profile == "max-power":
+            # Vence a corrida caso power-profiles-daemon derrube EPP para balance_performance
+            self._sync_cpu_epp_for_profile("max-power")
 
         # 2. Verificar Conexão/Desconexão do Carregador AC
         current_ac = self._get_ac_online()
@@ -1284,6 +1333,7 @@ class HardwareBackend:
             self._last_profile = norm_profile
             self._sync_platform_profile_cache(raw_after)
             self._apply_max_power_fan_boost(norm_profile == "max-power", allow_elevation=False)
+            self._sync_cpu_epp_for_profile(norm_profile)
             # Se o usuário trocou manualmente para performance/max-power, desmarca Eco-Mode
             if norm_profile in ("performance", "max-power") and self.get_eco_travel_mode():
                 self.settings.set("eco_travel_mode", False)
@@ -1947,7 +1997,7 @@ class HardwareBackend:
                 "osd_type": "feature",
                 "title": f"Conservação da Bateria: {'Ativado (80%)' if new_state else 'Desativado (100%)'}",
                 "subtitle": "Proteção contra degradação química",
-                "icon": "battery.svg",
+                "icon": "edge_conservation.svg",
                 "accent": "#2fe08c" if new_state else "#8b949e"
             }
 
@@ -1972,7 +2022,7 @@ class HardwareBackend:
                 "osd_type": "feature",
                 "title": f"Touchpad: {'Bloqueado' if new_state else 'Desbloqueado'}",
                 "subtitle": "Controle de Dispositivo de Entrada",
-                "icon": "touchpad.svg",
+                "icon": "edge_touchpad.svg",
                 "accent": "#ff9f0a" if new_state else "#2fe08c"
             }
 
@@ -2642,7 +2692,13 @@ class HardwareBackend:
             elif metrics.rpm > 0:
                 metrics.status_label = f"{metrics.rpm} RPM (Ativa)"
             else:
-                metrics.status_label = "0 RPM (Modo Silencioso / Parada)"
+                cpu_temp_c = 0.0
+                if self.paths.cpu_temp_input:
+                    cpu_temp_c = self._read_file_int(self.paths.cpu_temp_input, default=0) / 1000.0
+                if cpu_temp_c >= 65.0 or (self._is_wmi_gamezone and cpu_temp_c >= 60.0):
+                    metrics.status_label = "Controlada pelo EC (RPM indisponível)"
+                else:
+                    metrics.status_label = "0 RPM (Silencioso / EC Automático)"
         else:
             metrics.status_label = "Controlada pelo EC (Automática)"
         return metrics
@@ -3568,6 +3624,7 @@ class HardwareBackend:
             self.paths.cpu_turbo_intel,
             self.paths.cpu_turbo_amd,
             self.paths.cpu_governor,
+            "/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference",
             self.paths.rapl_pl1,
             self.paths.rapl_pl2,
             self.paths.nvidia_pci_power_control,

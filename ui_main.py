@@ -700,6 +700,9 @@ class MainWindow(QMainWindow):
         if prof == "max-power":
             self.header_profile_pill.setText("MAX-POWER")
             self.header_profile_pill.setColor("#581c87", ThemeTokens.THERMAL_CUSTOM)
+        elif prof == "custom":
+            self.header_profile_pill.setText("CUSTOM")
+            self.header_profile_pill.setColor("#581c87", ThemeTokens.THERMAL_CUSTOM)
         elif prof == "performance":
             self.header_profile_pill.setText("DESEMPENHO")
             self.header_profile_pill.setColor("#7f1d1d", ThemeTokens.THERMAL_PERFORMANCE)

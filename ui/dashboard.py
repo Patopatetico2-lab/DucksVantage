@@ -407,9 +407,14 @@ class VantageDashboardView(QWidget):
         self.block_perf.setVisible("performance" in supported_profiles)
         blocks_row.addWidget(self.block_perf)
 
+        max_sub = (
+            "Potência extrema e rotação máxima das ventoinhas."
+            if feat.fan_control
+            else "Potência máxima sustentada (ventoinhas via EC)."
+        )
         self.block_max_power = ThermalBlock(
             "max-power", "Max-Power",
-            "Potência extrema e rotação máxima das ventoinhas.",
+            max_sub,
             "thermal_max_power.svg", ThemeTokens.THERMAL_CUSTOM
         )
         self.block_max_power.clicked.connect(self.profile_requested.emit)

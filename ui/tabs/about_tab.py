@@ -294,12 +294,18 @@ class AboutTab(QWidget):
         """Verifica o status atual de escrita nos diretórios do kernel."""
         has_perms = self.backend.has_full_write_permissions()
         is_installed = PermissionsManager.is_udev_rule_installed()
+        is_up_to_date = PermissionsManager.is_udev_rule_up_to_date()
 
-        if has_perms:
+        if has_perms and is_up_to_date:
             self.perm_badge.setText("UDEV ATIVO • SEM SUDO")
             self.perm_badge.setColor("#064e3b", "#34d399")
             self.btn_install_udev.setText("Reaplicar / Reparar Permissões UDEV")
             self.btn_install_udev.setIcon(QIcon(os.path.join(ICON_DIR, "check_circle.svg")))
+        elif has_perms and not is_up_to_date:
+            self.perm_badge.setText("UDEV DESATUALIZADO")
+            self.perm_badge.setColor("#78350f", "#fbbf24")
+            self.btn_install_udev.setText("Atualizar Regras UDEV Agora")
+            self.btn_install_udev.setIcon(QIcon(os.path.join(ICON_DIR, "shield.svg")))
         elif is_installed:
             self.perm_badge.setText("REQUER REPARO")
             self.perm_badge.setColor("#78350f", "#fbbf24")
@@ -328,6 +334,6 @@ class AboutTab(QWidget):
             QMessageBox.information(
                 self, "Regra UDEV Copiada",
                 "As regras UDEV foram copiadas para a área de transferência.\n"
-                "Alternativamente, você pode executar no terminal:\n"
-                "sudo ./setup_udev.sh"
+                "Clique no botão 'Atualizar / Instalar Regras UDEV' ou execute no terminal:\n"
+                "sudo ./install.sh  (ou sudo ./setup_udev.sh)"
             )

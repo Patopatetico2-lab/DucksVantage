@@ -2227,6 +2227,9 @@ class PerformanceTab(QWidget):
         if active_prof == "max-power":
             self.current_badge.setText("MAX-POWER")
             self.current_badge.setColor("#581c87", ThemeTokens.THERMAL_CUSTOM)
+        elif active_prof == "custom":
+            self.current_badge.setText("CUSTOM")
+            self.current_badge.setColor("#581c87", ThemeTokens.THERMAL_CUSTOM)
         elif active_prof == "performance":
             self.current_badge.setText("DESEMPENHO")
             self.current_badge.setColor("#7f1d1d", ThemeTokens.THERMAL_PERFORMANCE)

@@ -17,8 +17,8 @@ ACTION=="add|change", SUBSYSTEM=="power_supply", RUN+="/bin/sh -c 'chmod 0666 /s
 # 4. Retroiluminação do Teclado (Kbd Backlight)
 ACTION=="add|change", SUBSYSTEM=="leds", RUN+="/bin/sh -c 'chmod 0666 /sys/class/leds/*kbd_backlight*/brightness 2>/dev/null || true'"
 
-# 5. Controle de CPU Turbo Boost (Intel P-State / AMD CPUFreq) e Scaling Governor
-ACTION=="add|change", SUBSYSTEM=="cpu", RUN+="/bin/sh -c 'chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo /sys/devices/system/cpu/cpufreq/boost /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null || true'"
+# 5. Controle de CPU Turbo Boost (Intel P-State / AMD CPUFreq), Scaling Governor e EPP
+ACTION=="add|change", SUBSYSTEM=="cpu", RUN+="/bin/sh -c 'chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo /sys/devices/system/cpu/cpufreq/boost /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference 2>/dev/null || true'"
 
 # 6. Limites de TDP Customizados (Intel RAPL PL1 / PL2) e Suspensão D3cold PCI
 ACTION=="add|change", SUBSYSTEM=="powercap", RUN+="/bin/sh -c 'chmod 0666 /sys/class/powercap/intel-rapl*/constraint_*_power_limit_uw 2>/dev/null || true'"

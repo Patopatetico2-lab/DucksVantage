@@ -14,6 +14,10 @@ from core.qt_compat import (
 )
 from ui.theme_tokens import ThemeTokens
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ICON_DIR = os.path.join(BASE_DIR, "assets", "icons")
+APP_ICON_PATH = os.path.join(BASE_DIR, "assets", "app_icon.svg")
+
 
 class SystemTrayManager(QObject):
     """Gerencia o ícone da bandeja e o menu de acesso rápido no painel do KDE."""
@@ -41,7 +45,7 @@ class SystemTrayManager(QObject):
         return QSystemTrayIcon.isSystemTrayAvailable() and self.tray_icon.isVisible()
 
     def _get_icon(self, filename: str) -> QIcon:
-        path = os.path.join("assets", "icons", filename)
+        path = os.path.join(ICON_DIR, filename)
         if os.path.exists(path):
             return QIcon(path)
         return QIcon()
@@ -177,7 +181,7 @@ class SystemTrayManager(QObject):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         prof_lower = profile.lower()
-        if "max" in prof_lower:
+        if "max" in prof_lower or "custom" in prof_lower:
             accent_color = QColor(ThemeTokens.THERMAL_CUSTOM)
         elif "perf" in prof_lower:
             accent_color = QColor(ThemeTokens.THERMAL_PERFORMANCE)
@@ -238,7 +242,19 @@ class SystemTrayManager(QObject):
         self.tray_icon.setToolTip("\n".join(lines))
 
     def send_native_notification(self, title: str, message: str, urgency: str = "normal"):
-        """Envia notificação nativa para a bandeja do KDE Plasma (QSystemTrayIcon + notify-send)."""
+        """Envia notificação nativa sem duplicar alertas no KDE Plasma."""
+        notify_bin = shutil.which("notify-send")
+        if notify_bin:
+            try:
+                cmd = [notify_bin, "-a", "Ducksvantage", "-u", urgency]
+                if os.path.exists(APP_ICON_PATH):
+                    cmd.extend(["-i", APP_ICON_PATH])
+                cmd.extend([title, message])
+                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+            except Exception:
+                pass
+
         try:
             icon_type = (
                 QSystemTrayIcon.MessageIcon.Warning
@@ -249,14 +265,3 @@ class SystemTrayManager(QObject):
                 self.tray_icon.showMessage(title, message, icon_type, 6500)
         except Exception:
             pass
-
-        if shutil.which("notify-send"):
-            try:
-                app_ic = os.path.abspath(os.path.join("assets", "app_icon.svg"))
-                cmd = ["notify-send", "-a", "Ducksvantage", "-u", urgency]
-                if os.path.exists(app_ic):
-                    cmd.extend(["-i", app_ic])
-                cmd.extend([title, message])
-                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception:
-                pass

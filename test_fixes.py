@@ -560,6 +560,136 @@ class TestDucksVantageFixes(unittest.TestCase):
                 info_on = self.backend.get_gpu_mux_info()
                 self.assertEqual(info_on.current_mode, "hybrid")
 
+    # -------------------------------------------------------------------------
+    # 17. Auditoria de Ícones SVG, Desktop File Portátil & EPP Max-Power
+    # -------------------------------------------------------------------------
+    def test_all_referenced_svg_icons_exist(self):
+        """Todos os ícones SVG referenciados em core/ e ui/ devem existir em assets/icons/."""
+        import re
+        root = os.path.dirname(os.path.abspath(__file__))
+        icons_dir = os.path.join(root, "assets", "icons")
+        existing = set(os.listdir(icons_dir))
+        missing = []
+        for sub in ("core", "ui"):
+            for dp, _, fns in os.walk(os.path.join(root, sub)):
+                for fn in fns:
+                    if fn.endswith(".py"):
+                        with open(os.path.join(dp, fn), encoding="utf-8") as fh:
+                            txt = fh.read()
+                        for m in re.finditer(r"['\"]([a-zA-Z0-9_\-]+\.svg)['\"]", txt):
+                            ic = m.group(1)
+                            if ic != "app_icon.svg" and ic not in existing:
+                                missing.append((fn, ic))
+        self.assertEqual(missing, [])
+
+    def test_desktop_file_is_portable(self):
+        """O arquivo packaging/ducksvantage.desktop não deve conter /home/ fixo e deve apontar para /usr/bin/ducksvantage."""
+        root = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(root, "packaging", "ducksvantage.desktop"), encoding="utf-8") as fh:
+            content = fh.read()
+        self.assertNotIn("/home/", content)
+        self.assertIn("Exec=/usr/bin/ducksvantage", content)
+        self.assertIn("Icon=ducksvantage", content)
+
+    def test_desktop_file_name_no_suffix(self):
+        """main.py deve chamar setDesktopFileName('ducksvantage') sem sufixo .desktop."""
+        root = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(root, "main.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn('setDesktopFileName("ducksvantage")', src)
+        self.assertNotIn('setDesktopFileName("ducksvantage.desktop")', src)
+
+    def test_custom_profile_ui_display(self):
+        """Quando o perfil ativo for 'custom', cabeçalho, OSD e aba Desempenho devem exibir CUSTOM."""
+        from ui.osd_overlay import VantageOSDOverlay
+        from ui_main import MainWindow
+
+        osd = VantageOSDOverlay()
+        osd.notify_thermal_mode("custom")
+        self.assertIn("Personalizado", osd.title_label.text())
+        osd.hide()
+        osd.close()
+
+        with patch.object(self.backend, "get_platform_profile", return_value="custom"):
+            self.backend.features.platform_profile = True
+            win = MainWindow(self.backend)
+            win._update_header_profile_pill()
+            self.assertEqual(win.header_profile_pill.label.text(), "CUSTOM")
+            win.performance_tab.refresh_profile_state()
+            self.assertEqual(win.performance_tab.current_badge.label.text(), "CUSTOM")
+            win._quit_app()
+            win.close()
+
+    def test_tray_notification_no_duplicate(self):
+        """Quando notify-send está disponível, não deve duplicar com tray_icon.showMessage()."""
+        from ui.tray_icon import SystemTrayManager
+
+        tray = SystemTrayManager(self.backend)
+        tray.tray_icon.showMessage = MagicMock()
+        tray.tray_icon.isSystemTrayAvailable = MagicMock(return_value=True)
+
+        with patch("ui.tray_icon.shutil.which", return_value="/usr/bin/notify-send"), \
+             patch("ui.tray_icon.subprocess.Popen") as mock_popen:
+            tray.send_native_notification("Alerta", "Teste 80%")
+            mock_popen.assert_called_once()
+            tray.tray_icon.showMessage.assert_not_called()
+
+        with patch("ui.tray_icon.shutil.which", return_value=None):
+            tray.send_native_notification("Fallback", "Sem notify-send")
+            tray.tray_icon.showMessage.assert_called_once()
+
+    def test_fan_metrics_zero_rpm_when_cpu_hot(self):
+        """Se fan1_input=0 mas CPU >= 65°C, não deve afirmar 'Parada'."""
+        with tempfile.TemporaryDirectory() as td:
+            f1 = os.path.join(td, "fan1_input")
+            t1 = os.path.join(td, "temp1_input")
+            with open(f1, "w", encoding="utf-8") as fh:
+                fh.write("0\n")
+            with open(t1, "w", encoding="utf-8") as fh:
+                fh.write("85000\n")
+            self.backend.paths.fan1_input = f1
+            self.backend.paths.fan2_input = None
+            self.backend.paths.cpu_temp_input = t1
+            fm = self.backend.get_fan_metrics()
+            self.assertIn("indisponível", fm.status_label)
+            self.assertNotIn("Parada", fm.status_label)
+
+    def test_cpu_epp_sync_for_max_power(self):
+        """_sync_cpu_epp_for_profile('max-power') grava 'performance' em energy_performance_preference."""
+        with tempfile.TemporaryDirectory() as td:
+            epp_p = os.path.join(td, "energy_performance_preference")
+            avail_p = os.path.join(td, "energy_performance_available_preferences")
+            with open(epp_p, "w", encoding="utf-8") as fh:
+                fh.write("balance_performance\n")
+            with open(avail_p, "w", encoding="utf-8") as fh:
+                fh.write("default performance balance_performance balance_power power\n")
+
+            with patch("glob.glob", return_value=[epp_p]), \
+                 patch("os.path.exists", return_value=True):
+                with patch.object(self.backend, "_read_file_text", side_effect=lambda p: (
+                    "default performance balance_performance balance_power power"
+                    if "available" in p else "balance_performance"
+                )):
+                    ok = self.backend._sync_cpu_epp_for_profile("max-power")
+                    self.assertTrue(ok)
+                    with open(epp_p, "r", encoding="utf-8") as fh:
+                        self.assertEqual(fh.read().strip(), "performance")
+
+    def test_udev_rule_up_to_date_detection(self):
+        """is_udev_rule_up_to_date() valida presença de todas as regras modernas."""
+        from core.permissions import UDEV_RULE_CONTENT
+        with tempfile.TemporaryDirectory() as td:
+            upath = os.path.join(td, "99-ducksvantage.rules")
+            with open(upath, "w", encoding="utf-8") as fh:
+                fh.write(UDEV_RULE_CONTENT)
+            with patch("core.permissions.UDEV_RULE_PATH", upath):
+                self.assertTrue(PermissionsManager.is_udev_rule_up_to_date())
+
+            with open(upath, "w", encoding="utf-8") as fh:
+                fh.write("# old rule without platform-profile\n")
+            with patch("core.permissions.UDEV_RULE_PATH", upath):
+                self.assertFalse(PermissionsManager.is_udev_rule_up_to_date())
+
 
 if __name__ == "__main__":
     unittest.main()

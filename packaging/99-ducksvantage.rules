@@ -15,8 +15,8 @@ SUBSYSTEM=="platform", DRIVER=="ideapad_acpi", ACTION=="add|change", RUN+="/bin/
 # 3. Retroiluminação do Teclado (LEDs platform::kbd_backlight)
 SUBSYSTEM=="leds", KERNEL=="*kbd_backlight*", ACTION=="add|change", RUN+="/bin/chmod 0666 /sys/class/leds/%k/brightness"
 
-# 4. Controle de CPU Turbo Boost (Intel P-State / AMD CPUFreq) e Scaling Governor
-SUBSYSTEM=="cpu", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo /sys/devices/system/cpu/cpufreq/boost /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null || true'"
+# 4. Controle de CPU Turbo Boost (Intel P-State / AMD CPUFreq), Scaling Governor e EPP
+SUBSYSTEM=="cpu", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo /sys/devices/system/cpu/cpufreq/boost /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference 2>/dev/null || true'"
 
 # 5. Limites de Potência Custom TDP (Intel RAPL PL1 / PL2)
 SUBSYSTEM=="powercap", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/class/powercap/intel-rapl*/constraint_*_power_limit_uw 2>/dev/null || true'"

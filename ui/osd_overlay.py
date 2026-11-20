@@ -310,6 +310,13 @@ class VantageOSDOverlay(QWidget):
                 icon_path=os.path.join(ICON_DIR, "thermal_quiet.svg"),
                 accent_color=ThemeTokens.THERMAL_QUIET
             )
+        elif mode_lower == "custom" or "custom" in mode_lower:
+            self.show_osd(
+                title="Modo Personalizado (Custom)",
+                subtitle="BIOS / WMI • Parâmetros Customizados Ativos",
+                icon_path=os.path.join(ICON_DIR, "thermal_custom.svg"),
+                accent_color=ThemeTokens.THERMAL_CUSTOM
+            )
         else:
             self.show_osd(
                 title="Modo Equilibrado",

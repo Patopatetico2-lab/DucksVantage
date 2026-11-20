@@ -32,8 +32,8 @@ ACTION=="add|change", SUBSYSTEM=="power_supply", RUN+="/bin/sh -c 'chmod 0666 /s
 # 4. Retroiluminação do Teclado (Kbd Backlight)
 ACTION=="add|change", SUBSYSTEM=="leds", RUN+="/bin/sh -c 'chmod 0666 /sys/class/leds/*kbd_backlight*/brightness 2>/dev/null || true'"
 
-# 5. Controle de CPU Turbo Boost (Intel P-State / AMD CPUFreq) e Scaling Governor
-ACTION=="add|change", SUBSYSTEM=="cpu", RUN+="/bin/sh -c 'chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo /sys/devices/system/cpu/cpufreq/boost /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null || true'"
+# 5. Controle de CPU Turbo Boost (Intel P-State / AMD CPUFreq), Scaling Governor e EPP
+ACTION=="add|change", SUBSYSTEM=="cpu", RUN+="/bin/sh -c 'chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo /sys/devices/system/cpu/cpufreq/boost /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference 2>/dev/null || true'"
 
 # 6. Limites de TDP Customizados (Intel RAPL PL1 / PL2) e Suspensão D3cold PCI
 ACTION=="add|change", SUBSYSTEM=="powercap", RUN+="/bin/sh -c 'chmod 0666 /sys/class/powercap/intel-rapl*/constraint_*_power_limit_uw 2>/dev/null || true'"
@@ -73,6 +73,24 @@ class PermissionsManager:
         return os.path.exists(UDEV_RULE_PATH) or os.path.exists(LEGACY_UDEV_RULE_PATH)
 
     @staticmethod
+    def is_udev_rule_up_to_date() -> bool:
+        """Verifica se o arquivo /etc/udev/rules.d/99-ducksvantage.rules contém todas as regras atuais."""
+        if not os.path.exists(UDEV_RULE_PATH):
+            return False
+        try:
+            with open(UDEV_RULE_PATH, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            required_markers = (
+                "platform-profile",
+                "firmware-attributes",
+                "energy_performance_preference",
+                "net/*/device/power/control",
+            )
+            return all(m in content for m in required_markers)
+        except OSError:
+            return False
+
+    @staticmethod
     def get_udev_rule_content() -> str:
         return UDEV_RULE_CONTENT
 
@@ -100,9 +118,12 @@ class PermissionsManager:
             "chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || true",
             "chmod 0666 /sys/devices/system/cpu/cpufreq/boost 2>/dev/null || true",
             "chmod 0666 /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null || true",
+            "chmod 0666 /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference 2>/dev/null || true",
             "chmod 0666 /sys/class/powercap/intel-rapl*/constraint_*_power_limit_uw 2>/dev/null || true",
             "chmod 0666 /sys/bus/pci/devices/*/power/control 2>/dev/null || true",
             "chmod 0666 /sys/class/firmware-attributes/*/attributes/*/current_value 2>/dev/null || true",
+            "chmod 0666 /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null || true",
+            "chmod 0666 /sys/class/net/*/device/power/control 2>/dev/null || true",
             "chmod 0644 /dev/input/by-path/*kbd* /dev/input/by-path/*VPC* 2>/dev/null || true",
         ]
 

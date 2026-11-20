@@ -129,7 +129,7 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("Ducksvantage")
-    app.setDesktopFileName("ducksvantage.desktop")
+    app.setDesktopFileName("ducksvantage")
     app.setWindowIcon(QIcon("assets/app_icon.svg"))
 
     # Verifica suporte à bandeja do sistema (evita processo fantasma em GNOME puro ou Wayland sem tray)
