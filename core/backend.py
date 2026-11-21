@@ -173,6 +173,9 @@ class HardwareBackend:
         self._active_rule_exec: Optional[str] = None
         self._pre_game_profile: str = "balanced"
         self._pre_game_governor: str = "powersave"
+        self._pre_game_refresh_hz: Optional[int] = None
+        self._game_changed_refresh: bool = False
+        self._game_locked_touchpad: bool = False
 
         # Estado da Curva de Ventoinhas e Undervolt Seguro
         self._last_applied_pwm: int = -1
@@ -1374,9 +1377,46 @@ class HardwareBackend:
         return bool(self.settings.get("game_auto_switch", True))
 
     def set_game_auto_switch(self, enable: bool) -> None:
-        self.settings.set("game_auto_switch", enable)
+        self.settings.set("game_auto_switch", bool(enable))
         if not enable:
             self._active_game_name = None
+            self._active_rule_exec = None
+            self._pre_game_refresh_hz = None
+            self._game_changed_refresh = False
+            self._game_locked_touchpad = False
+
+    def get_game_target_profile(self) -> str:
+        """Retorna o perfil térmico preferido ao detectar jogos ('performance' ou 'max-power')."""
+        raw = str(self.settings.get("game_target_profile", "max-power") or "max-power")
+        norm = self.normalize_profile(raw)
+        supported = self.get_supported_canonical_profiles()
+        if supported:
+            if norm in supported:
+                return norm
+            if "performance" in supported:
+                return "performance"
+            if "max-power" in supported:
+                return "max-power"
+            return supported[-1]
+        return norm if norm in ("performance", "max-power") else "performance"
+
+    def set_game_target_profile(self, profile: str) -> None:
+        norm = self.normalize_profile(profile)
+        if norm not in ("performance", "max-power"):
+            norm = "performance"
+        self.settings.set("game_target_profile", norm)
+
+    def get_game_auto_refresh_max(self) -> bool:
+        return bool(self.settings.get("game_auto_refresh_max", False))
+
+    def set_game_auto_refresh_max(self, enable: bool) -> None:
+        self.settings.set("game_auto_refresh_max", bool(enable))
+
+    def get_game_auto_lock_touchpad(self) -> bool:
+        return bool(self.settings.get("game_auto_lock_touchpad", False))
+
+    def set_game_auto_lock_touchpad(self, enable: bool) -> None:
+        self.settings.set("game_auto_lock_touchpad", bool(enable))
 
     def detect_running_game(self, force: bool = False) -> Optional[str]:
         """
@@ -1689,13 +1729,17 @@ class HardwareBackend:
         if detected_game:
             target_name = detected_game
             choices = self.get_platform_profile_choices()
-            pref_target = self.settings.get("game_target_profile", "max-power")
+            pref_target = self.get_game_target_profile()
             if pref_target in choices:
                 target_prof = pref_target
+            elif pref_target == "max-power" and "max-power" in choices:
+                target_prof = "max-power"
+            elif "performance" in choices:
+                target_prof = "performance"
             elif "max-power" in choices:
                 target_prof = "max-power"
             else:
-                target_prof = "performance"
+                target_prof = pref_target
         elif detected_rule:
             target_name = f"{detected_rule['label']}"
             target_prof = detected_rule["profile"]
@@ -1715,12 +1759,43 @@ class HardwareBackend:
                 gov = "performance" if target_prof in ("performance", "max-power") else "powersave"
                 self.set_cpu_governor(gov, allow_elevation=False)
 
+            extras: List[str] = []
+            if not rule_exec:
+                # 1. Eleva taxa de atualização para a máxima suportada ao iniciar jogo
+                if self.get_game_auto_refresh_max() and self.features.refresh_rate and not self._game_changed_refresh:
+                    try:
+                        ref_info = self.get_display_refresh_info()
+                        if ref_info.available and len(ref_info.available_rates) > 1:
+                            max_hz = max(ref_info.available_rates)
+                            if ref_info.current_hz < max_hz:
+                                self._pre_game_refresh_hz = ref_info.current_hz
+                                ok_hz, _ = self.set_refresh_rate(max_hz)
+                                if ok_hz:
+                                    self._game_changed_refresh = True
+                                    extras.append(f"{max_hz} Hz")
+                                else:
+                                    self._pre_game_refresh_hz = None
+                    except Exception:
+                        pass
+
+                # 2. Bloqueia o touchpad durante o jogo (somente se não estava bloqueado antes)
+                if self.get_game_auto_lock_touchpad() and self.features.touchpad_control and not self._game_locked_touchpad:
+                    try:
+                        if not self.get_touchpad_status():
+                            ok_tp, _ = self.set_touchpad_status(True, allow_elevation=False)
+                            if ok_tp:
+                                self._game_locked_touchpad = True
+                                extras.append("Touchpad Bloqueado")
+                    except Exception:
+                        pass
+
             return {
                 "type": "app_rule_started" if rule_exec else "game_started",
                 "game": target_name,
                 "executable": rule_exec or "",
                 "profile": target_prof or "performance",
                 "applied": ok_prof,
+                "extras": extras,
             }
 
         # Jogo ou aplicativo mapeado fechou
@@ -1737,11 +1812,34 @@ class HardwareBackend:
             if self.features.cpu_governor:
                 self.set_cpu_governor("powersave", allow_elevation=False)
 
+            extras: List[str] = []
+            if self._game_changed_refresh:
+                prev_hz = self._pre_game_refresh_hz
+                self._game_changed_refresh = False
+                self._pre_game_refresh_hz = None
+                if prev_hz:
+                    try:
+                        ok_rhz, _ = self.set_refresh_rate(prev_hz)
+                        if ok_rhz:
+                            extras.append(f"{prev_hz} Hz")
+                    except Exception:
+                        pass
+
+            if self._game_locked_touchpad:
+                self._game_locked_touchpad = False
+                try:
+                    ok_rtp, _ = self.set_touchpad_status(False, allow_elevation=False)
+                    if ok_rtp:
+                        extras.append("Touchpad Liberado")
+                except Exception:
+                    pass
+
             return {
                 "type": "game_stopped",
                 "game": finished_game,
                 "profile": restore_prof,
                 "applied": ok_restore,
+                "extras": extras,
             }
 
         return None
@@ -2301,13 +2399,15 @@ class HardwareBackend:
 
         return bool(self.settings.get("touchpad_locked", False))
 
-    def set_touchpad_status(self, locked: bool) -> Tuple[bool, str]:
+    def set_touchpad_status(self, locked: bool, allow_elevation: bool = True) -> Tuple[bool, str]:
         if not self.features.touchpad_control:
             return False, "Controle de bloqueio do Touchpad não suportado neste dispositivo."
 
         applied = False
         if self.paths.touchpad and os.path.exists(self.paths.touchpad):
-            ok, msg = PermissionsManager.write_sysfs_value(self.paths.touchpad, "0" if locked else "1")
+            ok, msg = PermissionsManager.write_sysfs_value(
+                self.paths.touchpad, "0" if locked else "1", allow_elevation=allow_elevation
+            )
             if ok:
                 self.settings.set("touchpad_locked", locked)
                 self._cached_touchpad_status = locked
@@ -4464,4 +4564,283 @@ class HardwareBackend:
             extra = " (Perfil alterado para Custom para liberar escrita WMI)" if switched_custom else ""
             return True, f"Atributo '{attr_id}' atualizado para '{clean_val}' com sucesso.{extra}"
         return False, msg
+
+    # =========================================================================
+    # Perfis Personalizados Salváveis pelo Usuário (Presets em 1 Clique)
+    # =========================================================================
+    def get_user_presets(self) -> List[Dict[str, Any]]:
+        """Retorna a lista de presets personalizados salvos pelo usuário."""
+        raw = self.settings.get("user_presets", [])
+        if not isinstance(raw, list):
+            return []
+        return [dict(item) for item in raw if isinstance(item, dict) and item.get("id") and item.get("name")]
+
+    def format_user_preset_summary(self, preset: Dict[str, Any]) -> str:
+        """Retorna um resumo curto legível dos parâmetros contidos em um preset."""
+        parts: List[str] = []
+        if "profile" in preset and preset["profile"]:
+            pinfo = self.get_profile_info(str(preset["profile"]))
+            parts.append(pinfo.get("short_title", str(preset["profile"]).upper()))
+        if "governor" in preset and preset["governor"]:
+            parts.append(f"Gov {str(preset['governor'])}")
+        if "turbo_enabled" in preset:
+            parts.append("Turbo On" if preset["turbo_enabled"] else "Turbo Off")
+        if "pl1_w" in preset and "pl2_w" in preset:
+            parts.append(f"TDP {preset['pl1_w']}/{preset['pl2_w']}W")
+        if "refresh_hz" in preset and preset["refresh_hz"]:
+            parts.append(f"{preset['refresh_hz']} Hz")
+        return " • ".join(parts) if parts else "Preset vazio"
+
+    def save_current_as_preset(self, name: str) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """Captura o estado atual suportado do notebook e salva como preset de 1 clique."""
+        clean_name = " ".join((name or "").split())[:40]
+        if not clean_name:
+            return False, "Informe um nome para o preset personalizado.", None
+
+        preset_id = re.sub(r"[^a-z0-9]+", "-", clean_name.lower()).strip("-")
+        if not preset_id:
+            preset_id = f"preset-{int(time.time())}"
+
+        preset: Dict[str, Any] = {
+            "id": preset_id,
+            "name": clean_name,
+        }
+        captured_any = False
+
+        if self.features.platform_profile:
+            preset["profile"] = self.normalize_profile(self.get_platform_profile())
+            captured_any = True
+        if self.features.cpu_governor:
+            preset["governor"] = self.get_cpu_governor()
+            captured_any = True
+        if self.features.turbo_boost:
+            preset["turbo_enabled"] = bool(self.get_cpu_turbo())
+            captured_any = True
+        if self.features.custom_tdp:
+            pl1_w, pl2_w = self.get_cpu_tdp_limits()
+            preset["pl1_w"] = int(pl1_w)
+            preset["pl2_w"] = int(pl2_w)
+            captured_any = True
+        if self.features.refresh_rate:
+            try:
+                ref_info = self.get_display_refresh_info()
+                if ref_info.available and len(ref_info.available_rates) > 1:
+                    preset["refresh_hz"] = int(ref_info.current_hz)
+                    captured_any = True
+            except Exception:
+                pass
+
+        if not captured_any:
+            return False, "Nenhum parâmetro de desempenho controlável foi detectado neste hardware.", None
+
+        presets = self.get_user_presets()
+        replaced = False
+        for idx, existing in enumerate(presets):
+            if existing.get("id") == preset_id:
+                presets[idx] = preset
+                replaced = True
+                break
+        if not replaced:
+            if len(presets) >= 12:
+                return False, "Limite máximo de 12 presets atingido. Remova um antigo para salvar.", None
+            presets.append(preset)
+
+        self.settings.set("user_presets", presets)
+        summary = self.format_user_preset_summary(preset)
+        return True, f"Preset '{clean_name}' {'atualizado' if replaced else 'salvo'}: {summary}", preset
+
+    def apply_user_preset(self, preset_id: str) -> Tuple[bool, str]:
+        """Aplica todas as configurações suportadas de um preset salvo."""
+        presets = self.get_user_presets()
+        target = next((p for p in presets if p.get("id") == preset_id), None)
+        if not target:
+            return False, "Preset personalizado não encontrado."
+
+        applied_parts: List[str] = []
+        errors: List[str] = []
+
+        if "profile" in target and self.features.platform_profile:
+            prof = self.normalize_profile(str(target["profile"]))
+            ok, msg = self.set_platform_profile(prof, allow_elevation=True)
+            if ok:
+                applied_parts.append(self.get_profile_info(prof).get("short_title", prof.upper()))
+            else:
+                errors.append(f"Perfil: {msg}")
+
+        if "governor" in target and self.features.cpu_governor:
+            gov = str(target["governor"])
+            ok, msg = self.set_cpu_governor(gov, allow_elevation=True)
+            if ok:
+                applied_parts.append(f"Gov {gov}")
+            else:
+                errors.append(f"Governor: {msg}")
+
+        if "turbo_enabled" in target and self.features.turbo_boost:
+            tb = bool(target["turbo_enabled"])
+            ok, msg = self.set_cpu_turbo(tb)
+            if ok:
+                applied_parts.append("Turbo On" if tb else "Turbo Off")
+            else:
+                errors.append(f"Turbo: {msg}")
+
+        if "pl1_w" in target and "pl2_w" in target and self.features.custom_tdp:
+            ok, msg = self.set_cpu_tdp_limits(int(target["pl1_w"]), int(target["pl2_w"]))
+            if ok:
+                applied_parts.append(f"TDP {target['pl1_w']}/{target['pl2_w']}W")
+            else:
+                errors.append(f"TDP: {msg}")
+
+        if "refresh_hz" in target and self.features.refresh_rate:
+            hz = int(target["refresh_hz"])
+            ok, msg = self.set_refresh_rate(hz)
+            if ok:
+                applied_parts.append(f"{hz} Hz")
+            else:
+                errors.append(f"Tela: {msg}")
+
+        if applied_parts:
+            summary = " • ".join(applied_parts)
+            if errors:
+                summary += f" (Avisos: {'; '.join(errors)})"
+            return True, summary
+
+        return False, "; ".join(errors) if errors else "Nenhum parâmetro aplicável neste hardware."
+
+    def delete_user_preset(self, preset_id: str) -> Tuple[bool, str]:
+        """Remove um preset personalizado salvo pelo ID."""
+        presets = self.get_user_presets()
+        filtered = [p for p in presets if p.get("id") != preset_id]
+        if len(filtered) == len(presets):
+            return False, "Preset não encontrado."
+        self.settings.set("user_presets", filtered)
+        return True, "Preset removido com sucesso."
+
+    # =========================================================================
+    # Diagnóstico Técnico Completo para Suporte e Issues (Sem Dados Pessoais)
+    # =========================================================================
+    def generate_hardware_diagnostic_report(self) -> str:
+        """
+        Gera um relatório técnico completo em Markdown (DMI, BIOS, CPU/EPP/RAPL,
+        GPU/MUX/Tela, Bateria, Módulos de Kernel, Atributos WMI, Capacidades e UDEV)
+        sem expor nome de usuário, hostname ou número de série.
+        """
+        sys_i = self.system_info
+        lines: List[str] = [
+            "# Ducksvantage Hardware & Kernel Diagnostic Report",
+            "",
+            "## Sistema & DMI",
+            f"- **Modelo:** {sys_i.sys_vendor} {sys_i.display_model_name} ({sys_i.product_name})",
+            f"- **Linha Detectada:** {sys_i.laptop_line} (Board: `{sys_i.board_name}`)",
+            f"- **BIOS:** `{sys_i.bios_version}` ({sys_i.bios_date})",
+            f"- **OS / Kernel:** {sys_i.os_name} | Kernel `{sys_i.kernel_version}`",
+            f"- **Sessão Gráfica:** `{os.environ.get('XDG_SESSION_TYPE', 'N/A')}` ({os.environ.get('XDG_CURRENT_DESKTOP', 'N/A')})",
+            f"- **Armazenamento:** {sys_i.ssd_summary}",
+        ]
+
+        # CPU / EPP / TDP
+        lines.append("")
+        lines.append("## CPU & Energia")
+        try:
+            cpu_m = self.get_cpu_metrics()
+            epp_cur = self._read_file_text("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference") or "N/A"
+            epp_avail = self._read_file_text("/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_available_preferences") or "N/A"
+            lines.append(f"- **CPU:** {cpu_m.model_name} ({cpu_m.vendor}, {cpu_m.cores_count} threads)")
+            lines.append(f"- **Governor Ativo:** `{cpu_m.governor}` (Disponíveis: `{' '.join(cpu_m.available_governors) or 'N/A'}`)")
+            lines.append(f"- **EPP:** `{epp_cur}` (Disponíveis: `{epp_avail}`)")
+            lines.append(f"- **Turbo Boost:** `{cpu_m.turbo_enabled}` (Suportado: `{self.features.turbo_boost}`)")
+            lines.append(f"- **RAPL TDP:** PL1=`{cpu_m.pl1_w}W` | PL2=`{cpu_m.pl2_w}W` (Suportado: `{self.features.custom_tdp}`)")
+        except Exception as e:
+            lines.append(f"- *Falha ao coletar CPU:* {e}")
+
+        # Perfis Térmicos & Fans
+        lines.append("")
+        lines.append("## Perfis Térmicos & Refrigeração")
+        try:
+            active_prof = self.get_platform_profile()
+            choices = self.get_platform_profile_choices()
+            fan_m = self.get_fan_metrics()
+            lines.append(f"- **Platform Profile Ativo:** `{active_prof}` | Nó: `{self.paths.platform_profile or 'N/A'}`")
+            lines.append(f"- **Perfis Expostos pelo Kernel:** `{' '.join(choices) or 'N/A'}` (Max-Power={self.features.max_power_profile})")
+            lines.append(f"- **Ventoinhas:** Fan1=`{fan_m.rpm} RPM` | Fan2=`{fan_m.second_rpm} RPM` | Status=`{fan_m.status_label}` (Controle PWM={self.features.fan_control})")
+        except Exception as e:
+            lines.append(f"- *Falha ao coletar térmico:* {e}")
+
+        # GPU, MUX & Tela
+        lines.append("")
+        lines.append("## GPU, MUX & Tela")
+        try:
+            gpu_m = self.get_gpu_metrics()
+            mux = self.get_gpu_mux_info()
+            ref = self.get_display_refresh_info()
+            lines.append(f"- **GPU:** {gpu_m.name} | Estado=`{gpu_m.runtime_state}` | P-State=`{gpu_m.pstate}`")
+            lines.append(f"- **GPU MUX:** Backend=`{mux.backend_name}` | Atual=`{mux.current_mode}` | Modos=`{mux.available_modes}`")
+            lines.append(f"- **Display:** `{ref.display_name or 'N/A'}` ({ref.resolution or 'N/A'}) @ `{ref.current_hz} Hz` | Taxas=`{ref.available_rates}` | Backend=`{ref.backend_name}`")
+            lines.append(f"- **LCD Overdrive:** Suportado=`{self.features.lcd_overdrive}`")
+        except Exception as e:
+            lines.append(f"- *Falha ao coletar GPU/Tela:* {e}")
+
+        # Bateria
+        lines.append("")
+        lines.append("## Bateria")
+        try:
+            bat = self.get_battery_info()
+            if bat.available:
+                lines.append(
+                    f"- **Carga:** {bat.capacity_percent}% ({bat.status}, AC=`{bat.ac_connected}`) | "
+                    f"**Saúde:** {bat.health_percent:.1f}% ({bat.energy_full_wh:.2f}/{bat.energy_design_wh:.2f} Wh, `{bat.cycle_count}` ciclos)"
+                )
+                lines.append(
+                    f"- **Controles:** Conservação={self.features.conservation_mode} (ativo=`{bat.conservation_mode_active}`) | "
+                    f"Rapid Charge={self.features.rapid_charge} (ativo=`{bat.rapid_charge_active}`)"
+                )
+            else:
+                lines.append("- Bateria não detectada.")
+        except Exception as e:
+            lines.append(f"- *Falha ao coletar bateria:* {e}")
+
+        # Módulos do Kernel Relevantes
+        lines.append("")
+        lines.append("## Módulos de Kernel Relevantes")
+        try:
+            mods_raw = self._read_file_text("/proc/modules") or ""
+            keywords = ("lenovo", "ideapad", "legion", "thinkpad", "yoga", "wmi", "nvidia", "amdgpu", "i915", "xe", "acpi")
+            loaded = []
+            for mline in mods_raw.splitlines():
+                mname = mline.split(" ", 1)[0].strip()
+                if mname and any(k in mname.lower() for k in keywords):
+                    loaded.append(mname)
+            loaded = sorted(set(loaded))[:25]
+            lines.append(f"- `{', '.join(loaded) if loaded else 'Nenhum módulo específico listado'}`")
+        except Exception as e:
+            lines.append(f"- *Falha ao ler /proc/modules:* {e}")
+
+        # BIOS WMI Attributes
+        lines.append("")
+        lines.append("## Atributos Lenovo BIOS WMI")
+        try:
+            attrs = self.get_bios_attributes()
+            if attrs:
+                preview = ", ".join(f"`{a.attr_id}={a.current_value}`" for a in attrs[:20])
+                lines.append(f"- Total `{len(attrs)}` atributos graváveis: {preview}")
+            else:
+                lines.append("- Nenhum atributo gravável em `/sys/class/firmware-attributes/*/attributes`.")
+        except Exception as e:
+            lines.append(f"- *Falha ao listar BIOS WMI:* {e}")
+
+        # Capacidades UI & Status UDEV
+        lines.append("")
+        lines.append("## Capacidades & Permissões UDEV")
+        try:
+            caps = self.get_detected_capabilities()
+            cap_str = ", ".join(f"{c['name']} ({c['detail']})" for c in caps)
+            lines.append(f"- **Capacidades ({len(caps)}):** {cap_str or 'Nenhuma proprietária'}")
+            lines.append(
+                f"- **UDEV:** instalada=`{PermissionsManager.is_udev_rule_installed()}` | "
+                f"atualizada=`{PermissionsManager.is_udev_rule_up_to_date()}` | "
+                f"escrita_direta=`{self.has_full_write_permissions()}`"
+            )
+        except Exception as e:
+            lines.append(f"- *Falha ao coletar capacidades/UDEV:* {e}")
+
+        return "\n".join(lines)
 

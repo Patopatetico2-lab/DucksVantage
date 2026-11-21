@@ -294,10 +294,11 @@ class MainWindow(QMainWindow):
         self.tray_manager.show_window_requested.connect(self._toggle_visibility)
         self.tray_manager.quit_requested.connect(self._quit_app)
 
-        # 8. RECURSOS 1, 2 e 3: GPU MUX Switch, Taxa de Atualização e LCD Overdrive
+        # 8. RECURSOS 1, 2 e 3: GPU MUX Switch, Taxa de Atualização, LCD Overdrive e Presets
         self.performance_tab.gpu_mux_changed.connect(self._on_gpu_mux_changed)
         self.performance_tab.refresh_rate_changed.connect(self._on_refresh_rate_changed)
         self.performance_tab.lcd_overdrive_changed.connect(self._on_lcd_overdrive_changed)
+        self.performance_tab.preset_applied.connect(self._on_user_preset_applied)
         self.dashboard_tab.lcd_overdrive_toggled.connect(self._apply_lcd_overdrive)
 
     def _register_qt_shortcuts(self):
@@ -384,6 +385,18 @@ class MainWindow(QMainWindow):
         self.osd.notify_lcd_overdrive(enabled)
         if getattr(self.dashboard_tab, "item_lcd_overdrive", None):
             self.dashboard_tab.item_lcd_overdrive.set_checked(enabled)
+
+    def _on_user_preset_applied(self, preset_name: str, summary: str):
+        self.osd.notify_feature_osd(
+            title=f"Preset: {preset_name[:26]}",
+            subtitle=summary[:58],
+            icon_name="mode_custom.svg",
+            accent_color=ThemeTokens.THERMAL_CUSTOM
+        )
+        self._update_header_profile_pill()
+        self.dashboard_tab.update_telemetry()
+        self.performance_tab.refresh_profile_state()
+        self.tray_manager.update_tray_state()
 
     # =========================================================================
     # Ações e Sincronização de Hardware
@@ -626,10 +639,12 @@ class MainWindow(QMainWindow):
             g_type = game_ev.get("type")
             g_name = game_ev.get("game", "Aplicativo")
             g_prof = game_ev.get("profile", "max-power").upper()
+            extras = game_ev.get("extras") or []
+            extras_txt = (" • " + " • ".join(str(x) for x in extras)) if extras else ""
             if g_type == "game_started":
                 self.osd.notify_feature_osd(
                     title=f"Jogo Detectado: {g_name[:22]}",
-                    subtitle=f"Auto-Switch Ativado • Modo {g_prof}",
+                    subtitle=f"Auto-Switch Ativado • {g_prof}{extras_txt}"[:58],
                     icon_name="game_controller.svg",
                     accent_color=ThemeTokens.THERMAL_CUSTOM
                 )
@@ -643,10 +658,12 @@ class MainWindow(QMainWindow):
             elif g_type == "game_stopped":
                 self.osd.notify_feature_osd(
                     title="Sessão Encerrada",
-                    subtitle=f"Perfil Restaurado • Modo {g_prof}",
+                    subtitle=f"Perfil Restaurado • {g_prof}{extras_txt}"[:58],
                     icon_name="game_controller.svg",
                     accent_color=ThemeTokens.THERMAL_BALANCED
                 )
+            if self.backend.features.touchpad_control and getattr(self.dashboard_tab, "item_touchpad", None):
+                self.dashboard_tab.item_touchpad.set_checked(self.backend.get_touchpad_status())
             self._update_header_profile_pill()
             self.dashboard_tab.update_telemetry()
             self.performance_tab.refresh_profile_state()

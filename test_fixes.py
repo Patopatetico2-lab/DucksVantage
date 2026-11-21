@@ -690,6 +690,194 @@ class TestDucksVantageFixes(unittest.TestCase):
             with patch("core.permissions.UDEV_RULE_PATH", upath):
                 self.assertFalse(PermissionsManager.is_udev_rule_up_to_date())
 
+    # -------------------------------------------------------------------------
+    # 18. Auto-Switch configurável (Perfil alvo, 144Hz e Bloqueio Touchpad)
+    # -------------------------------------------------------------------------
+    def test_game_auto_switch_target_profile_refresh_and_touchpad(self):
+        """Auto-Switch respeita perfil alvo, eleva/restaura Hz e bloqueia touchpad apenas se livre."""
+        from core.models import DisplayRefreshInfo
+
+        with patch.object(self.backend.settings, "save", return_value=None):
+            self.backend.features.platform_profile = True
+            self.backend.features.cpu_governor = True
+            self.backend.features.refresh_rate = True
+            self.backend.features.touchpad_control = True
+            self.backend._active_game_name = None
+            self.backend._game_changed_refresh = False
+            self.backend._game_locked_touchpad = False
+            self.backend._pre_game_refresh_hz = None
+
+            self.backend.set_game_auto_switch(True)
+            self.backend.set_game_target_profile("performance")
+            self.backend.set_game_auto_refresh_max(True)
+            self.backend.set_game_auto_lock_touchpad(True)
+
+            ref_60 = DisplayRefreshInfo(
+                available=True, current_hz=60, available_rates=[60, 144],
+                display_name="eDP-1", resolution="1920x1080", backend_name="kscreen-doctor"
+            )
+
+            with patch.object(self.backend, "detect_running_game", return_value="Roblox (Sober)"), \
+                 patch.object(self.backend, "get_platform_profile_choices", return_value=["low-power", "balanced", "performance", "max-power"]), \
+                 patch.object(self.backend, "get_platform_profile", return_value="balanced"), \
+                 patch.object(self.backend, "get_cpu_governor", return_value="powersave"), \
+                 patch.object(self.backend, "set_platform_profile", return_value=(True, "OK")) as mock_prof, \
+                 patch.object(self.backend, "set_cpu_governor", return_value=(True, "OK")), \
+                 patch.object(self.backend, "get_display_refresh_info", return_value=ref_60), \
+                 patch.object(self.backend, "set_refresh_rate", return_value=(True, "OK")) as mock_hz, \
+                 patch.object(self.backend, "get_touchpad_status", return_value=False), \
+                 patch.object(self.backend, "set_touchpad_status", return_value=(True, "OK")) as mock_tp:
+                ev_start = self.backend.check_game_auto_switch()
+                self.assertIsNotNone(ev_start)
+                self.assertEqual(ev_start["type"], "game_started")
+                self.assertEqual(ev_start["profile"], "performance")
+                mock_prof.assert_called_with("performance", allow_elevation=False)
+                mock_hz.assert_called_with(144)
+                mock_tp.assert_called_with(True, allow_elevation=False)
+                self.assertIn("144 Hz", ev_start["extras"])
+                self.assertIn("Touchpad Bloqueado", ev_start["extras"])
+
+            # Ao fechar o jogo: restaura 60 Hz e libera touchpad
+            with patch.object(self.backend, "detect_running_game", return_value=None), \
+                 patch.object(self.backend, "detect_running_app_rule", return_value=None), \
+                 patch.object(self.backend, "_get_ac_online", return_value=1), \
+                 patch.object(self.backend, "set_platform_profile", return_value=(True, "OK")) as mock_prof_end, \
+                 patch.object(self.backend, "set_cpu_governor", return_value=(True, "OK")), \
+                 patch.object(self.backend, "set_refresh_rate", return_value=(True, "OK")) as mock_hz_end, \
+                 patch.object(self.backend, "set_touchpad_status", return_value=(True, "OK")) as mock_tp_end:
+                ev_stop = self.backend.check_game_auto_switch()
+                self.assertIsNotNone(ev_stop)
+                self.assertEqual(ev_stop["type"], "game_stopped")
+                self.assertEqual(ev_stop["profile"], "balanced")
+                mock_prof_end.assert_called_with("balanced", allow_elevation=False)
+                mock_hz_end.assert_called_with(60)
+                mock_tp_end.assert_called_with(False, allow_elevation=False)
+                self.assertIn("60 Hz", ev_stop["extras"])
+                self.assertIn("Touchpad Liberado", ev_stop["extras"])
+
+            # Se o touchpad JÁ estava bloqueado pelo usuário antes do jogo, não deve desbloquear ao sair
+            self.backend.set_game_auto_refresh_max(False)
+            with patch.object(self.backend, "detect_running_game", return_value="Minecraft"), \
+                 patch.object(self.backend, "get_platform_profile_choices", return_value=["balanced", "performance"]), \
+                 patch.object(self.backend, "get_platform_profile", return_value="balanced"), \
+                 patch.object(self.backend, "get_cpu_governor", return_value="powersave"), \
+                 patch.object(self.backend, "set_platform_profile", return_value=(True, "OK")), \
+                 patch.object(self.backend, "set_cpu_governor", return_value=(True, "OK")), \
+                 patch.object(self.backend, "get_touchpad_status", return_value=True), \
+                 patch.object(self.backend, "set_touchpad_status") as mock_tp_locked:
+                self.backend.check_game_auto_switch()
+                mock_tp_locked.assert_not_called()
+
+            with patch.object(self.backend, "detect_running_game", return_value=None), \
+                 patch.object(self.backend, "detect_running_app_rule", return_value=None), \
+                 patch.object(self.backend, "_get_ac_online", return_value=1), \
+                 patch.object(self.backend, "set_platform_profile", return_value=(True, "OK")), \
+                 patch.object(self.backend, "set_cpu_governor", return_value=(True, "OK")), \
+                 patch.object(self.backend, "set_touchpad_status") as mock_tp_still_locked:
+                self.backend.check_game_auto_switch()
+                mock_tp_still_locked.assert_not_called()
+
+    # -------------------------------------------------------------------------
+    # 19. Perfis Personalizados Salváveis pelo Usuário (Presets em 1 Clique)
+    # -------------------------------------------------------------------------
+    def test_user_presets_save_apply_delete(self):
+        """Presets do usuário capturam o estado atual, aplicam em 1 clique e permitem remoção."""
+        from core.models import DisplayRefreshInfo
+
+        with patch.object(self.backend.settings, "save", return_value=None):
+            self.backend.settings._data["user_presets"] = []
+            self.backend.features.platform_profile = True
+            self.backend.features.cpu_governor = True
+            self.backend.features.turbo_boost = True
+            self.backend.features.custom_tdp = True
+            self.backend.features.refresh_rate = True
+
+            ok_empty, _, _ = self.backend.save_current_as_preset("   ")
+            self.assertFalse(ok_empty)
+
+            ref_144 = DisplayRefreshInfo(
+                available=True, current_hz=144, available_rates=[60, 144],
+                display_name="eDP-1", resolution="1920x1080", backend_name="kscreen-doctor"
+            )
+            with patch.object(self.backend, "get_platform_profile", return_value="performance"), \
+                 patch.object(self.backend, "get_cpu_governor", return_value="performance"), \
+                 patch.object(self.backend, "get_cpu_turbo", return_value=True), \
+                 patch.object(self.backend, "get_cpu_tdp_limits", return_value=(55, 80)), \
+                 patch.object(self.backend, "get_display_refresh_info", return_value=ref_144):
+                ok_save, msg_save, preset = self.backend.save_current_as_preset("Modo Competitivo")
+                self.assertTrue(ok_save)
+                self.assertIsNotNone(preset)
+                self.assertEqual(preset["id"], "modo-competitivo")
+                self.assertIn("144 Hz", msg_save)
+
+            presets = self.backend.get_user_presets()
+            self.assertEqual(len(presets), 1)
+
+            with patch.object(self.backend, "set_platform_profile", return_value=(True, "OK")) as m_p, \
+                 patch.object(self.backend, "set_cpu_governor", return_value=(True, "OK")) as m_g, \
+                 patch.object(self.backend, "set_cpu_turbo", return_value=(True, "OK")) as m_t, \
+                 patch.object(self.backend, "set_cpu_tdp_limits", return_value=(True, "OK")) as m_tdp, \
+                 patch.object(self.backend, "set_refresh_rate", return_value=(True, "OK")) as m_hz:
+                ok_app, msg_app = self.backend.apply_user_preset("modo-competitivo")
+                self.assertTrue(ok_app)
+                self.assertIn("144 Hz", msg_app)
+                m_p.assert_called_once_with("performance", allow_elevation=True)
+                m_g.assert_called_once_with("performance", allow_elevation=True)
+                m_t.assert_called_once_with(True)
+                m_tdp.assert_called_once_with(55, 80)
+                m_hz.assert_called_once_with(144)
+
+            ok_del, _ = self.backend.delete_user_preset("modo-competitivo")
+            self.assertTrue(ok_del)
+            self.assertEqual(self.backend.get_user_presets(), [])
+
+    # -------------------------------------------------------------------------
+    # 20. Relatório de Diagnóstico de Hardware (About Tab)
+    # -------------------------------------------------------------------------
+    def test_hardware_diagnostic_report_clean_and_complete(self):
+        """Relatório técnico inclui hardware/kernel/UDEV e nunca expõe /home/ ou username."""
+        from core.models import BatteryInfo, FanMetrics, GpuMuxInfo, DisplayRefreshInfo
+
+        self.backend.system_info.display_model_name = "LOQ 15IAX9E"
+        self.backend.system_info.product_name = "83ME"
+        self.backend.system_info.bios_version = "Q8CN22WW"
+        self.backend.system_info.kernel_version = "7.3.4-test"
+        self.backend.features.platform_profile = True
+
+        with patch.object(self.backend, "get_cpu_metrics", return_value=CPUMetrics(model_name="Intel Core i5-12450HX", vendor="Intel", cores_count=12)), \
+             patch.object(self.backend, "get_platform_profile", return_value="balanced"), \
+             patch.object(self.backend, "get_platform_profile_choices", return_value=["low-power", "balanced", "performance", "max-power"]), \
+             patch.object(self.backend, "get_fan_metrics", return_value=FanMetrics(available=False, status_label="Automático via EC")), \
+             patch.object(self.backend, "get_gpu_metrics", return_value=GPUMetrics(available=False, name="NVIDIA RTX 3050", runtime_state="D3cold")), \
+             patch.object(self.backend, "get_gpu_mux_info", return_value=GpuMuxInfo(available=True, current_mode="hybrid", available_modes=["hybrid", "integrated"], backend_name="pcie-runtime")), \
+             patch.object(self.backend, "get_display_refresh_info", return_value=DisplayRefreshInfo(available=True, current_hz=144, available_rates=[60, 144], display_name="eDP-1", resolution="1920x1080", backend_name="kscreen-doctor")), \
+             patch.object(self.backend, "get_battery_info", return_value=BatteryInfo(available=True, capacity_percent=80, health_percent=97.0, cycle_count=42)), \
+             patch.object(self.backend, "get_bios_attributes", return_value=[]), \
+             patch("core.permissions.PermissionsManager.is_udev_rule_installed", return_value=True), \
+             patch("core.permissions.PermissionsManager.is_udev_rule_up_to_date", return_value=True), \
+             patch.object(self.backend, "has_full_write_permissions", return_value=True):
+            report = self.backend.generate_hardware_diagnostic_report()
+
+        self.assertIn("LOQ 15IAX9E", report)
+        self.assertIn("Q8CN22WW", report)
+        self.assertIn("7.3.4-test", report)
+        self.assertIn("UDEV", report)
+        self.assertNotIn("/home/", report)
+
+    def test_about_tab_copy_diagnostic_button(self):
+        """AboutTab possui btn_copy_diag que copia o diagnóstico para a área de transferência."""
+        from core.qt_compat import QApplication
+        from ui.tabs.about_tab import AboutTab
+
+        about = AboutTab(self.backend)
+        with patch.object(self.backend, "generate_hardware_diagnostic_report", return_value="# Diag Mock OK"), \
+             patch("ui.tabs.about_tab.QMessageBox.information"):
+            about._copy_diagnostic_action()
+
+        clipboard = QApplication.clipboard()
+        self.assertEqual(clipboard.text(), "# Diag Mock OK")
+        about.close()
+
 
 if __name__ == "__main__":
     unittest.main()

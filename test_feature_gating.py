@@ -177,6 +177,7 @@ class TestFeatureGating(unittest.TestCase):
             self.assertTrue(perf.cpu_card.isHidden())
             self.assertTrue(perf.tdp_card.isHidden())
             self.assertTrue(perf.uv_card.isHidden())
+            self.assertTrue(perf.presets_card.isHidden())
             self.assertTrue(perf.rules_card.isHidden())
             self.assertTrue(perf.gpu_card.isHidden())
             self.assertTrue(perf.mux_card.isHidden())
@@ -310,6 +311,13 @@ class TestFeatureGating(unittest.TestCase):
             combo_ids = [perf.combo_app_profile.itemData(i) for i in range(perf.combo_app_profile.count())]
             self.assertNotIn("max-power", combo_ids)
             self.assertIn("performance", combo_ids)
+            # Presets e opções do Auto-Switch respeitam feature-gating
+            self.assertFalse(perf.presets_card.isHidden())
+            self.assertTrue(perf.game_refresh_row_widget.isHidden())
+            self.assertFalse(perf.game_touchpad_row_widget.isHidden())
+            game_target_ids = [perf.combo_game_target_profile.itemData(i) for i in range(perf.combo_game_target_profile.count())]
+            self.assertNotIn("max-power", game_target_ids)
+            self.assertIn("performance", game_target_ids)
             # Key Remapper não deve listar cycle_refresh_rate
             supported_acts = [a[0] for a in perf._get_supported_key_actions()]
             self.assertNotIn("cycle_refresh_rate", supported_acts)
@@ -438,6 +446,11 @@ class TestFeatureGating(unittest.TestCase):
             self.assertFalse(perf.mux_card.isHidden())
             self.assertFalse(perf.mux_blocks["dedicated"].isHidden())
             self.assertFalse(perf.cards["max-power"].isHidden())
+            self.assertFalse(perf.presets_card.isHidden())
+            self.assertFalse(perf.game_refresh_row_widget.isHidden())
+            self.assertFalse(perf.game_touchpad_row_widget.isHidden())
+            game_target_ids = [perf.combo_game_target_profile.itemData(i) for i in range(perf.combo_game_target_profile.count())]
+            self.assertIn("max-power", game_target_ids)
 
             dash.close()
             perf.close()

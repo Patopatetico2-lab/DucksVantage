@@ -87,6 +87,24 @@ class AboutTab(QWidget):
         self._add_spec_item(grid, 2, 2, "Placa-Mãe (Board)", sys.board_name)
 
         info_layout.addLayout(grid)
+
+        diag_row = QHBoxLayout()
+        diag_row.setSpacing(10)
+        self.btn_copy_diag = QPushButton("Copiar Diagnóstico de Hardware")
+        self.btn_copy_diag.setIcon(QIcon(os.path.join(ICON_DIR, "copy.svg")))
+        self.btn_copy_diag.setProperty("class", "secondaryButton")
+        self.btn_copy_diag.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_copy_diag.clicked.connect(self._copy_diagnostic_action)
+        diag_row.addWidget(self.btn_copy_diag)
+
+        diag_hint = QLabel(
+            "Gera um relatório técnico em Markdown (DMI, BIOS, módulos kernel, capacidades e UDEV, sem dados pessoais) pronto para issues no GitHub."
+        )
+        diag_hint.setWordWrap(True)
+        diag_hint.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px;")
+        diag_row.addWidget(diag_hint, stretch=1)
+        info_layout.addLayout(diag_row)
+
         layout.addWidget(info_card)
 
         # =====================================================================
@@ -326,6 +344,16 @@ class AboutTab(QWidget):
             self.permissions_updated.emit()
         else:
             QMessageBox.critical(self, "Erro na Instalação UDEV", message)
+
+    def _copy_diagnostic_action(self):
+        report = self.backend.generate_hardware_diagnostic_report()
+        clipboard = QApplication.clipboard()
+        if clipboard:
+            clipboard.setText(report)
+            QMessageBox.information(
+                self, "Diagnóstico Copiado",
+                "O relatório técnico de hardware e kernel (sem dados pessoais) foi copiado para a área de transferência."
+            )
 
     def _copy_rules_action(self):
         clipboard = QApplication.clipboard()

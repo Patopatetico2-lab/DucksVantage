@@ -69,6 +69,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "auto_power_transition": True,
     "game_auto_switch": True,
     "game_target_profile": "max-power",
+    "game_auto_refresh_max": False,
+    "game_auto_lock_touchpad": False,
     "eco_travel_mode": False,
     "ac_profile": "performance",
     "battery_profile": "low-power",
@@ -96,6 +98,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "last_refresh_rate": 60,
     "lcd_overdrive_enabled": False,
     "key_mappings": DEFAULT_KEY_MAPPINGS,
+    "user_presets": [],
     "battery_history": []
 }
 

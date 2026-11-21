@@ -512,6 +512,7 @@ class PerformanceTab(QWidget):
     gpu_mux_changed = Signal(str, bool)
     refresh_rate_changed = Signal(int)
     lcd_overdrive_changed = Signal(bool)
+    preset_applied = Signal(str, str)
 
     def __init__(self, backend, parent=None):
         super().__init__(parent)
@@ -1154,11 +1155,104 @@ class PerformanceTab(QWidget):
         self.uv_card.setVisible(bool(has_cpu_uv or has_gpu_off))
         layout.addWidget(self.uv_card)
 
+        supported_profiles = self.backend.get_supported_canonical_profiles()
+
+        # =====================================================================
+        # 3.5 Perfis Personalizados Salváveis (Presets em 1 Clique)
+        # =====================================================================
+        self.presets_card = QFrame()
+        self.presets_card.setProperty("class", "card")
+        presets_layout = QVBoxLayout(self.presets_card)
+        presets_layout.setContentsMargins(20, 18, 20, 18)
+        presets_layout.setSpacing(12)
+
+        presets_header = QHBoxLayout()
+        ic_pre = QLabel()
+        p_pre = os.path.join(ICON_DIR, "mode_custom.svg")
+        if os.path.exists(p_pre):
+            ic_pre.setPixmap(QPixmap(p_pre).scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        presets_header.addWidget(ic_pre)
+
+        presets_titles = QVBoxLayout()
+        pt_title = QLabel("Perfis Personalizados • Presets em 1 Clique")
+        pt_title.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        pt_title.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        presets_titles.addWidget(pt_title)
+
+        pt_sub = QLabel(
+            "Salve a combinação atual (Perfil Térmico, Governor, Turbo Boost, TDP e Hz) e aplique com 1 clique."
+        )
+        pt_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        presets_titles.addWidget(pt_sub)
+        presets_header.addLayout(presets_titles)
+        presets_header.addStretch()
+
+        self.presets_count_badge = StatusBadge("0 PRESETS", bg_color="#1e293b", text_color="#a78bfa")
+        presets_header.addWidget(self.presets_count_badge)
+        presets_layout.addLayout(presets_header)
+
+        add_preset_box = QFrame()
+        add_preset_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 12px;")
+        add_p_row = QHBoxLayout(add_preset_box)
+        add_p_row.setContentsMargins(6, 4, 6, 4)
+        add_p_row.setSpacing(10)
+
+        self.edit_preset_name = QLineEdit()
+        self.edit_preset_name.setPlaceholderText("Nome do preset (ex: Render Silencioso, Competitivo 144Hz, Faculdade)")
+        self.edit_preset_name.setFixedHeight(30)
+        self.edit_preset_name.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: #0d1322;
+                color: {ThemeTokens.TEXT_WHITE_100};
+                border: 1px solid {ThemeTokens.BORDER_DEFAULT};
+                border-radius: 6px;
+                padding: 4px 10px;
+                font-size: 11px;
+            }}
+        """)
+        add_p_row.addWidget(self.edit_preset_name, stretch=1)
+
+        self.btn_save_preset = QPushButton("Salvar Estado Atual")
+        self.btn_save_preset.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_save_preset.setFixedHeight(30)
+        self.btn_save_preset.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {ThemeTokens.THERMAL_CUSTOM};
+                color: #ffffff;
+                border: none;
+                border-radius: 6px;
+                padding: 4px 14px;
+                font-weight: bold;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background-color: #b45cff;
+            }}
+        """)
+        self.btn_save_preset.clicked.connect(self._on_save_user_preset)
+        add_p_row.addWidget(self.btn_save_preset)
+        presets_layout.addWidget(add_preset_box)
+
+        self.presets_list_container = QWidget()
+        self.presets_list_layout = QVBoxLayout(self.presets_list_container)
+        self.presets_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.presets_list_layout.setSpacing(8)
+        presets_layout.addWidget(self.presets_list_container)
+        self._rebuild_user_presets_list()
+
+        has_preset_ctrl = any((
+            bool(feat.platform_profile and supported_profiles),
+            bool(feat.cpu_governor and self.gov_buttons),
+            feat.turbo_boost,
+            feat.custom_tdp,
+            feat.refresh_rate,
+        ))
+        self.presets_card.setVisible(bool(has_preset_ctrl))
+        layout.addWidget(self.presets_card)
+
         # =====================================================================
         # 4. NOVA FUNCIONALIDADE 3: Gerenciador de Perfis de Energia por Aplicativo (App Rules)
         # =====================================================================
-        supported_profiles = self.backend.get_supported_canonical_profiles()
-
         self.rules_card = QFrame()
         self.rules_card.setProperty("class", "card")
         rules_layout = QVBoxLayout(self.rules_card)
@@ -1189,6 +1283,87 @@ class PerformanceTab(QWidget):
         self.app_rules_badge = StatusBadge("AUTO-SWITCH ATIVO", bg_color="#064e3b", text_color="#34d399")
         rules_header.addWidget(self.app_rules_badge)
         rules_layout.addLayout(rules_header)
+
+        # Sub-painel de Configurações do Auto-Switch em Jogos
+        self.game_switch_opts_box = QFrame()
+        self.game_switch_opts_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
+        gopts_layout = QVBoxLayout(self.game_switch_opts_box)
+        gopts_layout.setContentsMargins(6, 6, 6, 6)
+        gopts_layout.setSpacing(10)
+
+        gopts_title_row = QHBoxLayout()
+        ic_game = QLabel()
+        p_game = os.path.join(ICON_DIR, "game_controller.svg")
+        if os.path.exists(p_game):
+            ic_game.setPixmap(QPixmap(p_game).scaled(18, 18, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        gopts_title_row.addWidget(ic_game)
+
+        gopts_title = QLabel("Configurações do Auto-Switch em Jogos")
+        gopts_title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        gopts_title.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        gopts_title_row.addWidget(gopts_title)
+        gopts_title_row.addStretch()
+        gopts_layout.addLayout(gopts_title_row)
+
+        self.game_target_row_widget = QWidget()
+        gt_row = QHBoxLayout(self.game_target_row_widget)
+        gt_row.setContentsMargins(0, 0, 0, 0)
+        gt_row.setSpacing(10)
+        gt_lbl = QLabel("Perfil térmico ao detectar jogos (Steam, Heroic, Sober, Wine, Minecraft):")
+        gt_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        gt_row.addWidget(gt_lbl)
+        gt_row.addStretch()
+
+        self.combo_game_target_profile = QComboBox()
+        self.combo_game_target_profile.setMinimumWidth(230)
+        self.combo_game_target_profile.setFixedHeight(28)
+        self.combo_game_target_profile.setStyleSheet(f"""
+            QComboBox {{
+                background-color: #192338;
+                color: {ThemeTokens.TEXT_WHITE_100};
+                border: 1px solid {ThemeTokens.BORDER_DEFAULT};
+                border-radius: 6px;
+                padding: 3px 10px;
+                font-size: 11px;
+            }}
+        """)
+        if "performance" in supported_profiles or not supported_profiles:
+            self.combo_game_target_profile.addItem("Modo Desempenho (Performance)", "performance")
+        if "max-power" in supported_profiles or feat.max_power_profile:
+            self.combo_game_target_profile.addItem("Desempenho Máximo (Max-Power)", "max-power")
+        cur_game_target = self.backend.get_game_target_profile()
+        t_idx = self.combo_game_target_profile.findData(cur_game_target)
+        if t_idx >= 0:
+            self.combo_game_target_profile.setCurrentIndex(t_idx)
+        self.combo_game_target_profile.currentIndexChanged.connect(self._on_game_target_profile_changed)
+        gt_row.addWidget(self.combo_game_target_profile)
+        gopts_layout.addWidget(self.game_target_row_widget)
+
+        self.game_refresh_row_widget = QWidget()
+        gr_row = QHBoxLayout(self.game_refresh_row_widget)
+        gr_row.setContentsMargins(0, 0, 0, 0)
+        gr_lbl = QLabel("Elevar taxa de atualização do painel para o máximo (Hz) durante o jogo e restaurar ao sair")
+        gr_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        gr_row.addWidget(gr_lbl, stretch=1)
+        self.sw_game_refresh_max = ToggleSwitch(checked=self.backend.get_game_auto_refresh_max())
+        self.sw_game_refresh_max.toggled.connect(self._on_game_refresh_max_toggled)
+        gr_row.addWidget(self.sw_game_refresh_max)
+        self.game_refresh_row_widget.setVisible(bool(feat.refresh_rate))
+        gopts_layout.addWidget(self.game_refresh_row_widget)
+
+        self.game_touchpad_row_widget = QWidget()
+        gtp_row = QHBoxLayout(self.game_touchpad_row_widget)
+        gtp_row.setContentsMargins(0, 0, 0, 0)
+        gtp_lbl = QLabel("Bloquear Touchpad automaticamente enquanto um jogo estiver aberto")
+        gtp_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        gtp_row.addWidget(gtp_lbl, stretch=1)
+        self.sw_game_lock_touchpad = ToggleSwitch(checked=self.backend.get_game_auto_lock_touchpad())
+        self.sw_game_lock_touchpad.toggled.connect(self._on_game_lock_touchpad_toggled)
+        gtp_row.addWidget(self.sw_game_lock_touchpad)
+        self.game_touchpad_row_widget.setVisible(bool(feat.touchpad_control))
+        gopts_layout.addWidget(self.game_touchpad_row_widget)
+
+        rules_layout.addWidget(self.game_switch_opts_box)
 
         # Barra para adicionar nova regra de aplicativo
         add_rule_box = QFrame()
@@ -1918,6 +2093,119 @@ class PerformanceTab(QWidget):
         self.backend.remove_app_power_rule(exec_name)
         self._rebuild_app_rules_list()
 
+    def _on_game_target_profile_changed(self):
+        prof = self.combo_game_target_profile.currentData()
+        if prof:
+            self.backend.set_game_target_profile(str(prof))
+
+    def _on_game_refresh_max_toggled(self, checked: bool):
+        self.backend.set_game_auto_refresh_max(checked)
+
+    def _on_game_lock_touchpad_toggled(self, checked: bool):
+        self.backend.set_game_auto_lock_touchpad(checked)
+
+    # =========================================================================
+    # Métodos de Perfis Personalizados Salváveis (Presets em 1 Clique)
+    # =========================================================================
+    def _rebuild_user_presets_list(self):
+        while self.presets_list_layout.count():
+            item = self.presets_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        presets = self.backend.get_user_presets()
+        cnt = len(presets)
+        self.presets_count_badge.setText(f"{cnt} {'PRESET' if cnt == 1 else 'PRESETS'}")
+        if not presets:
+            empty_lbl = QLabel("Nenhum preset salvo ainda. Ajuste os controles desejados e clique em 'Salvar Estado Atual'.")
+            empty_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px; padding: 4px 2px;")
+            self.presets_list_layout.addWidget(empty_lbl)
+            return
+
+        for p in presets:
+            pid = str(p.get("id", ""))
+            pname = str(p.get("name", pid))
+            summary = self.backend.format_user_preset_summary(p)
+
+            row_f = QFrame()
+            row_f.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 7px; padding: 6px 12px;")
+            r_lay = QHBoxLayout(row_f)
+            r_lay.setContentsMargins(6, 4, 6, 4)
+            r_lay.setSpacing(10)
+
+            lbl_name = QLabel(pname)
+            lbl_name.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+            lbl_name.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; min-width: 140px;")
+            r_lay.addWidget(lbl_name)
+
+            lbl_sum = QLabel(summary)
+            lbl_sum.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+            r_lay.addWidget(lbl_sum, stretch=1)
+
+            btn_apply = QPushButton("Aplicar")
+            btn_apply.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_apply.setFixedHeight(26)
+            btn_apply.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: #192338;
+                    color: {ThemeTokens.BORDER_CYAN};
+                    border: 1px solid {ThemeTokens.BORDER_CYAN};
+                    border-radius: 5px;
+                    padding: 2px 12px;
+                    font-weight: bold;
+                    font-size: 10px;
+                }}
+                QPushButton:hover {{
+                    background-color: {ThemeTokens.BORDER_CYAN};
+                    color: #0b0f19;
+                }}
+            """)
+            btn_apply.clicked.connect(lambda _c=False, p_id=pid, p_name=pname: self._on_apply_user_preset(p_id, p_name))
+            r_lay.addWidget(btn_apply)
+
+            btn_del = QPushButton("Remover")
+            btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_del.setFixedHeight(26)
+            btn_del.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: #192338;
+                    color: {ThemeTokens.TEXT_LIGHT_GRAY};
+                    border: 1px solid {ThemeTokens.BORDER_DEFAULT};
+                    border-radius: 5px;
+                    padding: 2px 10px;
+                    font-size: 10px;
+                }}
+                QPushButton:hover {{
+                    border-color: {ThemeTokens.LEGION_RED};
+                    color: {ThemeTokens.LEGION_RED};
+                }}
+            """)
+            btn_del.clicked.connect(lambda _c=False, p_id=pid: self._on_delete_user_preset(p_id))
+            r_lay.addWidget(btn_del)
+
+            self.presets_list_layout.addWidget(row_f)
+
+    def _on_save_user_preset(self):
+        name = self.edit_preset_name.text().strip()
+        ok, msg, _ = self.backend.save_current_as_preset(name)
+        if not ok:
+            QMessageBox.warning(self, "Preset Personalizado", msg)
+            return
+        self.edit_preset_name.clear()
+        self._rebuild_user_presets_list()
+
+    def _on_apply_user_preset(self, preset_id: str, preset_name: str):
+        ok, msg = self.backend.apply_user_preset(preset_id)
+        if not ok:
+            QMessageBox.warning(self, "Preset Personalizado", f"Não foi possível aplicar o preset '{preset_name}':\n{msg}")
+            return
+        self.refresh_profile_state()
+        self.preset_applied.emit(preset_name, msg)
+
+    def _on_delete_user_preset(self, preset_id: str):
+        self.backend.delete_user_preset(preset_id)
+        self._rebuild_user_presets_list()
+
     # =========================================================================
     # Métodos do Mapeador de Teclas Personalizadas (Copilot Key Remapper)
     # =========================================================================
@@ -2160,7 +2448,7 @@ class PerformanceTab(QWidget):
         self.tdp_badge.setText(f"PL1: {cpu.pl1_w}W | PL2: {cpu.pl2_w}W")
         self.fan_curve_widget.update_state(active_prof, cpu.temperature_c, fan.rpm, fan.second_rpm)
 
-        # Status do App Rules
+        # Status do App Rules e opções do Auto-Switch
         active_game = self.backend.get_active_game()
         if active_game:
             self.app_rules_badge.setText(f"ATIVO: {active_game[:22].upper()}")
@@ -2168,6 +2456,21 @@ class PerformanceTab(QWidget):
         else:
             self.app_rules_badge.setText("AUTO-SWITCH ATIVO")
             self.app_rules_badge.setColor("#064e3b", "#34d399")
+
+        self.combo_game_target_profile.blockSignals(True)
+        cur_gt = self.backend.get_game_target_profile()
+        gt_idx = self.combo_game_target_profile.findData(cur_gt)
+        if gt_idx >= 0:
+            self.combo_game_target_profile.setCurrentIndex(gt_idx)
+        self.combo_game_target_profile.blockSignals(False)
+
+        self.sw_game_refresh_max.blockSignals(True)
+        self.sw_game_refresh_max.setChecked(self.backend.get_game_auto_refresh_max())
+        self.sw_game_refresh_max.blockSignals(False)
+
+        self.sw_game_lock_touchpad.blockSignals(True)
+        self.sw_game_lock_touchpad.setChecked(self.backend.get_game_auto_lock_touchpad())
+        self.sw_game_lock_touchpad.blockSignals(False)
 
         for gname, btn in self.gov_buttons.items():
             is_active = (gname == cpu.governor)
