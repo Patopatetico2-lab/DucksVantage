@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ducksvantage"
-version = "2.0.0"
+version = "2.1.0"
 description = "Universal Lenovo Vantage replacement for Linux (Legion, LOQ, IdeaPad Gaming, IdeaPad & Yoga)"
 readme = "README.md"
 license = { text = "MIT" }
@@ -44,6 +44,6 @@ ducksvantage-gui = "main:main"
 
 [tool.setuptools]
 py-modules = ["main", "ui_main", "test_backend"]
-packages = ["core", "ui", "ui.tabs"]
+packages = ["core", "core.mixins", "ui", "ui.tabs", "ui.widgets"]
 include-package-data = true
 

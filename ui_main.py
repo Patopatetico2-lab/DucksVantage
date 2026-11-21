@@ -31,15 +31,13 @@ from ui.tabs.about_tab import AboutTab
 from ui.tabs.lighting_tab import LightingTab
 
 ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icons")
-RESOURCE_ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "icons")
 
 
 def get_asset_icon(name: str) -> QIcon:
-    """Busca o ícone SVG em assets/icons/ com fallback em resources/icons/."""
-    for d in (ICON_DIR, RESOURCE_ICON_DIR):
-        p = os.path.join(d, name)
-        if os.path.exists(p):
-            return QIcon(p)
+    """Busca o ícone SVG em assets/icons/."""
+    p = os.path.join(ICON_DIR, name)
+    if os.path.exists(p):
+        return QIcon(p)
     return QIcon()
 
 

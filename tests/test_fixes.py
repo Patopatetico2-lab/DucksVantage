@@ -20,7 +20,8 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
 
 from core.settings import SettingsManager
 from core.permissions import PermissionsManager
@@ -566,7 +567,7 @@ class TestDucksVantageFixes(unittest.TestCase):
     def test_all_referenced_svg_icons_exist(self):
         """Todos os ícones SVG referenciados em core/ e ui/ devem existir em assets/icons/."""
         import re
-        root = os.path.dirname(os.path.abspath(__file__))
+        root = PROJECT_ROOT
         icons_dir = os.path.join(root, "assets", "icons")
         existing = set(os.listdir(icons_dir))
         missing = []
@@ -584,7 +585,7 @@ class TestDucksVantageFixes(unittest.TestCase):
 
     def test_desktop_file_is_portable(self):
         """O arquivo packaging/ducksvantage.desktop não deve conter /home/ fixo e deve apontar para /usr/bin/ducksvantage."""
-        root = os.path.dirname(os.path.abspath(__file__))
+        root = PROJECT_ROOT
         with open(os.path.join(root, "packaging", "ducksvantage.desktop"), encoding="utf-8") as fh:
             content = fh.read()
         self.assertNotIn("/home/", content)
@@ -593,7 +594,7 @@ class TestDucksVantageFixes(unittest.TestCase):
 
     def test_desktop_file_name_no_suffix(self):
         """main.py deve chamar setDesktopFileName('ducksvantage') sem sufixo .desktop."""
-        root = os.path.dirname(os.path.abspath(__file__))
+        root = PROJECT_ROOT
         with open(os.path.join(root, "main.py"), encoding="utf-8") as fh:
             src = fh.read()
         self.assertIn('setDesktopFileName("ducksvantage")', src)

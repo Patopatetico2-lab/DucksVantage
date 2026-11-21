@@ -9,7 +9,6 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RULE_SRC="${SCRIPT_DIR}/packaging/99-ducksvantage.rules"
-[ ! -f "$RULE_SRC" ] && RULE_SRC="${SCRIPT_DIR}/udev/99-ducksvantage.rules"
 RULE_DEST="/etc/udev/rules.d/99-ducksvantage.rules"
 DESKTOP_SRC="${SCRIPT_DIR}/packaging/ducksvantage.desktop"
 

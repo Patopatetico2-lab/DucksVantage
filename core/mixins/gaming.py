@@ -1,0 +1,622 @@
+"""Mixin de Auto-Switching por Jogo e Regras de Energia por Aplicativo."""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import time
+import psutil
+from typing import Any, Dict, List, Optional, Tuple
+from core.settings import DEFAULT_APP_POWER_RULES
+
+
+class GamingAutoSwitchMixin:
+    """Detecção de jogos, sessões de jogo, App Rules e daemon de auto-switch."""
+
+    # =========================================================================
+    # ELITE 2: Auto-Switching Inteligente por Jogo (Steam / Heroic / Proton)
+    # =========================================================================
+    def get_game_auto_switch(self) -> bool:
+        return bool(self.settings.get("game_auto_switch", True))
+
+    def set_game_auto_switch(self, enable: bool) -> None:
+        self.settings.set("game_auto_switch", bool(enable))
+        if not enable:
+            self._active_game_name = None
+            self._active_rule_exec = None
+            self._pre_game_refresh_hz = None
+            self._pre_game_turbo = None
+            self._pre_game_tdp = None
+            self._game_changed_refresh = False
+            self._game_changed_turbo = False
+            self._game_changed_tdp = False
+            self._game_locked_touchpad = False
+            self._game_session_start_ts = 0.0
+            self._game_peak_cpu_c = 0.0
+            self._game_peak_gpu_c = 0.0
+
+    def get_game_target_profile(self) -> str:
+        """Retorna o perfil térmico preferido ao detectar jogos ('performance' ou 'max-power')."""
+        raw = str(self.settings.get("game_target_profile", "max-power") or "max-power")
+        norm = self.normalize_profile(raw)
+        supported = self.get_supported_canonical_profiles()
+        if supported:
+            if norm in supported:
+                return norm
+            if "performance" in supported:
+                return "performance"
+            if "max-power" in supported:
+                return "max-power"
+            return supported[-1]
+        return norm if norm in ("performance", "max-power") else "performance"
+
+    def set_game_target_profile(self, profile: str) -> None:
+        norm = self.normalize_profile(profile)
+        if norm not in ("performance", "max-power"):
+            norm = "performance"
+        self.settings.set("game_target_profile", norm)
+
+    def get_game_auto_refresh_max(self) -> bool:
+        return bool(self.settings.get("game_auto_refresh_max", False))
+
+    def set_game_auto_refresh_max(self, enable: bool) -> None:
+        self.settings.set("game_auto_refresh_max", bool(enable))
+
+    def get_game_auto_lock_touchpad(self) -> bool:
+        return bool(self.settings.get("game_auto_lock_touchpad", False))
+
+    def set_game_auto_lock_touchpad(self, enable: bool) -> None:
+        self.settings.set("game_auto_lock_touchpad", bool(enable))
+
+    def get_game_target_preset_id(self) -> str:
+        return str(self.settings.get("game_target_preset_id", "") or "").strip()
+
+    def set_game_target_preset_id(self, preset_id: str) -> None:
+        self.settings.set("game_target_preset_id", str(preset_id or "").strip())
+
+    def get_game_session_summary_enabled(self) -> bool:
+        return bool(self.settings.get("game_session_summary_enabled", True))
+
+    def set_game_session_summary_enabled(self, enable: bool) -> None:
+        self.settings.set("game_session_summary_enabled", bool(enable))
+
+    def get_game_ignore_list(self) -> List[str]:
+        raw = self.settings.get("game_ignore_list", [])
+        if not isinstance(raw, list):
+            return []
+        return [str(x).strip().lower() for x in raw if str(x).strip()]
+
+    def add_game_ignore_item(self, name: str) -> Tuple[bool, str]:
+        clean = " ".join((name or "").split()).strip().lower()
+        if not clean:
+            return False, "Informe o executável ou termo a ignorar (ex: launcher.exe, java)."
+        items = self.get_game_ignore_list()
+        if clean in items:
+            return False, f"'{clean}' já está na lista de exclusões."
+        items.append(clean)
+        self.settings.set("game_ignore_list", items)
+        self._cached_running_game = None
+        self._last_game_scan_time = 0.0
+        return True, f"'{clean}' adicionado às exclusões."
+
+    def remove_game_ignore_item(self, name: str) -> Tuple[bool, str]:
+        clean = (name or "").strip().lower()
+        items = [x for x in self.get_game_ignore_list() if x != clean]
+        self.settings.set("game_ignore_list", items)
+        self._cached_running_game = None
+        self._last_game_scan_time = 0.0
+        return True, f"'{clean}' removido das exclusões."
+
+    def update_game_session_peaks(self, cpu_temp: float, gpu_temp: float) -> None:
+        """Atualiza os picos térmicos registrados durante a sessão de jogo ativa."""
+        if not self._active_game_name or self._active_rule_exec or self._game_session_start_ts <= 0:
+            return
+        if cpu_temp > self._game_peak_cpu_c:
+            self._game_peak_cpu_c = float(cpu_temp)
+        if gpu_temp > self._game_peak_gpu_c:
+            self._game_peak_gpu_c = float(gpu_temp)
+
+    def detect_running_game(self, force: bool = False) -> Optional[str]:
+        """
+        Monitora processos ativos em busca de jogos abertos via Steam (Proton/Nativo),
+        Heroic Games Launcher, Lutris, Wine/UMU, Sober (Roblox), Emuladores, Gamescope ou GameMode.
+        Aplica cache seguro de 4s para evitar micro-travamentos (stutters) na interface.
+        """
+        now = time.time()
+        if not force and (now - self._last_game_scan_time < 4.0):
+            return self._cached_running_game
+
+        ignored_bins = {
+            "steam", "steamwebhelper", "steamservice", "steam-runtime",
+            "heroic", "lutris", "wineserver", "services.exe", "winedevice.exe",
+            "explorer.exe", "plugplay.exe", "svchost.exe", "rpcss.exe",
+            "tabtip.exe", "conhost.exe", "start.exe", "wineboot.exe",
+            "rundll32.exe", "msiexec.exe", "regsvr32.exe", "regedit.exe",
+            "cmd.exe", "taskmgr.exe", "steam.exe", "steamwebhelper.exe",
+            "epicgameslauncher.exe", "epicwebhelper.exe", "eadesktop.exe",
+            "ealauncher.exe", "eabackgroundservice.exe", "upc.exe",
+            "ubisoftconnect.exe", "battle.net.exe", "agent.exe",
+            "galaxyclient.exe", "crashhandler", "crashhandler64",
+            "crashhandler.exe", "crashhandler64.exe",
+            "unitycrashhandler64.exe", "ue4prereqsetup_x64.exe",
+            "pressure-vessel", "bwrap", "srt-bwrap", "xdg-dbus-proxy",
+            "fossilize_replay", "gamemoded", "proton", "umu-run",
+            "python", "python3", "bash", "sh", "zsh", "fish",
+        }
+        user_ignored = set(self.get_game_ignore_list())
+        ignored_bins.update(user_ignored)
+        runtime_wrappers = {
+            "wine", "wine64", "wine-preloader", "wine64-preloader",
+            "sniper", "soldier", "pv-adverb", "pressure-vessel-wrap",
+            "reaper",
+        }
+        native_games = {
+            "rpcs3", "pcsx2", "pcsx2-qt", "dolphin-emu", "yuzu", "ryujinx",
+            "cemu", "retroarch", "cs2", "dota2", "hl2_linux", "factorio",
+            "stardewvalley", "terraria", "celeste", "osu!", "veloren-voxygen",
+            "supertuxkart", "xonotic-linux64-glx",
+        }
+        lib_markers = (
+            "/steamapps/common/", "/games/heroic/", "/heroic/prefixes/",
+            "/games/", "/lutris/", "/epic games/", "/gog games/", "/compatdata/",
+        )
+
+        found_game = None
+        saw_gamemoded = False
+        try:
+            for proc in psutil.process_iter(["name", "exe", "cmdline", "cwd"]):
+                try:
+                    pname = (proc.info.get("name") or "").strip()
+                    p_low = pname.lower()
+                    if p_low == "gamemoded":
+                        saw_gamemoded = True
+                    if not pname or p_low in ignored_bins:
+                        continue
+
+                    exe_str = (proc.info.get("exe") or "").strip()
+                    exe_low = exe_str.lower()
+                    cwd_str = (proc.info.get("cwd") or "").strip()
+                    cmdline = proc.info.get("cmdline") or []
+                    cmd_str = " ".join(cmdline)
+                    cmd_low = cmd_str.lower()
+
+                    # 1. Steam Reaper com AppId (ex: reaper SteamLaunch AppId=...)
+                    if p_low == "reaper" and "appid=" in cmd_low:
+                        m = re.search(r"appid=(\d+)", cmd_low)
+                        app_id = m.group(1) if m else "Steam"
+                        if "--" in cmdline:
+                            idx = cmdline.index("--")
+                            if idx + 1 < len(cmdline):
+                                g_bin = os.path.basename(cmdline[idx + 1].replace("\\", "/"))
+                                if g_bin.lower() not in ignored_bins:
+                                    found_game = f"{g_bin} (Steam #{app_id})"
+                                    break
+                        found_game = f"Steam Game (AppID {app_id})"
+                        break
+
+                    # 2. Gamescope ou GameModeRun ativo
+                    if p_low in ("gamescope", "gamemoderun"):
+                        found_game = f"Sessão {pname}"
+                        break
+
+                    # 3. Jogos Flatpak (Sober/Roblox), Minecraft e Emuladores/Nativos conhecidos
+                    if p_low == "sober" or "/app/bin/sober" in cmd_low or exe_low.endswith("/sober"):
+                        found_game = "Roblox (Sober)"
+                        break
+                    if p_low in ("java", "javaw") and any(k in cmd_low for k in ("net.minecraft", "minecraft", "prismlauncher", "mojang", "fabricmc")):
+                        found_game = "Minecraft"
+                        break
+                    if p_low in native_games:
+                        found_game = pname
+                        break
+
+                    # 4. Executáveis rodando a partir de bibliotecas de jogos (Steam, Heroic, Lutris, ~/Games, etc.)
+                    exe_norm = exe_str.replace("\\", "/").lower()
+                    cmd_norm = cmd_str.replace("\\", "/").lower()
+                    cwd_norm = cwd_str.replace("\\", "/").lower()
+                    if any(m in txt for m in lib_markers for txt in (cmd_norm, exe_norm, cwd_norm)):
+                        for arg in reversed(cmdline):
+                            arg_norm = arg.replace("\\", "/")
+                            if "/windows/system32/" in arg_norm.lower() or "/windows/syswow64/" in arg_norm.lower():
+                                continue
+                            clean_arg = os.path.basename(arg_norm)
+                            c_low = clean_arg.lower()
+                            if c_low.endswith((".exe", ".x86_64", ".bin")) and c_low not in ignored_bins and c_low not in runtime_wrappers:
+                                found_game = clean_arg
+                                break
+                        if not found_game and p_low not in runtime_wrappers:
+                            cand_bin = os.path.basename(exe_norm) if exe_str else pname
+                            if cand_bin.lower() not in ignored_bins and cand_bin.lower() not in runtime_wrappers:
+                                found_game = os.path.basename(exe_str.replace("\\", "/")) or pname
+                        if found_game:
+                            break
+
+                    # 5. Executável Windows .exe rodando via Wine / Proton / UMU (ex: C:\Games\...)
+                    is_wine_proc = p_low.endswith(".exe") or "wine" in p_low or "wine" in exe_low or "proton" in cmd_low or "umu" in cmd_low
+                    if is_wine_proc:
+                        for arg in reversed(cmdline):
+                            arg_norm = arg.replace("\\", "/")
+                            arg_low = arg_norm.lower()
+                            if "/windows/system32/" in arg_low or "/windows/syswow64/" in arg_low:
+                                continue
+                            clean_arg = os.path.basename(arg_norm)
+                            c_low = clean_arg.lower()
+                            if c_low.endswith(".exe") and c_low not in ignored_bins and c_low not in runtime_wrappers:
+                                found_game = clean_arg
+                                break
+                        if not found_game and p_low.endswith(".exe") and p_low not in ignored_bins:
+                            found_game = pname
+                        if found_game:
+                            break
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+        except Exception:
+            pass
+
+        # 6. Fallback Feral GameMode via D-Bus (caso gamemoded esteja ativo com algum cliente)
+        if not found_game and saw_gamemoded and shutil.which("gdbus"):
+            try:
+                res = subprocess.run(
+                    [
+                        "gdbus", "call", "--session",
+                        "--dest", "com.feralinteractive.GameMode",
+                        "--object-path", "/com/feralinteractive/GameMode",
+                        "--method", "org.freedesktop.DBus.Properties.Get",
+                        "com.feralinteractive.GameMode", "ClientCount",
+                    ],
+                    capture_output=True, text=True, timeout=0.5,
+                )
+                if res.returncode == 0 and res.stdout:
+                    m_cnt = re.search(r"(\d+)", res.stdout)
+                    if m_cnt and int(m_cnt.group(1)) > 0:
+                        found_game = "GameMode (Jogo Ativo)"
+            except Exception:
+                pass
+
+        if found_game and user_ignored and any(ig in found_game.lower() for ig in user_ignored):
+            found_game = None
+
+        self._cached_running_game = found_game
+        self._last_game_scan_time = now
+        return found_game
+
+    # =========================================================================
+    # Gerenciador de Perfis de Energia por Aplicativo (App Rules) + Auto-Switching
+    # =========================================================================
+    def get_app_power_rules(self) -> List[Dict[str, Any]]:
+        """Retorna a lista de regras de perfil de energia por executável/aplicativo."""
+        rules = self.settings.get("app_power_rules", DEFAULT_APP_POWER_RULES)
+        if not isinstance(rules, list):
+            rules = json.loads(json.dumps(DEFAULT_APP_POWER_RULES)) if "json" in globals() else list(DEFAULT_APP_POWER_RULES)
+        return rules
+
+    def add_app_power_rule(self, executable: str, profile: str, label: str = "") -> Tuple[bool, str]:
+        """Adiciona ou atualiza uma regra de perfil de energia vinculada a um executável."""
+        clean_exec = os.path.basename(executable.strip()).lower()
+        if not clean_exec:
+            return False, "Informe o nome do executável (ex: blender, resolve, firefox)."
+        norm_prof = self.normalize_profile(profile)
+        clean_label = label.strip() or f"{clean_exec} ({self.get_profile_info(norm_prof)['short_title']})"
+        rules = list(self.get_app_power_rules())
+        updated = False
+        for item in rules:
+            if str(item.get("executable", "")).lower() == clean_exec:
+                item["profile"] = norm_prof
+                item["label"] = clean_label
+                item["enabled"] = True
+                updated = True
+                break
+        if not updated:
+            rules.append({
+                "executable": clean_exec,
+                "label": clean_label,
+                "profile": norm_prof,
+                "enabled": True,
+            })
+        self.settings.set("app_power_rules", rules)
+        return True, f"Regra '{clean_exec}' -> {self.get_profile_info(norm_prof)['short_title']} salva com sucesso."
+
+    def remove_app_power_rule(self, executable: str) -> Tuple[bool, str]:
+        clean_exec = os.path.basename(executable.strip()).lower()
+        rules = [r for r in self.get_app_power_rules() if str(r.get("executable", "")).lower() != clean_exec]
+        self.settings.set("app_power_rules", rules)
+        if self._active_rule_exec == clean_exec:
+            self._active_rule_exec = None
+            self._active_game_name = None
+        return True, f"Regra '{clean_exec}' removida."
+
+    def toggle_app_power_rule(self, executable: str, enabled: bool) -> Tuple[bool, str]:
+        clean_exec = os.path.basename(executable.strip()).lower()
+        rules = list(self.get_app_power_rules())
+        for item in rules:
+            if str(item.get("executable", "")).lower() == clean_exec:
+                item["enabled"] = bool(enabled)
+                break
+        self.settings.set("app_power_rules", rules)
+        if not enabled and self._active_rule_exec == clean_exec:
+            self._active_rule_exec = None
+            self._active_game_name = None
+        return True, f"Regra '{clean_exec}' {'ativada' if enabled else 'desativada'}."
+
+    def get_running_user_processes(self) -> List[str]:
+        """Lista executáveis de usuário em execução para facilitar o preenchimento na UI."""
+        system_ignore = {
+            "systemd", "kthreadd", "init", "bash", "sh", "zsh", "fish", "python", "python3",
+            "dbus-daemon", "kwin_wayland", "kwin_x11", "plasmashell", "xwayland", "pipewire",
+            "wireplumber", "xdg-desktop-portal", "polkitd", "udev", "agetty", "sudo", "pkexec"
+        }
+        found = set()
+        try:
+            uid = os.getuid()
+            for proc in psutil.process_iter(["name", "uids"]):
+                try:
+                    uids = proc.info.get("uids")
+                    if uids and uids.real != uid:
+                        continue
+                    pname = (proc.info.get("name") or "").strip()
+                    if pname and len(pname) >= 3 and pname.lower() not in system_ignore and not pname.startswith("kworker"):
+                        found.add(pname)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+        except Exception:
+            pass
+        return sorted(found)[:40]
+
+    def detect_running_app_rule(self, force: bool = False) -> Optional[Dict[str, str]]:
+        """Verifica se algum processo em execução corresponde a uma regra ativa de App Rules com cache seguro de 4s."""
+        now = time.time()
+        if not force and (now - self._last_app_rule_scan_time < 4.0):
+            return self._cached_running_app_rule
+
+        rules = [r for r in self.get_app_power_rules() if r.get("enabled", True) and r.get("executable")]
+        if not rules:
+            self._cached_running_app_rule = None
+            self._last_app_rule_scan_time = now
+            return None
+
+        # Priorizar regras de maior desempenho caso múltiplos apps estejam abertos
+        priority_order = {"max-power": 4, "performance": 3, "balanced": 2, "low-power": 1}
+        rules.sort(key=lambda r: priority_order.get(self.normalize_profile(r.get("profile", "balanced")), 2), reverse=True)
+
+        rule_map = {str(r["executable"]).lower(): r for r in rules}
+        matched_rules = []
+
+        try:
+            for proc in psutil.process_iter(["name", "exe"]):
+                try:
+                    pname = (proc.info.get("name") or "").strip().lower()
+                    exe_base = os.path.basename(proc.info.get("exe") or "").strip().lower()
+                    if pname in rule_map:
+                        matched_rules.append(rule_map[pname])
+                    elif exe_base and exe_base in rule_map:
+                        matched_rules.append(rule_map[exe_base])
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+        except Exception:
+            pass
+
+        if not matched_rules:
+            self._cached_running_app_rule = None
+            self._last_app_rule_scan_time = now
+            return None
+
+        best = max(
+            matched_rules,
+            key=lambda r: priority_order.get(self.normalize_profile(r.get("profile", "balanced")), 2)
+        )
+        res = {
+            "executable": str(best.get("executable", "")).lower(),
+            "label": str(best.get("label") or best.get("executable")),
+            "profile": self.normalize_profile(str(best.get("profile", "performance"))),
+        }
+        self._cached_running_app_rule = res
+        self._last_app_rule_scan_time = now
+        return res
+
+    def check_game_auto_switch(self) -> Optional[Dict[str, Any]]:
+        """
+        Verifica se um jogo (Steam/Heroic/Proton) ou um aplicativo mapeado no App Rules
+        foi aberto ou fechado e aplica automaticamente o perfil de energia correspondente.
+        """
+        if not self.get_game_auto_switch() or not self.features.platform_profile:
+            return None
+
+        # 1. Verificar Jogos (Steam / Heroic / Proton / Gamescope)
+        detected_game = self.detect_running_game()
+        detected_rule = None if detected_game else self.detect_running_app_rule()
+
+        target_name: Optional[str] = None
+        target_prof: Optional[str] = None
+        rule_exec: Optional[str] = None
+
+        target_preset: Optional[Dict[str, Any]] = None
+        if detected_game:
+            target_name = detected_game
+            pref_preset_id = self.get_game_target_preset_id()
+            if pref_preset_id:
+                target_preset = next((p for p in self.get_user_presets() if p.get("id") == pref_preset_id), None)
+            if target_preset and target_preset.get("profile"):
+                target_prof = self.normalize_profile(str(target_preset["profile"]))
+            else:
+                choices = self.get_platform_profile_choices()
+                pref_target = self.get_game_target_profile()
+                if pref_target in choices:
+                    target_prof = pref_target
+                elif pref_target == "max-power" and "max-power" in choices:
+                    target_prof = "max-power"
+                elif "performance" in choices:
+                    target_prof = "performance"
+                elif "max-power" in choices:
+                    target_prof = "max-power"
+                else:
+                    target_prof = pref_target
+        elif detected_rule:
+            target_name = f"{detected_rule['label']}"
+            target_prof = detected_rule["profile"]
+            rule_exec = detected_rule["executable"]
+
+        # Novo jogo ou aplicativo mapeado iniciou (ou mudou de regra ativa)
+        if target_name and target_name != self._active_game_name:
+            if not self._active_game_name:
+                self._pre_game_profile = self.get_platform_profile()
+                self._pre_game_governor = self.get_cpu_governor()
+
+            self._active_game_name = target_name
+            self._active_rule_exec = rule_exec
+            if not rule_exec:
+                self._game_session_start_ts = time.time()
+                self._game_peak_cpu_c = 0.0
+                self._game_peak_gpu_c = 0.0
+
+            extras: List[str] = []
+            ok_prof = False
+
+            if not rule_exec and target_preset is not None:
+                # Salva estados extras antes de aplicar o preset vinculado
+                if "turbo_enabled" in target_preset and self.features.turbo_boost and not self._game_changed_turbo:
+                    self._pre_game_turbo = self.get_cpu_turbo()
+                    self._game_changed_turbo = True
+                if "pl1_w" in target_preset and "pl2_w" in target_preset and self.features.custom_tdp and not self._game_changed_tdp:
+                    self._pre_game_tdp = self.get_cpu_tdp_limits()
+                    self._game_changed_tdp = True
+                if "refresh_hz" in target_preset and self.features.refresh_rate and not self._game_changed_refresh:
+                    try:
+                        ref_cur = self.get_display_refresh_info()
+                        if ref_cur.available and int(target_preset["refresh_hz"]) != ref_cur.current_hz:
+                            self._pre_game_refresh_hz = ref_cur.current_hz
+                            self._game_changed_refresh = True
+                    except Exception:
+                        pass
+
+                ok_pre, _ = self.apply_user_preset(str(target_preset["id"]), allow_elevation=False)
+                ok_prof = ok_pre
+                if not ok_pre:
+                    self._game_changed_turbo = False
+                    self._pre_game_turbo = None
+                    self._game_changed_tdp = False
+                    self._pre_game_tdp = None
+                    self._game_changed_refresh = False
+                    self._pre_game_refresh_hz = None
+                else:
+                    extras.append(f"Preset: {target_preset['name']}")
+            else:
+                ok_prof, _ = self.set_platform_profile(target_prof or "performance", allow_elevation=False)
+                if self.features.cpu_governor:
+                    gov = "performance" if target_prof in ("performance", "max-power") else "powersave"
+                    self.set_cpu_governor(gov, allow_elevation=False)
+
+            if not rule_exec:
+                # 1. Eleva taxa de atualização para a máxima suportada ao iniciar jogo (se ainda não alterada pelo preset)
+                if self.get_game_auto_refresh_max() and self.features.refresh_rate and not self._game_changed_refresh:
+                    try:
+                        ref_info = self.get_display_refresh_info()
+                        if ref_info.available and len(ref_info.available_rates) > 1:
+                            max_hz = max(ref_info.available_rates)
+                            if ref_info.current_hz < max_hz:
+                                self._pre_game_refresh_hz = ref_info.current_hz
+                                ok_hz, _ = self.set_refresh_rate(max_hz)
+                                if ok_hz:
+                                    self._game_changed_refresh = True
+                                    extras.append(f"{max_hz} Hz")
+                                else:
+                                    self._pre_game_refresh_hz = None
+                    except Exception:
+                        pass
+
+                # 2. Bloqueia o touchpad durante o jogo (somente se não estava bloqueado antes)
+                if self.get_game_auto_lock_touchpad() and self.features.touchpad_control and not self._game_locked_touchpad:
+                    try:
+                        if not self.get_touchpad_status():
+                            ok_tp, _ = self.set_touchpad_status(True, allow_elevation=False)
+                            if ok_tp:
+                                self._game_locked_touchpad = True
+                                extras.append("Touchpad Bloqueado")
+                    except Exception:
+                        pass
+
+            return {
+                "type": "app_rule_started" if rule_exec else "game_started",
+                "game": target_name,
+                "executable": rule_exec or "",
+                "profile": target_prof or "performance",
+                "applied": ok_prof,
+                "extras": extras,
+            }
+
+        # Jogo ou aplicativo mapeado fechou
+        if not target_name and self._active_game_name:
+            finished_game = self._active_game_name
+            self._active_game_name = None
+            self._active_rule_exec = None
+
+            session_summary = None
+            if self._game_session_start_ts > 0:
+                dur_s = max(0, int(round(time.time() - self._game_session_start_ts)))
+                session_summary = {
+                    "duration_sec": dur_s,
+                    "peak_cpu_c": round(self._game_peak_cpu_c, 1),
+                    "peak_gpu_c": round(self._game_peak_gpu_c, 1),
+                }
+            self._game_session_start_ts = 0.0
+            self._game_peak_cpu_c = 0.0
+            self._game_peak_gpu_c = 0.0
+
+            restore_prof = self._pre_game_profile
+            if restore_prof in ("performance", "max-power"):
+                restore_prof = "balanced" if self._get_ac_online() == 1 else "low-power"
+
+            ok_restore, _ = self.set_platform_profile(restore_prof, allow_elevation=False)
+            if self.features.cpu_governor:
+                self.set_cpu_governor("powersave", allow_elevation=False)
+
+            extras: List[str] = []
+            if self._game_changed_turbo:
+                prev_tb = self._pre_game_turbo
+                self._game_changed_turbo = False
+                self._pre_game_turbo = None
+                if prev_tb is not None and self.features.turbo_boost:
+                    self.set_cpu_turbo(prev_tb, allow_elevation=False)
+
+            if self._game_changed_tdp:
+                prev_tdp = self._pre_game_tdp
+                self._game_changed_tdp = False
+                self._pre_game_tdp = None
+                if prev_tdp is not None and self.features.custom_tdp:
+                    self.set_cpu_tdp_limits(prev_tdp[0], prev_tdp[1], allow_elevation=False)
+
+            if self._game_changed_refresh:
+                prev_hz = self._pre_game_refresh_hz
+                self._game_changed_refresh = False
+                self._pre_game_refresh_hz = None
+                if prev_hz:
+                    try:
+                        ok_rhz, _ = self.set_refresh_rate(prev_hz)
+                        if ok_rhz:
+                            extras.append(f"{prev_hz} Hz")
+                    except Exception:
+                        pass
+
+            if self._game_locked_touchpad:
+                self._game_locked_touchpad = False
+                try:
+                    ok_rtp, _ = self.set_touchpad_status(False, allow_elevation=False)
+                    if ok_rtp:
+                        extras.append("Touchpad Liberado")
+                except Exception:
+                    pass
+
+            return {
+                "type": "game_stopped",
+                "game": finished_game,
+                "profile": restore_prof,
+                "applied": ok_restore,
+                "extras": extras,
+                "session_summary": session_summary,
+            }
+
+        return None
+
+    def get_active_game(self) -> Optional[str]:
+        return self._active_game_name
+

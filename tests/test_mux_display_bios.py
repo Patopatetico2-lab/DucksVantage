@@ -12,7 +12,8 @@ import json
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
 
 from core.settings import SettingsManager
 from core.permissions import PermissionsManager

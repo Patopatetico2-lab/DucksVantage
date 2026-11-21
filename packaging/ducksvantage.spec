@@ -1,5 +1,5 @@
 Name:           ducksvantage
-Version:        2.0.0
+Version:        2.1.0
 Release:        1%{?dist}
 Summary:        Universal Lenovo Vantage replacement for Linux (Legion, LOQ, IdeaPad & Yoga)
 License:        MIT
@@ -15,7 +15,7 @@ Custom TDP (PL1/PL2), Game Auto-Switching, and non-intrusive OSD notifications.
 
 %install
 mkdir -p %{buildroot}/opt/ducksvantage
-cp -r main.py ui_main.py test_backend.py styles.qss core ui assets packaging %{buildroot}/opt/ducksvantage/
+cp -r main.py ui_main.py test_backend.py styles.qss setup_udev.sh uninstall.sh core ui assets packaging %{buildroot}/opt/ducksvantage/
 
 mkdir -p %{buildroot}/usr/bin
 cat << 'EOF' > %{buildroot}/usr/bin/ducksvantage
