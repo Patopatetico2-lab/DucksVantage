@@ -823,8 +823,8 @@ class TestDucksVantageFixes(unittest.TestCase):
                 self.assertIn("144 Hz", msg_app)
                 m_p.assert_called_once_with("performance", allow_elevation=True)
                 m_g.assert_called_once_with("performance", allow_elevation=True)
-                m_t.assert_called_once_with(True)
-                m_tdp.assert_called_once_with(55, 80)
+                m_t.assert_called_once_with(True, allow_elevation=True)
+                m_tdp.assert_called_once_with(55, 80, allow_elevation=True)
                 m_hz.assert_called_once_with(144)
 
             ok_del, _ = self.backend.delete_user_preset("modo-competitivo")
@@ -877,6 +877,329 @@ class TestDucksVantageFixes(unittest.TestCase):
         clipboard = QApplication.clipboard()
         self.assertEqual(clipboard.text(), "# Diag Mock OK")
         about.close()
+
+    # -------------------------------------------------------------------------
+    # 21. Bandeja Expandida (Presets, Taxa Hz, Auto-Switch e Touchpad)
+    # -------------------------------------------------------------------------
+    def test_tray_menus_presets_refresh_and_controls(self):
+        """Tray exibe submenus de Presets e Hz + toggles de Jogos e Touchpad conforme features."""
+        from core.models import DisplayRefreshInfo
+        from ui.tray_icon import SystemTrayManager
+
+        with patch.object(self.backend.settings, "save", return_value=None):
+            self.backend.features.platform_profile = True
+            self.backend.features.refresh_rate = True
+            self.backend.features.touchpad_control = True
+            self.backend.settings._data["user_presets"] = [
+                {"id": "silencioso", "name": "Silencioso", "profile": "low-power"}
+            ]
+            ref_info = DisplayRefreshInfo(
+                available=True, current_hz=60, available_rates=[60, 144],
+                display_name="eDP-1", resolution="1920x1080", backend_name="kscreen-doctor"
+            )
+            with patch.object(self.backend, "get_display_refresh_info", return_value=ref_info), \
+                 patch.object(self.backend, "get_supported_canonical_profiles", return_value=["low-power", "balanced", "performance"]), \
+                 patch.object(self.backend, "get_platform_profile", return_value="balanced"), \
+                 patch.object(self.backend, "get_touchpad_status", return_value=False):
+                tray = SystemTrayManager(self.backend)
+                self.assertTrue(tray.presets_menu.menuAction().isVisible())
+                self.assertEqual(len(tray.presets_menu.actions()), 1)
+                self.assertTrue(tray.refresh_menu.menuAction().isVisible())
+                self.assertEqual(len(tray.refresh_menu.actions()), 2)
+                self.assertTrue(tray.action_game_auto.isVisible())
+                self.assertTrue(tray.action_touchpad.isVisible())
+                self.assertIn("Tela: 60 Hz", tray.tray_icon.toolTip())
+
+    # -------------------------------------------------------------------------
+    # 22. Preferências (OSD, AC/Bateria) e Backup Export/Import JSON
+    # -------------------------------------------------------------------------
+    def test_preferences_osd_ac_battery_and_backup_roundtrip(self):
+        """Preferências de OSD, perfis AC/Bateria e backup JSON funcionam e filtram chaves inválidas."""
+        from ui.osd_overlay import VantageOSDOverlay
+
+        with patch.object(self.backend.settings, "save", return_value=None):
+            osd = VantageOSDOverlay()
+            osd.configure(enabled=False, position="top-right", duration_ms=2800)
+            self.assertEqual(osd.position_mode, "top-right")
+            self.assertEqual(osd.duration_ms, 2800)
+            osd.notify_thermal_mode("performance")
+            self.assertTrue(osd.isHidden())
+            osd.close()
+
+            self.backend.set_osd_position("top-center")
+            self.backend.set_osd_duration_ms(1200)
+            self.backend.set_minimize_to_tray(False)
+            self.backend.set_ac_profile("balanced")
+            self.backend.set_battery_profile("low-power")
+            self.assertEqual(self.backend.get_osd_position(), "top-center")
+            self.assertEqual(self.backend.get_osd_duration_ms(), 1200)
+            self.assertFalse(self.backend.get_minimize_to_tray())
+
+            with tempfile.TemporaryDirectory() as td:
+                bkp_path = os.path.join(td, "backup.json")
+                ok_exp, _ = self.backend.export_settings(bkp_path)
+                self.assertTrue(ok_exp)
+                with open(bkp_path, "r", encoding="utf-8") as fh:
+                    raw_bkp = json.load(fh)
+                raw_bkp["unknown_malicious_key"] = 123
+                raw_bkp["osd_position"] = "top-right"
+                with open(bkp_path, "w", encoding="utf-8") as fh:
+                    json.dump(raw_bkp, fh)
+
+                ok_imp, _ = self.backend.import_settings(bkp_path)
+                self.assertTrue(ok_imp)
+                self.assertEqual(self.backend.get_osd_position(), "top-right")
+                self.assertNotIn("unknown_malicious_key", self.backend.settings._data)
+
+    # -------------------------------------------------------------------------
+    # 23. Autonomia Estimada de Bateria e Pontos Estimados vs Reais
+    # -------------------------------------------------------------------------
+    def test_battery_eta_and_history_estimated_flag(self):
+        """get_battery_info calcula tempo restante/carga e histórico marca pontos semeados."""
+        with tempfile.TemporaryDirectory() as td:
+            bat_dir = os.path.join(td, "BAT0")
+            os.makedirs(bat_dir)
+            files = {
+                "capacity": "50",
+                "status": "Discharging",
+                "cycle_count": "40",
+                "voltage_now": "15400000",
+                "power_now": "20000000",  # 20W
+                "energy_now": "40000000",  # 40Wh -> ~2h00
+                "energy_full": "56000000",
+                "energy_full_design": "57500000",
+            }
+            for k, v in files.items():
+                with open(os.path.join(bat_dir, k), "w", encoding="utf-8") as fh:
+                    fh.write(v)
+
+            self.backend.paths.battery_dir = bat_dir
+            self.backend.features.battery = True
+            self.backend.features.conservation_mode = False
+            self.backend.features.rapid_charge = False
+
+            info = self.backend.get_battery_info()
+            self.assertEqual(info.estimated_minutes, 120)
+            self.assertIn("2h 00min restantes", info.estimated_label)
+
+            # Em carregamento com conservação (~80% -> 44.8Wh alvo, falta 4.8Wh @ 20W ~ 14 min)
+            with open(os.path.join(bat_dir, "status"), "w", encoding="utf-8") as fh:
+                fh.write("Charging")
+            self.backend.features.conservation_mode = True
+            with patch.object(self.backend, "get_conservation_mode", return_value=True):
+                info_chg = self.backend.get_battery_info()
+            self.assertIn("~80%", info_chg.estimated_label)
+
+            with patch.object(self.backend.settings, "save", return_value=None):
+                self.backend.settings._data["battery_history"] = []
+                hist = self.backend.record_battery_snapshot()
+                self.assertGreaterEqual(len(hist), 2)
+                self.assertTrue(hist[0].is_estimated)
+                self.assertFalse(hist[-1].is_estimated)
+
+    # -------------------------------------------------------------------------
+    # 24. Gráfico Térmico ao Vivo + Resumo Pós-Jogo + Preset & Ignore List
+    # -------------------------------------------------------------------------
+    def test_live_thermal_chart_and_game_session_summary(self):
+        """LiveThermalChart registra amostras/picos e check_game_auto_switch gera resumo pós-jogo."""
+        from ui.dashboard import LiveThermalChart
+
+        chart = LiveThermalChart()
+        chart.add_sample(52.0, 44.0)
+        chart.add_sample(86.5, 74.0)
+        self.assertEqual(chart.peak_cpu, 86.5)
+        self.assertEqual(chart.peak_gpu, 74.0)
+        chart.reset_peaks()
+        self.assertEqual(chart.peak_cpu, 86.5)
+        chart.add_sample(60.0, 50.0)
+        chart.reset_peaks()
+        self.assertEqual(chart.peak_cpu, 60.0)
+        chart.close()
+
+        with patch.object(self.backend.settings, "save", return_value=None):
+            self.backend.features.platform_profile = True
+            self.backend.features.cpu_governor = True
+            self.backend.features.turbo_boost = True
+            self.backend.features.custom_tdp = True
+            self.backend._active_game_name = None
+            self.backend._game_changed_turbo = False
+            self.backend._game_changed_tdp = False
+            self.backend.settings._data["user_presets"] = [
+                {
+                    "id": "game-preset",
+                    "name": "Game Preset",
+                    "profile": "performance",
+                    "governor": "performance",
+                    "turbo_enabled": True,
+                    "pl1_w": 60,
+                    "pl2_w": 85,
+                }
+            ]
+            self.backend.set_game_auto_switch(True)
+            self.backend.set_game_target_preset_id("game-preset")
+            self.backend.set_game_auto_refresh_max(False)
+            self.backend.set_game_auto_lock_touchpad(False)
+
+            with patch.object(self.backend, "detect_running_game", return_value="Minecraft"), \
+                 patch.object(self.backend, "get_platform_profile", return_value="balanced"), \
+                 patch.object(self.backend, "get_cpu_governor", return_value="powersave"), \
+                 patch.object(self.backend, "get_cpu_turbo", return_value=False), \
+                 patch.object(self.backend, "get_cpu_tdp_limits", return_value=(35, 50)), \
+                 patch.object(self.backend, "set_platform_profile", return_value=(True, "OK")) as m_p, \
+                 patch.object(self.backend, "set_cpu_governor", return_value=(True, "OK")) as m_g, \
+                 patch.object(self.backend, "set_cpu_turbo", return_value=(True, "OK")) as m_t, \
+                 patch.object(self.backend, "set_cpu_tdp_limits", return_value=(True, "OK")) as m_tdp:
+                ev = self.backend.check_game_auto_switch()
+                self.assertEqual(ev["type"], "game_started")
+                self.assertIn("Preset: Game Preset", ev["extras"])
+                m_p.assert_called_with("performance", allow_elevation=False)
+                m_g.assert_called_with("performance", allow_elevation=False)
+                m_t.assert_called_with(True, allow_elevation=False)
+                m_tdp.assert_called_with(60, 85, allow_elevation=False)
+
+                self.backend.update_game_session_peaks(88.0, 72.5)
+
+            with patch.object(self.backend, "detect_running_game", return_value=None), \
+                 patch.object(self.backend, "detect_running_app_rule", return_value=None), \
+                 patch.object(self.backend, "_get_ac_online", return_value=1), \
+                 patch.object(self.backend, "set_platform_profile", return_value=(True, "OK")), \
+                 patch.object(self.backend, "set_cpu_governor", return_value=(True, "OK")), \
+                 patch.object(self.backend, "set_cpu_turbo", return_value=(True, "OK")) as m_t_rest, \
+                 patch.object(self.backend, "set_cpu_tdp_limits", return_value=(True, "OK")) as m_tdp_rest:
+                ev_stop = self.backend.check_game_auto_switch()
+                self.assertEqual(ev_stop["type"], "game_stopped")
+                m_t_rest.assert_called_with(False, allow_elevation=False)
+                m_tdp_rest.assert_called_with(35, 50, allow_elevation=False)
+                self.assertIsNotNone(ev_stop["session_summary"])
+                self.assertEqual(ev_stop["session_summary"]["peak_cpu_c"], 88.0)
+                self.assertEqual(ev_stop["session_summary"]["peak_gpu_c"], 72.5)
+
+    def test_game_ignore_list_filters_detected_game(self):
+        """Lista de exclusões impede disparo do Auto-Switch para o termo configurado."""
+        with patch.object(self.backend.settings, "save", return_value=None):
+            self.backend.add_game_ignore_item("sober")
+            self.assertIn("sober", self.backend.get_game_ignore_list())
+
+            fake_proc = MagicMock()
+            fake_proc.info = {"name": "sober", "exe": "/app/bin/sober", "cmdline": ["/app/bin/sober"], "cwd": "/"}
+            with patch("core.backend.psutil.process_iter", return_value=[fake_proc]):
+                self.assertIsNone(self.backend.detect_running_game(force=True))
+
+            self.backend.remove_game_ignore_item("sober")
+            with patch("core.backend.psutil.process_iter", return_value=[fake_proc]):
+                self.assertEqual(self.backend.detect_running_game(force=True), "Roblox (Sober)")
+
+    # -------------------------------------------------------------------------
+    # 25. CLI Expandido (--json, --diagnostic, --cycle-profile, --apply-preset)
+    # -------------------------------------------------------------------------
+    def test_cli_expanded_commands(self):
+        """Flags CLI novas produzem JSON válido e executam ações com allow_elevation=False."""
+        import io
+        import types
+        import contextlib
+        import main as app_main
+
+        with patch.object(self.backend.settings, "save", return_value=None):
+            self.backend.settings._data["user_presets"] = [
+                {"id": "modo-eco", "name": "Modo Eco", "profile": "low-power"}
+            ]
+            buf = io.StringIO()
+            args_status = types.SimpleNamespace(
+                status=True, json=True, diagnostic=False, list_presets=False,
+                cycle_profile=False, cycle_hz=False, apply_preset=None,
+                profile=None, conservation=None, install_udev=False, autostart=None
+            )
+            with patch.object(self.backend, "get_cpu_metrics", return_value=CPUMetrics(temperature_c=50.0, frequency_mhz=2400.0)), \
+                 patch.object(self.backend, "get_gpu_metrics", return_value=GPUMetrics(available=False)), \
+                 contextlib.redirect_stdout(buf):
+                app_main.run_cli_mode(args_status, self.backend)
+            parsed = json.loads(buf.getvalue())
+            self.assertIn("profile", parsed)
+            self.assertIn("cpu", parsed)
+
+            buf2 = io.StringIO()
+            args_pre = types.SimpleNamespace(
+                status=False, json=True, diagnostic=False, list_presets=False,
+                cycle_profile=False, cycle_hz=False, apply_preset="Modo Eco",
+                profile=None, conservation=None, install_udev=False, autostart=None
+            )
+            with patch.object(self.backend, "apply_user_preset", return_value=(True, "Silencioso")) as m_pre, \
+                 contextlib.redirect_stdout(buf2):
+                app_main.run_cli_mode(args_pre, self.backend)
+            m_pre.assert_called_once_with("modo-eco", allow_elevation=False)
+            self.assertTrue(json.loads(buf2.getvalue())["ok"])
+
+    # -------------------------------------------------------------------------
+    # 26. Teclado RGB 4-Zonas & Verificador de Atualizações no GitHub
+    # -------------------------------------------------------------------------
+    def test_rgb_keyboard_discovery_packet_and_tab(self):
+        """Descoberta hidraw ITE, pacote 33 bytes e fallback sysfs multicolor funcionam."""
+        from ui.tabs.lighting_tab import LightingTab
+
+        pkt = HardwareBackend._build_ite_rgb_packet("static", ["#ff0000", "#00ff00", "#0000ff", "#ffffff"], 2, 3)
+        self.assertEqual(len(pkt), 33)
+        self.assertEqual(pkt[0], 0xCC)
+        self.assertEqual(pkt[1], 0x16)
+        self.assertEqual(pkt[2], 0x01)
+        self.assertEqual(pkt[3], 3)
+        self.assertEqual(pkt[4], 2)
+        self.assertEqual(list(pkt[5:8]), [255, 0, 0])
+        self.assertEqual(list(pkt[8:11]), [0, 255, 0])
+        self.assertEqual(list(pkt[11:14]), [0, 0, 255])
+        self.assertEqual(list(pkt[14:17]), [255, 255, 255])
+
+        pkt_off = HardwareBackend._build_ite_rgb_packet("off", ["#ff0000"] * 4, 2, 2)
+        self.assertEqual(pkt_off[4], 0)
+        self.assertEqual(list(pkt_off[5:8]), [0, 0, 0])
+
+        with patch("core.backend.glob.glob", side_effect=lambda pat: ["/sys/class/hidraw/hidraw3"] if "hidraw" in pat else []), \
+             patch.object(self.backend, "_read_file_text", return_value="HID_ID=0003:0000048D:0000C965\n"), \
+             patch("os.path.exists", side_effect=lambda p: p == "/dev/hidraw3"):
+            self.backend._scan_rgb_keyboard()
+            self.assertTrue(self.backend.features.rgb_keyboard)
+            self.assertEqual(self.backend.paths.rgb_hidraw, "/dev/hidraw3")
+
+        # Fallback sysfs multicolor
+        with tempfile.TemporaryDirectory() as td:
+            mi = os.path.join(td, "multi_intensity")
+            br = os.path.join(td, "brightness")
+            with open(mi, "w", encoding="utf-8") as fh:
+                fh.write("0 0 0\n")
+            with open(br, "w", encoding="utf-8") as fh:
+                fh.write("1\n")
+            with patch.object(self.backend.settings, "save", return_value=None):
+                self.backend.paths.rgb_hidraw = None
+                self.backend.paths.rgb_sysfs_dir = td
+                self.backend.features.rgb_keyboard = True
+                ok, _ = self.backend.set_rgb_keyboard_state("static", ["#102030"] * 4, 2, 1)
+                self.assertTrue(ok)
+                with open(mi, "r", encoding="utf-8") as fh:
+                    self.assertEqual(fh.read().strip(), "16 32 48")
+
+        tab = LightingTab(self.backend)
+        self.assertEqual(len(tab.zone_buttons), 4)
+        tab.close()
+
+    def test_check_for_updates_mocked(self):
+        """check_for_updates compara commit local/remoto e trata falha offline sem exceções."""
+        fake_resp = MagicMock()
+        fake_resp.read.return_value = json.dumps({
+            "sha": "abcdef1234567890",
+            "commit": {"message": "feat: teste", "committer": {"date": "2026-11-21T18:00:00Z"}},
+        }).encode("utf-8")
+        fake_resp.__enter__ = MagicMock(return_value=fake_resp)
+        fake_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("core.backend.subprocess.run", return_value=MagicMock(returncode=0, stdout="abcdef1\n")), \
+             patch("core.backend.urllib.request.urlopen", return_value=fake_resp):
+            res = self.backend.check_for_updates()
+            self.assertTrue(res["ok"])
+            self.assertTrue(res["up_to_date"])
+
+        with patch("core.backend.urllib.request.urlopen", side_effect=OSError("Network unreachable")):
+            res_err = self.backend.check_for_updates()
+            self.assertFalse(res_err["ok"])
+            self.assertIn("Não foi possível consultar", res_err["message"])
 
 
 if __name__ == "__main__":

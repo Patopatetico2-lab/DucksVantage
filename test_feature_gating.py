@@ -192,10 +192,16 @@ class TestFeatureGating(unittest.TestCase):
             self.assertTrue(bat.net_card.isHidden())
             self.assertTrue(bat.alert_card.isHidden())
 
-            # System Tray
+            # System Tray & Abas condicionais
             self.assertFalse(tray.profile_menu.menuAction().isVisible())
+            self.assertFalse(tray.presets_menu.menuAction().isVisible())
+            self.assertFalse(tray.refresh_menu.menuAction().isVisible())
+            self.assertFalse(tray.action_game_auto.isVisible())
+            self.assertFalse(tray.action_touchpad.isVisible())
             self.assertFalse(tray.action_eco_travel.isVisible())
             self.assertFalse(tray.action_conservation.isVisible())
+            self.assertTrue(win.lighting_nav_btn.isHidden())
+            self.assertTrue(win.about_tab.ac_bat_prefs_widget.isHidden())
 
             win._quit_app()
             win.close()
@@ -455,6 +461,34 @@ class TestFeatureGating(unittest.TestCase):
             dash.close()
             perf.close()
         backend.close()
+
+    def test_rgb_keyboard_tab_visible_only_when_supported(self):
+        """Botão/Aba de Iluminação RGB só aparece na sidebar quando rgb_keyboard=True."""
+        from ui_main import MainWindow
+
+        backend_no_rgb = _make_blank_backend(HardwareFeatures(rgb_keyboard=False))
+        with patch.object(backend_no_rgb, "get_bios_attributes", return_value=[]), \
+             patch.object(backend_no_rgb, "get_gpu_mux_info", return_value=GpuMuxInfo(available=False, available_modes=[], backend_name="none")), \
+             patch.object(backend_no_rgb, "get_display_refresh_info", return_value=DisplayRefreshInfo(available=False, current_hz=60, available_rates=[60], backend_name="drm-fallback")), \
+             patch.object(backend_no_rgb, "get_network_power_status", return_value=NetworkPowerStatus(wifi_available=False, eth_available=False)), \
+             patch.object(backend_no_rgb, "get_battery_info", return_value=BatteryInfo(available=False)):
+            win_off = MainWindow(backend_no_rgb)
+            self.assertTrue(win_off.lighting_nav_btn.isHidden())
+            win_off._quit_app()
+            win_off.close()
+        backend_no_rgb.close()
+
+        backend_rgb = _make_blank_backend(HardwareFeatures(rgb_keyboard=True))
+        with patch.object(backend_rgb, "get_bios_attributes", return_value=[]), \
+             patch.object(backend_rgb, "get_gpu_mux_info", return_value=GpuMuxInfo(available=False, available_modes=[], backend_name="none")), \
+             patch.object(backend_rgb, "get_display_refresh_info", return_value=DisplayRefreshInfo(available=False, current_hz=60, available_rates=[60], backend_name="drm-fallback")), \
+             patch.object(backend_rgb, "get_network_power_status", return_value=NetworkPowerStatus(wifi_available=False, eth_available=False)), \
+             patch.object(backend_rgb, "get_battery_info", return_value=BatteryInfo(available=False)):
+            win_on = MainWindow(backend_rgb)
+            self.assertFalse(win_on.lighting_nav_btn.isHidden())
+            win_on._quit_app()
+            win_on.close()
+        backend_rgb.close()
 
 
 if __name__ == "__main__":

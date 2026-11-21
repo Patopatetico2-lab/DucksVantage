@@ -32,6 +32,9 @@ class VantageOSDOverlay(QWidget):
         self._opacity = 1.0
         self._last_kwin_rule_pos = None
         self._pos_changed_for_remap = False
+        self.enabled = True
+        self.position_mode = "bottom-center"
+        self.duration_ms = 1800
 
         # Usa Qt.WindowType.Tool (xdg_toplevel no Wayland) em vez de ToolTip (xdg_popup),
         # garantindo que o OSD apareça mesmo sem janela-pai visível (ex: app minimizado na bandeja).
@@ -229,13 +232,29 @@ class VantageOSDOverlay(QWidget):
         except Exception:
             pass
 
+    def configure(self, enabled: bool = True, position: str = "bottom-center", duration_ms: int = 1800) -> None:
+        """Atualiza em tempo real se o OSD está ativo, posição na tela e duração."""
+        self.enabled = bool(enabled)
+        self.position_mode = position if position in ("bottom-center", "top-center", "top-right") else "bottom-center"
+        self.duration_ms = max(1000, min(4000, int(duration_ms)))
+        self.hide_timer.setInterval(self.duration_ms)
+        if not self.enabled and self.isVisible():
+            self.hide()
+
     def _reposition(self):
-        """Posiciona o pop-up centralizado na parte inferior/central da tela ativa com suporte a Wayland e X11."""
+        """Posiciona o pop-up na posição configurada na tela ativa com suporte a Wayland e X11."""
         screen = self._get_target_screen()
         if screen:
             geom = screen.availableGeometry() if hasattr(screen, "availableGeometry") else screen.geometry()
-            x = geom.x() + (geom.width() - self.width()) // 2
-            y = geom.y() + int(geom.height() * 0.78)
+            if self.position_mode == "top-center":
+                x = geom.x() + (geom.width() - self.width()) // 2
+                y = geom.y() + max(28, int(geom.height() * 0.06))
+            elif self.position_mode == "top-right":
+                x = geom.x() + max(20, geom.width() - self.width() - 32)
+                y = geom.y() + max(28, int(geom.height() * 0.06))
+            else:
+                x = geom.x() + (geom.width() - self.width()) // 2
+                y = geom.y() + int(geom.height() * 0.78)
 
             self._ensure_kwin_wayland_rule(x, y)
 
@@ -254,6 +273,8 @@ class VantageOSDOverlay(QWidget):
 
     def show_osd(self, title: str, subtitle: str, icon_path: str, accent_color: str):
         """Exibe o OSD com novos valores e reinicia o timer de permanência."""
+        if not self.enabled:
+            return
         self._accent_color = accent_color
         self.title_label.setText(title)
         self.title_label.setStyleSheet(f"color: {accent_color}; background: transparent; border: none;")

@@ -8,6 +8,7 @@ processadores Intel e AMD, GPUs NVIDIA, AMD Radeon e Intel integradas).
 
 import sys
 import os
+import json
 import argparse
 import psutil
 
@@ -34,9 +35,74 @@ def _terminate_previous_instances() -> None:
 
 def run_cli_mode(args, backend: HardwareBackend):
     """Executa ações via linha de comando (sem interface gráfica)."""
+    use_json = bool(getattr(args, "json", False))
+
     if args.status:
+        if use_json:
+            cpu = backend.get_cpu_metrics()
+            gpu = backend.get_gpu_metrics()
+            bat = backend.get_battery_info()
+            payload = {
+                "model": backend.system_info.display_model_name,
+                "profile": backend.get_platform_profile(),
+                "active_game": backend.get_active_game(),
+                "cpu": {"temp_c": cpu.temperature_c, "freq_mhz": cpu.frequency_mhz, "governor": cpu.governor},
+                "gpu": {"available": gpu.available, "temp_c": gpu.temperature_c, "power_w": gpu.power_draw_w, "state": gpu.runtime_state},
+                "battery": {"available": bat.available, "percent": bat.capacity_percent, "status": bat.status, "ac": bat.ac_connected, "eta": bat.estimated_label},
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return
         from test_backend import main as run_test
         run_test()
+        return
+
+    if getattr(args, "diagnostic", False):
+        print(backend.generate_hardware_diagnostic_report())
+        return
+
+    if getattr(args, "list_presets", False):
+        presets = backend.get_user_presets()
+        if use_json:
+            print(json.dumps(presets, ensure_ascii=False, indent=2))
+        elif not presets:
+            print("Nenhum preset personalizado salvo.")
+        else:
+            for p in presets:
+                print(f"- {p.get('id')}: {p.get('name')} ({backend.format_user_preset_summary(p)})")
+        return
+
+    if getattr(args, "cycle_profile", False):
+        ok, new_prof = backend.cycle_next_profile()
+        if use_json:
+            print(json.dumps({"ok": ok, "profile": new_prof}, ensure_ascii=False))
+        else:
+            print(f"[{'OK' if ok else 'ERRO'}] Perfil: {new_prof}")
+        return
+
+    if getattr(args, "cycle_hz", False):
+        ok, new_hz, msg = backend.cycle_refresh_rate()
+        if use_json:
+            print(json.dumps({"ok": ok, "hz": new_hz, "message": msg}, ensure_ascii=False))
+        else:
+            print(f"[{'OK' if ok else 'ERRO'}] {new_hz} Hz: {msg}")
+        return
+
+    if getattr(args, "apply_preset", None):
+        query = str(args.apply_preset).strip()
+        presets = backend.get_user_presets()
+        match = next(
+            (p for p in presets if p.get("id") == query or str(p.get("name", "")).lower() == query.lower()),
+            None,
+        )
+        if not match:
+            msg = f"Preset '{query}' não encontrado."
+            print(json.dumps({"ok": False, "message": msg}, ensure_ascii=False) if use_json else f"[ERRO] {msg}")
+            return
+        ok, msg = backend.apply_user_preset(str(match["id"]), allow_elevation=False)
+        if use_json:
+            print(json.dumps({"ok": ok, "preset": match["name"], "message": msg}, ensure_ascii=False))
+        else:
+            print(f"[{'OK' if ok else 'ERRO'}] Preset '{match['name']}': {msg}")
         return
 
     if args.profile:
@@ -102,11 +168,23 @@ def main():
         help="Inicia o aplicativo silenciosamente na bandeja do sistema (System Tray) sem abrir a janela principal"
     )
     parser.add_argument("--install-udev", action="store_true", help="Instala as regras UDEV para operar sem sudo")
+    parser.add_argument("--cycle-profile", action="store_true", help="Cicla para o próximo perfil térmico (Fn+Q)")
+    parser.add_argument("--cycle-hz", action="store_true", help="Alterna a taxa de atualização do painel (Fn+R)")
+    parser.add_argument("--apply-preset", type=str, help="Aplica um preset personalizado pelo nome ou ID")
+    parser.add_argument("--list-presets", action="store_true", help="Lista todos os presets personalizados salvos")
+    parser.add_argument("--diagnostic", action="store_true", help="Imprime o relatório técnico de diagnóstico de hardware")
+    parser.add_argument("--json", action="store_true", help="Formata saída CLI compatível em JSON (status, presets, ações)")
     args = parser.parse_args()
 
-    if args.status or args.profile or args.conservation or args.install_udev or args.autostart:
+    if (
+        args.status or args.profile or args.conservation or args.install_udev or args.autostart
+        or args.cycle_profile or args.cycle_hz or args.apply_preset or args.list_presets or args.diagnostic
+    ):
         backend = HardwareBackend()
-        run_cli_mode(args, backend)
+        try:
+            run_cli_mode(args, backend)
+        finally:
+            backend.close()
         return
 
     if not is_qt_available():

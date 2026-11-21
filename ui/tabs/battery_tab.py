@@ -149,13 +149,17 @@ class BatteryHealthChart(QWidget):
 
         # Desenhar nós, valores em Wh e rótulos do eixo X (Data + Ciclos)
         for idx, (pt, entry) in enumerate(zip(points, self.entries)):
-            painter.setPen(QPen(QColor("#0b0f19"), 2))
-            painter.setBrush(QBrush(QColor(ThemeTokens.STATUS_GREEN)))
+            if getattr(entry, "is_estimated", False):
+                painter.setPen(QPen(QColor("#94a3b8"), 2))
+                painter.setBrush(QBrush(QColor("#0d1322")))
+            else:
+                painter.setPen(QPen(QColor("#0b0f19"), 2))
+                painter.setBrush(QBrush(QColor(ThemeTokens.STATUS_GREEN)))
             painter.drawEllipse(pt, 4.5, 4.5)
 
             # Valor de Wh e % acima do ponto
             painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-            painter.setPen(QColor(ThemeTokens.TEXT_WHITE_100))
+            painter.setPen(QColor("#94a3b8" if getattr(entry, "is_estimated", False) else ThemeTokens.TEXT_WHITE_100))
             lbl_val = f"{entry.energy_full_wh:.1f}Wh ({entry.health_percent:.1f}%)"
             painter.drawText(
                 int(pt.x() - 48), int(pt.y() - 20), 96, 16,
@@ -171,6 +175,15 @@ class BatteryHealthChart(QWidget):
                 int(pt.x() - 38), int(pad_top + plot_h + 5), 76, 32,
                 int(Qt.AlignmentFlag.AlignCenter), x_lbl
             )
+
+        # Legenda discreta no canto superior direito
+        painter.setFont(QFont("Segoe UI", 8))
+        painter.setPen(QColor("#94a3b8"))
+        painter.drawText(
+            int(w - 230), 6, 214, 16,
+            int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
+            "● Medição Real   ○ Estimativa Inicial"
+        )
 
         painter.end()
 
@@ -737,11 +750,12 @@ class BatteryTab(QWidget):
         # 3. Medidor Circular e 6 Cards Elétricos
         if bat.available:
             ac_str = "Tomada AC" if bat.ac_connected else "Na Bateria"
+            est_sub = bat.estimated_label or f"{ac_str} • {bat.status}"
             self.bat_gauge.set_data(
                 percent=float(bat.capacity_percent),
                 center_val=f"{bat.energy_now_wh:.1f}",
                 center_unit="Wh",
-                bottom_sub=f"{ac_str} • {bat.status}"
+                bottom_sub=est_sub
             )
 
             raw_st = bat.status.strip()
@@ -757,7 +771,8 @@ class BatteryTab(QWidget):
 
             self.val_health.setText(f"{bat.health_percent:.1f}% ({bat.energy_full_wh:.1f} / {bat.energy_design_wh:.1f} Wh)")
             self.val_cycles.setText(f"{bat.cycle_count} ciclos ({bat.technology})")
-            self.val_power.setText(f"{bat.power_draw_w:.2f} W ({raw_st})")
+            pwr_extra = f" • {bat.estimated_label}" if bat.estimated_label else f" ({raw_st})"
+            self.val_power.setText(f"{bat.power_draw_w:.2f} W{pwr_extra}")
             self.val_voltage.setText(f"{bat.voltage_v:.2f} V")
             self.val_full_wh.setText(f"{bat.energy_now_wh:.2f} / {bat.energy_full_wh:.2f} Wh")
             self.val_design_wh.setText(f"{bat.energy_design_wh:.2f} Wh ({bat.manufacturer} {bat.model_name})")

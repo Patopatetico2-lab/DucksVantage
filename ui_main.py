@@ -28,6 +28,7 @@ from ui.dashboard import VantageDashboardView
 from ui.tabs.performance_tab import PerformanceTab
 from ui.tabs.battery_tab import BatteryTab
 from ui.tabs.about_tab import AboutTab
+from ui.tabs.lighting_tab import LightingTab
 
 ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icons")
 RESOURCE_ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "icons")
@@ -85,23 +86,26 @@ class MainWindow(QMainWindow):
         self.sidebar, self.nav_buttons, self.nav_icon_pairs = self._create_sidebar()
         workspace.addWidget(self.sidebar)
 
-        # Pilha de 4 Abas Essenciais (Fim das Duplicações)
+        # Pilha de Abas (Dashboard, Desempenho, Bateria, Sobre e Iluminação RGB condicional)
         self.stack = QStackedWidget()
         self.dashboard_tab = VantageDashboardView(self.backend)
         self.performance_tab = PerformanceTab(self.backend)
         self.battery_tab = BatteryTab(self.backend)
         self.about_tab = AboutTab(self.backend)
+        self.lighting_tab = LightingTab(self.backend)
 
         self.stack.addWidget(self.dashboard_tab)    # Índice 0: Dashboard
         self.stack.addWidget(self.performance_tab)  # Índice 1: Desempenho
         self.stack.addWidget(self.battery_tab)      # Índice 2: Alimentação & Bateria
         self.stack.addWidget(self.about_tab)        # Índice 3: Sobre o Dispositivo
+        self.stack.addWidget(self.lighting_tab)     # Índice 4: Iluminação RGB 4-Zonas
 
         workspace.addWidget(self.stack, stretch=1)
         main_layout.addLayout(workspace, stretch=1)
 
         # 3. Pop-up OSD Não-Intrusivo (para Fn+Q, Auto-Switch Jogo, Modo Viagem e Tecla Copilot)
         self.osd = VantageOSDOverlay()
+        self._apply_osd_preferences()
 
         # 4. Bandeja do Sistema (System Tray Manager)
         self.tray_manager = SystemTrayManager(self.backend, self)
@@ -184,27 +188,34 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 16, 0, 16)
         layout.setSpacing(4)
 
-        # 4 Abas Essenciais (Sem aba duplicada de Iluminação)
+        # Abas Essenciais + Aba RGB condicional (exibida só em hardware RGB 4-zonas)
         nav_items = [
             ("Dashboard", "nav_dashboard.svg", "nav_dashboard_active.svg", 0),
             ("Desempenho", "nav_performance.svg", "nav_performance_active.svg", 1),
             ("Alimentação & Bateria", "nav_battery.svg", "nav_battery_active.svg", 2),
+            ("Iluminação RGB", "nav_lighting.svg", "nav_lighting_active.svg", 4),
             ("Sobre o Dispositivo", "nav_about.svg", "nav_about_active.svg", 3),
         ]
 
         buttons = []
         icon_pairs = []
+        self.lighting_nav_btn = None
         for text, inactive_icon, active_icon, index in nav_items:
             btn = QPushButton(f"  {text}")
             btn.setObjectName("navButton")
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setProperty("tab_index", index)
 
             ic_off = get_asset_icon(inactive_icon)
             ic_on = get_asset_icon(active_icon)
             if not ic_off.isNull():
                 btn.setIcon(ic_off)
                 btn.setIconSize(QSize(20, 20))
+
+            if index == 4:
+                btn.setVisible(bool(self.backend.features.rgb_keyboard))
+                self.lighting_nav_btn = btn
 
             btn.clicked.connect(lambda checked, idx=index: self._switch_tab(idx))
             layout.addWidget(btn)
@@ -231,7 +242,10 @@ class MainWindow(QMainWindow):
     def _switch_tab(self, index: int):
         self.stack.setCurrentIndex(index)
         for i, btn in enumerate(self.nav_buttons):
-            is_sel = (i == index)
+            tab_idx = btn.property("tab_index")
+            if tab_idx is None:
+                tab_idx = i
+            is_sel = (int(tab_idx) == index)
             btn.setChecked(is_sel)
             btn.setProperty("active", "true" if is_sel else "false")
             ic_off, ic_on = self.nav_icon_pairs[i]
@@ -285,21 +299,29 @@ class MainWindow(QMainWindow):
         self.dashboard_tab.auto_power_toggled.connect(self._apply_auto_power)
         self.dashboard_tab.kbd_backlight_requested.connect(self._apply_kbd_backlight)
 
-        # 6. Aba Sobre / UDEV / Autostart XDG
+        # 6. Aba Sobre / UDEV / Autostart XDG / Preferências
         self.about_tab.permissions_updated.connect(self.about_tab.update_permission_status)
         self.about_tab.autostart_toggled.connect(self._on_autostart_changed)
+        self.about_tab.preferences_changed.connect(self._on_preferences_changed)
+        self.about_tab.test_osd_requested.connect(self._on_test_osd_requested)
         self.tray_manager.autostart_toggled.connect(self._apply_autostart)
 
-        # 7. Bandeja do Sistema
+        # 7. Bandeja do Sistema (Ações rápidas e Sync)
+        self.tray_manager.preset_requested.connect(self._apply_preset_from_tray)
+        self.tray_manager.refresh_rate_requested.connect(self._apply_refresh_rate_from_tray)
+        self.tray_manager.game_auto_toggled.connect(self._apply_game_auto)
+        self.tray_manager.touchpad_toggled.connect(self._apply_touchpad)
         self.tray_manager.show_window_requested.connect(self._toggle_visibility)
         self.tray_manager.quit_requested.connect(self._quit_app)
 
-        # 8. RECURSOS 1, 2 e 3: GPU MUX Switch, Taxa de Atualização, LCD Overdrive e Presets
+        # 8. RECURSOS 1, 2 e 3: GPU MUX Switch, Taxa de Atualização, LCD Overdrive, Presets e RGB
         self.performance_tab.gpu_mux_changed.connect(self._on_gpu_mux_changed)
         self.performance_tab.refresh_rate_changed.connect(self._on_refresh_rate_changed)
         self.performance_tab.lcd_overdrive_changed.connect(self._on_lcd_overdrive_changed)
         self.performance_tab.preset_applied.connect(self._on_user_preset_applied)
+        self.performance_tab.presets_updated.connect(self._on_presets_updated)
         self.dashboard_tab.lcd_overdrive_toggled.connect(self._apply_lcd_overdrive)
+        self.lighting_tab.rgb_changed.connect(self._on_rgb_changed)
 
     def _register_qt_shortcuts(self):
         """Registra os atalhos de teclado (incluindo F23 / Meta+Shift+F23 da tecla Copilot)."""
@@ -367,6 +389,60 @@ class MainWindow(QMainWindow):
 
     def _on_refresh_rate_changed(self, hz: int):
         self.osd.notify_refresh_rate(hz)
+        self.tray_manager.rebuild_refresh_menu()
+        self.tray_manager.update_tray_state()
+
+    def _apply_osd_preferences(self):
+        self.osd.configure(
+            enabled=self.backend.get_osd_enabled(),
+            position=self.backend.get_osd_position(),
+            duration_ms=self.backend.get_osd_duration_ms(),
+        )
+
+    def _on_preferences_changed(self):
+        self._apply_osd_preferences()
+        self.performance_tab._rebuild_user_presets_list()
+        self.performance_tab._populate_game_preset_combo()
+        self.performance_tab._rebuild_app_rules_list()
+        self.performance_tab._rebuild_game_ignore_list()
+        self.performance_tab.refresh_profile_state()
+        self.tray_manager.rebuild_presets_menu()
+        self.tray_manager.rebuild_refresh_menu()
+        self.tray_manager.update_tray_state()
+
+    def _on_test_osd_requested(self):
+        self.osd.notify_feature_osd(
+            title="Teste de Pop-up OSD",
+            subtitle=f"Posição: {self.backend.get_osd_position()} • {self.backend.get_osd_duration_ms()} ms",
+            icon_name="ducksvantage_logo.svg",
+            accent_color=ThemeTokens.BORDER_CYAN
+        )
+
+    def _on_presets_updated(self):
+        self.tray_manager.rebuild_presets_menu()
+
+    def _apply_preset_from_tray(self, preset_id: str, preset_name: str):
+        ok, msg = self.backend.apply_user_preset(preset_id)
+        if ok:
+            self._on_user_preset_applied(preset_name, msg)
+        else:
+            QMessageBox.warning(self, "Preset Personalizado", f"Não foi possível aplicar o preset '{preset_name}':\n{msg}")
+
+    def _apply_refresh_rate_from_tray(self, hz: int):
+        ok, msg = self.backend.set_refresh_rate(hz)
+        if ok:
+            self._on_refresh_rate_changed(hz)
+            self.performance_tab.refresh_display_state()
+        else:
+            QMessageBox.warning(self, "Taxa de Atualização", msg)
+
+    def _on_rgb_changed(self, msg: str):
+        self.osd.notify_feature_osd(
+            title="Iluminação RGB 4-Zonas",
+            subtitle=msg[:58],
+            icon_name="nav_lighting_active.svg",
+            accent_color=ThemeTokens.BORDER_CYAN
+        )
 
     def _apply_lcd_overdrive(self, enabled: bool):
         ok, msg = self.backend.set_lcd_overdrive(enabled)
@@ -455,6 +531,7 @@ class MainWindow(QMainWindow):
             accent_color=ThemeTokens.STATUS_GREEN if enable else ThemeTokens.TEXT_LIGHT_GRAY
         )
         self.dashboard_tab.update_telemetry()
+        self.tray_manager.update_tray_state()
 
     def _apply_conservation(self, active: bool):
         success, msg = self.backend.set_conservation_mode(active)
@@ -517,6 +594,10 @@ class MainWindow(QMainWindow):
         if not ok and getattr(self.dashboard_tab, "item_touchpad", None):
             self.dashboard_tab.item_touchpad.set_checked(not locked)
             QMessageBox.warning(self, "Touchpad", f"Não foi possível alterar o estado do Touchpad:\n{msg}")
+        else:
+            if getattr(self.dashboard_tab, "item_touchpad", None):
+                self.dashboard_tab.item_touchpad.set_checked(locked)
+            self.tray_manager.update_tray_state()
 
     def _apply_auto_power(self, enabled: bool):
         self.backend.set_auto_power_transition(enabled)
@@ -662,12 +743,32 @@ class MainWindow(QMainWindow):
                     icon_name="game_controller.svg",
                     accent_color=ThemeTokens.THERMAL_BALANCED
                 )
+                summary = game_ev.get("session_summary")
+                if summary and self.backend.get_game_session_summary_enabled():
+                    dur_s = int(summary.get("duration_sec", 0))
+                    mins, secs = divmod(dur_s, 60)
+                    hrs, rem_m = divmod(mins, 60)
+                    dur_str = f"{hrs}h {rem_m:02d}min" if hrs > 0 else f"{mins}m {secs:02d}s"
+                    c_pk = summary.get("peak_cpu_c", 0.0)
+                    g_pk = summary.get("peak_gpu_c", 0.0)
+                    sum_msg = f"Duração: {dur_str} • Pico CPU: {c_pk:.0f}°C"
+                    if g_pk > 0:
+                        sum_msg += f" | Pico GPU: {g_pk:.0f}°C"
+                    self.tray_manager.send_native_notification(f"Resumo da Sessão: {g_name}", sum_msg)
             if self.backend.features.touchpad_control and getattr(self.dashboard_tab, "item_touchpad", None):
                 self.dashboard_tab.item_touchpad.set_checked(self.backend.get_touchpad_status())
             self._update_header_profile_pill()
             self.dashboard_tab.update_telemetry()
             self.performance_tab.refresh_profile_state()
             self.tray_manager.update_tray_state()
+
+        if self.backend.get_active_game():
+            cpu_m = self.backend.get_cpu_metrics()
+            gpu_m = self.backend.get_gpu_metrics()
+            self.backend.update_game_session_peaks(
+                cpu_m.temperature_c,
+                gpu_m.temperature_c if gpu_m.available else 0.0
+            )
 
         # 3. Verificar Alertas Inteligentes de Ciclo de Vida e Temperatura da Bateria
         bat_alerts = self.backend.check_battery_smart_alerts(force_test=False)
@@ -761,18 +862,20 @@ class MainWindow(QMainWindow):
             self.fast_poll_timer.stop()
         if hasattr(self, "telemetry_timer"):
             self.telemetry_timer.stop()
+        if hasattr(self, "about_tab") and hasattr(self.about_tab, "cleanup_workers"):
+            self.about_tab.cleanup_workers()
         if hasattr(self, "backend") and self.backend:
             self.backend.close()
         QApplication.quit()
 
     def closeEvent(self, event):
-        """Ao fechar a janela, minimiza para a bandeja se disponível, ou encerra o app."""
+        """Ao fechar a janela, minimiza para a bandeja se configurado e disponível, ou encerra o app."""
         tray_available = (
             QSystemTrayIcon.isSystemTrayAvailable()
             and self.tray_manager is not None
             and self.tray_manager.is_available()
         )
-        if not self._is_quitting and tray_available:
+        if not self._is_quitting and tray_available and self.backend.get_minimize_to_tray():
             event.ignore()
             self.hide()
         else:

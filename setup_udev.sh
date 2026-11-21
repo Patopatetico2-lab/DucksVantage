@@ -89,6 +89,9 @@ if [ "$EUID" -eq 0 ]; then
     chmod 0666 /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null || true
     chmod 0666 /sys/class/net/*/device/power/control 2>/dev/null || true
     chmod 0644 /dev/input/by-path/*kbd* /dev/input/by-path/*VPC* 2>/dev/null || true
+    for hdir in /sys/class/hidraw/hidraw*; do
+        [ -f "$hdir/device/uevent" ] && grep -qi "048D" "$hdir/device/uevent" && chmod 0666 "/dev/$(basename "$hdir")" 2>/dev/null || true
+    done
 else
     echo "[i] Para instalar as regras de permissão UDEV em /etc/udev/rules.d/, execute: sudo $0"
 fi

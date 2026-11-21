@@ -513,6 +513,7 @@ class PerformanceTab(QWidget):
     refresh_rate_changed = Signal(int)
     lcd_overdrive_changed = Signal(bool)
     preset_applied = Signal(str, str)
+    presets_updated = Signal()
 
     def __init__(self, backend, parent=None):
         super().__init__(parent)
@@ -1363,6 +1364,81 @@ class PerformanceTab(QWidget):
         self.game_touchpad_row_widget.setVisible(bool(feat.touchpad_control))
         gopts_layout.addWidget(self.game_touchpad_row_widget)
 
+        # Vinculação opcional de Preset 1-Clique ao Auto-Switch em Jogos
+        self.game_preset_row_widget = QWidget()
+        gp_row = QHBoxLayout(self.game_preset_row_widget)
+        gp_row.setContentsMargins(0, 0, 0, 0)
+        gp_row.setSpacing(10)
+        gp_lbl = QLabel("Ou aplicar um Preset personalizado completo ao abrir jogos:")
+        gp_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        gp_row.addWidget(gp_lbl)
+        gp_row.addStretch()
+
+        self.combo_game_target_preset = QComboBox()
+        self.combo_game_target_preset.setMinimumWidth(230)
+        self.combo_game_target_preset.setFixedHeight(28)
+        self.combo_game_target_preset.setStyleSheet(self.combo_game_target_profile.styleSheet())
+        self._populate_game_preset_combo()
+        self.combo_game_target_preset.currentIndexChanged.connect(self._on_game_target_preset_changed)
+        gp_row.addWidget(self.combo_game_target_preset)
+        gopts_layout.addWidget(self.game_preset_row_widget)
+
+        # Lista de Exclusões (Ignore List) do Auto-Switch
+        self.game_ignore_box = QWidget()
+        gi_v = QVBoxLayout(self.game_ignore_box)
+        gi_v.setContentsMargins(0, 2, 0, 0)
+        gi_v.setSpacing(6)
+        gi_row = QHBoxLayout()
+        gi_row.setSpacing(8)
+        gi_lbl = QLabel("Ignorar processos no Auto-Switch:")
+        gi_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        gi_row.addWidget(gi_lbl)
+
+        self.edit_game_ignore = QLineEdit()
+        self.edit_game_ignore.setPlaceholderText("Ex: launcher.exe, java, wineboot")
+        self.edit_game_ignore.setFixedHeight(26)
+        self.edit_game_ignore.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: #0d1322;
+                color: {ThemeTokens.TEXT_WHITE_100};
+                border: 1px solid {ThemeTokens.BORDER_DEFAULT};
+                border-radius: 6px;
+                padding: 2px 8px;
+                font-size: 11px;
+            }}
+        """)
+        gi_row.addWidget(self.edit_game_ignore, stretch=1)
+
+        self.btn_add_game_ignore = QPushButton("Ignorar")
+        self.btn_add_game_ignore.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_add_game_ignore.setFixedHeight(26)
+        self.btn_add_game_ignore.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #192338;
+                color: {ThemeTokens.TEXT_LIGHT_GRAY};
+                border: 1px solid {ThemeTokens.BORDER_DEFAULT};
+                border-radius: 5px;
+                padding: 2px 10px;
+                font-size: 10px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                border-color: {ThemeTokens.BORDER_CYAN};
+                color: {ThemeTokens.TEXT_WHITE_100};
+            }}
+        """)
+        self.btn_add_game_ignore.clicked.connect(self._on_add_game_ignore)
+        gi_row.addWidget(self.btn_add_game_ignore)
+        gi_v.addLayout(gi_row)
+
+        self.ignore_list_container = QWidget()
+        self.ignore_list_layout = QHBoxLayout(self.ignore_list_container)
+        self.ignore_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.ignore_list_layout.setSpacing(6)
+        gi_v.addWidget(self.ignore_list_container)
+        self._rebuild_game_ignore_list()
+        gopts_layout.addWidget(self.game_ignore_box)
+
         rules_layout.addWidget(self.game_switch_opts_box)
 
         # Barra para adicionar nova regra de aplicativo
@@ -1388,6 +1464,27 @@ class PerformanceTab(QWidget):
         """)
         self._populate_running_apps_combo()
         add_row.addWidget(self.combo_app_exec, stretch=1)
+
+        self.btn_refresh_procs = QPushButton("Atualizar")
+        self.btn_refresh_procs.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_refresh_procs.setFixedHeight(30)
+        self.btn_refresh_procs.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #192338;
+                color: {ThemeTokens.TEXT_LIGHT_GRAY};
+                border: 1px solid {ThemeTokens.BORDER_DEFAULT};
+                border-radius: 6px;
+                padding: 4px 10px;
+                font-size: 10px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                border-color: {ThemeTokens.BORDER_CYAN};
+                color: {ThemeTokens.TEXT_WHITE_100};
+            }}
+        """)
+        self.btn_refresh_procs.clicked.connect(self._populate_running_apps_combo)
+        add_row.addWidget(self.btn_refresh_procs)
 
         self.edit_app_label = QLineEdit()
         self.edit_app_label.setPlaceholderText("Descrição opcional (ex: Blender 3D Render)")
@@ -2104,6 +2201,68 @@ class PerformanceTab(QWidget):
     def _on_game_lock_touchpad_toggled(self, checked: bool):
         self.backend.set_game_auto_lock_touchpad(checked)
 
+    def _populate_game_preset_combo(self):
+        self.combo_game_target_preset.blockSignals(True)
+        self.combo_game_target_preset.clear()
+        self.combo_game_target_preset.addItem("Usar apenas perfil térmico padrão acima", "")
+        for p in self.backend.get_user_presets():
+            self.combo_game_target_preset.addItem(f"Preset: {p['name']}", str(p["id"]))
+        cur_id = self.backend.get_game_target_preset_id()
+        idx = self.combo_game_target_preset.findData(cur_id)
+        self.combo_game_target_preset.setCurrentIndex(idx if idx >= 0 else 0)
+        self.combo_game_target_preset.blockSignals(False)
+
+    def _on_game_target_preset_changed(self):
+        pid = str(self.combo_game_target_preset.currentData() or "")
+        self.backend.set_game_target_preset_id(pid)
+
+    def _rebuild_game_ignore_list(self):
+        while self.ignore_list_layout.count():
+            item = self.ignore_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        items = self.backend.get_game_ignore_list()
+        if not items:
+            lbl = QLabel("Nenhum processo na lista de exclusões.")
+            lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_40}; font-size: 10px;")
+            self.ignore_list_layout.addWidget(lbl)
+            self.ignore_list_layout.addStretch()
+            return
+        for ig in items:
+            tag = QPushButton(f"{ig}  ×")
+            tag.setCursor(Qt.CursorShape.PointingHandCursor)
+            tag.setFixedHeight(22)
+            tag.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: #192338;
+                    color: {ThemeTokens.TEXT_LIGHT_GRAY};
+                    border: 1px solid {ThemeTokens.BORDER_DEFAULT};
+                    border-radius: 11px;
+                    padding: 1px 10px;
+                    font-size: 10px;
+                }}
+                QPushButton:hover {{
+                    border-color: {ThemeTokens.LEGION_RED};
+                    color: {ThemeTokens.LEGION_RED};
+                }}
+            """)
+            tag.clicked.connect(lambda _c=False, term=ig: self._on_remove_game_ignore(term))
+            self.ignore_list_layout.addWidget(tag)
+        self.ignore_list_layout.addStretch()
+
+    def _on_add_game_ignore(self):
+        term = self.edit_game_ignore.text().strip()
+        ok, msg = self.backend.add_game_ignore_item(term)
+        if not ok:
+            QMessageBox.warning(self, "Lista de Exclusões", msg)
+            return
+        self.edit_game_ignore.clear()
+        self._rebuild_game_ignore_list()
+
+    def _on_remove_game_ignore(self, term: str):
+        self.backend.remove_game_ignore_item(term)
+        self._rebuild_game_ignore_list()
+
     # =========================================================================
     # Métodos de Perfis Personalizados Salváveis (Presets em 1 Clique)
     # =========================================================================
@@ -2193,6 +2352,8 @@ class PerformanceTab(QWidget):
             return
         self.edit_preset_name.clear()
         self._rebuild_user_presets_list()
+        self._populate_game_preset_combo()
+        self.presets_updated.emit()
 
     def _on_apply_user_preset(self, preset_id: str, preset_name: str):
         ok, msg = self.backend.apply_user_preset(preset_id)
@@ -2205,6 +2366,8 @@ class PerformanceTab(QWidget):
     def _on_delete_user_preset(self, preset_id: str):
         self.backend.delete_user_preset(preset_id)
         self._rebuild_user_presets_list()
+        self._populate_game_preset_combo()
+        self.presets_updated.emit()
 
     # =========================================================================
     # Métodos do Mapeador de Teclas Personalizadas (Copilot Key Remapper)
@@ -2471,6 +2634,12 @@ class PerformanceTab(QWidget):
         self.sw_game_lock_touchpad.blockSignals(True)
         self.sw_game_lock_touchpad.setChecked(self.backend.get_game_auto_lock_touchpad())
         self.sw_game_lock_touchpad.blockSignals(False)
+
+        self.combo_game_target_preset.blockSignals(True)
+        cur_gp = self.backend.get_game_target_preset_id()
+        gp_idx = self.combo_game_target_preset.findData(cur_gp)
+        self.combo_game_target_preset.setCurrentIndex(gp_idx if gp_idx >= 0 else 0)
+        self.combo_game_target_preset.blockSignals(False)
 
         for gname, btn in self.gov_buttons.items():
             is_active = (gname == cpu.governor)

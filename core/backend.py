@@ -22,8 +22,14 @@ import time
 import platform
 import subprocess
 import shutil
+import fcntl
+import urllib.request
+import urllib.error
 import psutil
 from typing import List, Dict, Optional, Tuple, Any
+
+APP_VERSION = "2.1.0"
+GITHUB_REPO = "Patopatetico2-lab/DucksVantage"
 
 from core.models import (
     CPUMetrics, GPUMetrics, RAMMetrics, StorageDevice, FanMetrics,
@@ -174,8 +180,16 @@ class HardwareBackend:
         self._pre_game_profile: str = "balanced"
         self._pre_game_governor: str = "powersave"
         self._pre_game_refresh_hz: Optional[int] = None
+        self._pre_game_turbo: Optional[bool] = None
+        self._pre_game_tdp: Optional[Tuple[int, int]] = None
         self._game_changed_refresh: bool = False
+        self._game_changed_turbo: bool = False
+        self._game_changed_tdp: bool = False
         self._game_locked_touchpad: bool = False
+        self._game_session_start_ts: float = 0.0
+        self._game_peak_cpu_c: float = 0.0
+        self._game_peak_gpu_c: float = 0.0
+        self._rgb_backend_name: str = "none"
 
         # Estado da Curva de Ventoinhas e Undervolt Seguro
         self._last_applied_pwm: int = -1
@@ -505,6 +519,9 @@ class HardwareBackend:
         # 12. LCD Overdrive e Firmware Attributes Lenovo BIOS WMI
         self._scan_bios_attributes()
 
+        # 12.5 Teclado RGB 4-Zonas (Auto-Discovery USB ITE hidraw / multicolor sysfs)
+        self._scan_rgb_keyboard()
+
         # 13. Modo Viagem (Eco-Mode Extremo): só habilita se houver ao menos 1 recurso de economia real
         self.features.eco_travel = bool(
             self.features.platform_profile
@@ -629,6 +646,8 @@ class HardwareBackend:
             caps.append({"name": "Always-On USB", "detail": "Carga USB em repouso"})
         if f.kbd_backlight:
             caps.append({"name": "Luz do Teclado", "detail": f"0..{f.kbd_max_brightness} níveis"})
+        if f.rgb_keyboard:
+            caps.append({"name": "Teclado RGB 4-Zonas", "detail": f"Backend {self._rgb_backend_name}"})
         if f.touchpad_control:
             caps.append({"name": "Trava do Touchpad", "detail": "Controle ativo"})
         if f.turbo_boost:
@@ -1200,11 +1219,11 @@ class HardwareBackend:
             # Transição Automática de Energia (AC vs Bateria)
             if self.get_auto_power_transition() and self.features.platform_profile:
                 if current_ac == 0:
-                    target = self.settings.get("battery_profile", "low-power")
-                    self.set_platform_profile(target)
+                    target = self.get_battery_profile()
+                    self.set_platform_profile(target, allow_elevation=False)
                 else:
-                    target = self.settings.get("ac_profile", "performance")
-                    self.set_platform_profile(target)
+                    target = self.get_ac_profile()
+                    self.set_platform_profile(target, allow_elevation=False)
 
             # Transição Automática de Taxa de Atualização de Tela (AC vs Bateria)
             if self.get_auto_refresh_rate_transition() and self.features.refresh_rate:
@@ -1382,8 +1401,15 @@ class HardwareBackend:
             self._active_game_name = None
             self._active_rule_exec = None
             self._pre_game_refresh_hz = None
+            self._pre_game_turbo = None
+            self._pre_game_tdp = None
             self._game_changed_refresh = False
+            self._game_changed_turbo = False
+            self._game_changed_tdp = False
             self._game_locked_touchpad = False
+            self._game_session_start_ts = 0.0
+            self._game_peak_cpu_c = 0.0
+            self._game_peak_gpu_c = 0.0
 
     def get_game_target_profile(self) -> str:
         """Retorna o perfil térmico preferido ao detectar jogos ('performance' ou 'max-power')."""
@@ -1418,6 +1444,54 @@ class HardwareBackend:
     def set_game_auto_lock_touchpad(self, enable: bool) -> None:
         self.settings.set("game_auto_lock_touchpad", bool(enable))
 
+    def get_game_target_preset_id(self) -> str:
+        return str(self.settings.get("game_target_preset_id", "") or "").strip()
+
+    def set_game_target_preset_id(self, preset_id: str) -> None:
+        self.settings.set("game_target_preset_id", str(preset_id or "").strip())
+
+    def get_game_session_summary_enabled(self) -> bool:
+        return bool(self.settings.get("game_session_summary_enabled", True))
+
+    def set_game_session_summary_enabled(self, enable: bool) -> None:
+        self.settings.set("game_session_summary_enabled", bool(enable))
+
+    def get_game_ignore_list(self) -> List[str]:
+        raw = self.settings.get("game_ignore_list", [])
+        if not isinstance(raw, list):
+            return []
+        return [str(x).strip().lower() for x in raw if str(x).strip()]
+
+    def add_game_ignore_item(self, name: str) -> Tuple[bool, str]:
+        clean = " ".join((name or "").split()).strip().lower()
+        if not clean:
+            return False, "Informe o executável ou termo a ignorar (ex: launcher.exe, java)."
+        items = self.get_game_ignore_list()
+        if clean in items:
+            return False, f"'{clean}' já está na lista de exclusões."
+        items.append(clean)
+        self.settings.set("game_ignore_list", items)
+        self._cached_running_game = None
+        self._last_game_scan_time = 0.0
+        return True, f"'{clean}' adicionado às exclusões."
+
+    def remove_game_ignore_item(self, name: str) -> Tuple[bool, str]:
+        clean = (name or "").strip().lower()
+        items = [x for x in self.get_game_ignore_list() if x != clean]
+        self.settings.set("game_ignore_list", items)
+        self._cached_running_game = None
+        self._last_game_scan_time = 0.0
+        return True, f"'{clean}' removido das exclusões."
+
+    def update_game_session_peaks(self, cpu_temp: float, gpu_temp: float) -> None:
+        """Atualiza os picos térmicos registrados durante a sessão de jogo ativa."""
+        if not self._active_game_name or self._active_rule_exec or self._game_session_start_ts <= 0:
+            return
+        if cpu_temp > self._game_peak_cpu_c:
+            self._game_peak_cpu_c = float(cpu_temp)
+        if gpu_temp > self._game_peak_gpu_c:
+            self._game_peak_gpu_c = float(gpu_temp)
+
     def detect_running_game(self, force: bool = False) -> Optional[str]:
         """
         Monitora processos ativos em busca de jogos abertos via Steam (Proton/Nativo),
@@ -1445,6 +1519,8 @@ class HardwareBackend:
             "fossilize_replay", "gamemoded", "proton", "umu-run",
             "python", "python3", "bash", "sh", "zsh", "fish",
         }
+        user_ignored = set(self.get_game_ignore_list())
+        ignored_bins.update(user_ignored)
         runtime_wrappers = {
             "wine", "wine64", "wine-preloader", "wine64-preloader",
             "sniper", "soldier", "pv-adverb", "pressure-vessel-wrap",
@@ -1572,6 +1648,9 @@ class HardwareBackend:
                         found_game = "GameMode (Jogo Ativo)"
             except Exception:
                 pass
+
+        if found_game and user_ignored and any(ig in found_game.lower() for ig in user_ignored):
+            found_game = None
 
         self._cached_running_game = found_game
         self._last_game_scan_time = now
@@ -1726,20 +1805,27 @@ class HardwareBackend:
         target_prof: Optional[str] = None
         rule_exec: Optional[str] = None
 
+        target_preset: Optional[Dict[str, Any]] = None
         if detected_game:
             target_name = detected_game
-            choices = self.get_platform_profile_choices()
-            pref_target = self.get_game_target_profile()
-            if pref_target in choices:
-                target_prof = pref_target
-            elif pref_target == "max-power" and "max-power" in choices:
-                target_prof = "max-power"
-            elif "performance" in choices:
-                target_prof = "performance"
-            elif "max-power" in choices:
-                target_prof = "max-power"
+            pref_preset_id = self.get_game_target_preset_id()
+            if pref_preset_id:
+                target_preset = next((p for p in self.get_user_presets() if p.get("id") == pref_preset_id), None)
+            if target_preset and target_preset.get("profile"):
+                target_prof = self.normalize_profile(str(target_preset["profile"]))
             else:
-                target_prof = pref_target
+                choices = self.get_platform_profile_choices()
+                pref_target = self.get_game_target_profile()
+                if pref_target in choices:
+                    target_prof = pref_target
+                elif pref_target == "max-power" and "max-power" in choices:
+                    target_prof = "max-power"
+                elif "performance" in choices:
+                    target_prof = "performance"
+                elif "max-power" in choices:
+                    target_prof = "max-power"
+                else:
+                    target_prof = pref_target
         elif detected_rule:
             target_name = f"{detected_rule['label']}"
             target_prof = detected_rule["profile"]
@@ -1753,15 +1839,50 @@ class HardwareBackend:
 
             self._active_game_name = target_name
             self._active_rule_exec = rule_exec
-
-            ok_prof, _ = self.set_platform_profile(target_prof or "performance", allow_elevation=False)
-            if self.features.cpu_governor:
-                gov = "performance" if target_prof in ("performance", "max-power") else "powersave"
-                self.set_cpu_governor(gov, allow_elevation=False)
+            if not rule_exec:
+                self._game_session_start_ts = time.time()
+                self._game_peak_cpu_c = 0.0
+                self._game_peak_gpu_c = 0.0
 
             extras: List[str] = []
+            ok_prof = False
+
+            if not rule_exec and target_preset is not None:
+                # Salva estados extras antes de aplicar o preset vinculado
+                if "turbo_enabled" in target_preset and self.features.turbo_boost and not self._game_changed_turbo:
+                    self._pre_game_turbo = self.get_cpu_turbo()
+                    self._game_changed_turbo = True
+                if "pl1_w" in target_preset and "pl2_w" in target_preset and self.features.custom_tdp and not self._game_changed_tdp:
+                    self._pre_game_tdp = self.get_cpu_tdp_limits()
+                    self._game_changed_tdp = True
+                if "refresh_hz" in target_preset and self.features.refresh_rate and not self._game_changed_refresh:
+                    try:
+                        ref_cur = self.get_display_refresh_info()
+                        if ref_cur.available and int(target_preset["refresh_hz"]) != ref_cur.current_hz:
+                            self._pre_game_refresh_hz = ref_cur.current_hz
+                            self._game_changed_refresh = True
+                    except Exception:
+                        pass
+
+                ok_pre, _ = self.apply_user_preset(str(target_preset["id"]), allow_elevation=False)
+                ok_prof = ok_pre
+                if not ok_pre:
+                    self._game_changed_turbo = False
+                    self._pre_game_turbo = None
+                    self._game_changed_tdp = False
+                    self._pre_game_tdp = None
+                    self._game_changed_refresh = False
+                    self._pre_game_refresh_hz = None
+                else:
+                    extras.append(f"Preset: {target_preset['name']}")
+            else:
+                ok_prof, _ = self.set_platform_profile(target_prof or "performance", allow_elevation=False)
+                if self.features.cpu_governor:
+                    gov = "performance" if target_prof in ("performance", "max-power") else "powersave"
+                    self.set_cpu_governor(gov, allow_elevation=False)
+
             if not rule_exec:
-                # 1. Eleva taxa de atualização para a máxima suportada ao iniciar jogo
+                # 1. Eleva taxa de atualização para a máxima suportada ao iniciar jogo (se ainda não alterada pelo preset)
                 if self.get_game_auto_refresh_max() and self.features.refresh_rate and not self._game_changed_refresh:
                     try:
                         ref_info = self.get_display_refresh_info()
@@ -1804,6 +1925,18 @@ class HardwareBackend:
             self._active_game_name = None
             self._active_rule_exec = None
 
+            session_summary = None
+            if self._game_session_start_ts > 0:
+                dur_s = max(0, int(round(time.time() - self._game_session_start_ts)))
+                session_summary = {
+                    "duration_sec": dur_s,
+                    "peak_cpu_c": round(self._game_peak_cpu_c, 1),
+                    "peak_gpu_c": round(self._game_peak_gpu_c, 1),
+                }
+            self._game_session_start_ts = 0.0
+            self._game_peak_cpu_c = 0.0
+            self._game_peak_gpu_c = 0.0
+
             restore_prof = self._pre_game_profile
             if restore_prof in ("performance", "max-power"):
                 restore_prof = "balanced" if self._get_ac_online() == 1 else "low-power"
@@ -1813,6 +1946,20 @@ class HardwareBackend:
                 self.set_cpu_governor("powersave", allow_elevation=False)
 
             extras: List[str] = []
+            if self._game_changed_turbo:
+                prev_tb = self._pre_game_turbo
+                self._game_changed_turbo = False
+                self._pre_game_turbo = None
+                if prev_tb is not None and self.features.turbo_boost:
+                    self.set_cpu_turbo(prev_tb, allow_elevation=False)
+
+            if self._game_changed_tdp:
+                prev_tdp = self._pre_game_tdp
+                self._game_changed_tdp = False
+                self._pre_game_tdp = None
+                if prev_tdp is not None and self.features.custom_tdp:
+                    self.set_cpu_tdp_limits(prev_tdp[0], prev_tdp[1], allow_elevation=False)
+
             if self._game_changed_refresh:
                 prev_hz = self._pre_game_refresh_hz
                 self._game_changed_refresh = False
@@ -1840,6 +1987,7 @@ class HardwareBackend:
                 "profile": restore_prof,
                 "applied": ok_restore,
                 "extras": extras,
+                "session_summary": session_summary,
             }
 
         return None
@@ -1888,7 +2036,8 @@ class HardwareBackend:
                     "energy_full_wh": interp_full,
                     "energy_design_wh": design_wh,
                     "health_percent": interp_health,
-                    "cycle_count": interp_cycles
+                    "cycle_count": interp_cycles,
+                    "estimated": True,
                 })
             raw_hist = seeded
 
@@ -1898,7 +2047,8 @@ class HardwareBackend:
             "energy_full_wh": bat.energy_full_wh,
             "energy_design_wh": bat.energy_design_wh,
             "health_percent": bat.health_percent,
-            "cycle_count": bat.cycle_count
+            "cycle_count": bat.cycle_count,
+            "estimated": False,
         }
         if raw_hist and raw_hist[-1].get("timestamp") == today_str:
             raw_hist[-1] = today_entry
@@ -1916,6 +2066,7 @@ class HardwareBackend:
                 energy_design_wh=float(item.get("energy_design_wh", bat.energy_design_wh)),
                 health_percent=float(item.get("health_percent", bat.health_percent)),
                 cycle_count=int(item.get("cycle_count", bat.cycle_count)),
+                is_estimated=bool(item.get("estimated", False)),
             )
             for item in raw_hist
         ]
@@ -1936,14 +2087,14 @@ class HardwareBackend:
             return boost == 1
         return True
 
-    def set_cpu_turbo(self, enable: bool) -> Tuple[bool, str]:
+    def set_cpu_turbo(self, enable: bool, allow_elevation: bool = True) -> Tuple[bool, str]:
         """Ativa ou desativa o Turbo Boost do processador (Intel ou AMD)."""
         if self.paths.cpu_turbo_intel:
             target_val = "0" if enable else "1"
-            return PermissionsManager.write_sysfs_value(self.paths.cpu_turbo_intel, target_val)
+            return PermissionsManager.write_sysfs_value(self.paths.cpu_turbo_intel, target_val, allow_elevation=allow_elevation)
         if self.paths.cpu_turbo_amd:
             target_val = "1" if enable else "0"
-            return PermissionsManager.write_sysfs_value(self.paths.cpu_turbo_amd, target_val)
+            return PermissionsManager.write_sysfs_value(self.paths.cpu_turbo_amd, target_val, allow_elevation=allow_elevation)
         return False, "Controle de Turbo Boost não disponível para este processador."
 
     def get_cpu_governor(self) -> str:
@@ -1978,7 +2129,7 @@ class HardwareBackend:
                 pl2_w = max(15, min(135, raw_pl2 // 1_000_000))
         return pl1_w, pl2_w
 
-    def set_cpu_tdp_limits(self, pl1_w: int, pl2_w: int) -> Tuple[bool, str]:
+    def set_cpu_tdp_limits(self, pl1_w: int, pl2_w: int, allow_elevation: bool = True) -> Tuple[bool, str]:
         """Define os limites de TDP PL1 (Long Term) e PL2 (Short Term) em Watts via Intel RAPL."""
         pl1_w = max(10, min(95, int(pl1_w)))
         pl2_w = max(pl1_w, min(115, int(pl2_w)))
@@ -2000,7 +2151,7 @@ class HardwareBackend:
             pairs.append((self.paths.rapl_mmio_pl1, pl1_uw))
             pairs.append((self.paths.rapl_mmio_pl2, pl2_uw))
 
-        ok, msg = PermissionsManager.write_multiple_sysfs_values(pairs)
+        ok, msg = PermissionsManager.write_multiple_sysfs_values(pairs, allow_elevation=allow_elevation)
         if ok:
             return True, f"Limites TDP aplicados com sucesso: PL1 = {pl1_w}W | PL2 = {pl2_w}W."
         return False, msg
@@ -2878,6 +3029,27 @@ class HardwareBackend:
             info.conservation_mode_active = self.get_conservation_mode()
         info.rapid_charge_supported = self.features.rapid_charge
         info.rapid_charge_active = self.get_rapid_charge()
+
+        # Autonomia restante ou tempo estimado para carga completa
+        st_low = info.status.lower().strip()
+        if st_low == "discharging" and info.power_draw_w >= 1.0 and info.energy_now_wh > 0:
+            mins = max(1, min(1800, int(round((info.energy_now_wh / info.power_draw_w) * 60.0))))
+            info.estimated_minutes = mins
+            hrs, rem_m = divmod(mins, 60)
+            info.estimated_label = f"~{hrs}h {rem_m:02d}min restantes" if hrs > 0 else f"~{rem_m} min restantes"
+        elif st_low == "charging" and info.power_draw_w >= 1.0 and info.energy_full_wh > 0:
+            target_wh = (info.energy_full_wh * 0.80) if info.conservation_mode_active else info.energy_full_wh
+            rem_wh = target_wh - info.energy_now_wh
+            if rem_wh > 0.2:
+                mins = max(1, min(600, int(round((rem_wh / info.power_draw_w) * 60.0))))
+                info.estimated_minutes = mins
+                hrs, rem_m = divmod(mins, 60)
+                t_str = f"~{hrs}h {rem_m:02d}min" if hrs > 0 else f"~{rem_m} min"
+                info.estimated_label = f"Carga ~80% em {t_str}" if info.conservation_mode_active else f"Carga completa em {t_str}"
+            else:
+                info.estimated_label = "Quase carregada"
+        elif st_low in ("full", "not charging"):
+            info.estimated_label = "Estável na tomada AC"
 
         return info
 
@@ -4649,7 +4821,7 @@ class HardwareBackend:
         summary = self.format_user_preset_summary(preset)
         return True, f"Preset '{clean_name}' {'atualizado' if replaced else 'salvo'}: {summary}", preset
 
-    def apply_user_preset(self, preset_id: str) -> Tuple[bool, str]:
+    def apply_user_preset(self, preset_id: str, allow_elevation: bool = True) -> Tuple[bool, str]:
         """Aplica todas as configurações suportadas de um preset salvo."""
         presets = self.get_user_presets()
         target = next((p for p in presets if p.get("id") == preset_id), None)
@@ -4661,7 +4833,7 @@ class HardwareBackend:
 
         if "profile" in target and self.features.platform_profile:
             prof = self.normalize_profile(str(target["profile"]))
-            ok, msg = self.set_platform_profile(prof, allow_elevation=True)
+            ok, msg = self.set_platform_profile(prof, allow_elevation=allow_elevation)
             if ok:
                 applied_parts.append(self.get_profile_info(prof).get("short_title", prof.upper()))
             else:
@@ -4669,7 +4841,7 @@ class HardwareBackend:
 
         if "governor" in target and self.features.cpu_governor:
             gov = str(target["governor"])
-            ok, msg = self.set_cpu_governor(gov, allow_elevation=True)
+            ok, msg = self.set_cpu_governor(gov, allow_elevation=allow_elevation)
             if ok:
                 applied_parts.append(f"Gov {gov}")
             else:
@@ -4677,14 +4849,14 @@ class HardwareBackend:
 
         if "turbo_enabled" in target and self.features.turbo_boost:
             tb = bool(target["turbo_enabled"])
-            ok, msg = self.set_cpu_turbo(tb)
+            ok, msg = self.set_cpu_turbo(tb, allow_elevation=allow_elevation)
             if ok:
                 applied_parts.append("Turbo On" if tb else "Turbo Off")
             else:
                 errors.append(f"Turbo: {msg}")
 
         if "pl1_w" in target and "pl2_w" in target and self.features.custom_tdp:
-            ok, msg = self.set_cpu_tdp_limits(int(target["pl1_w"]), int(target["pl2_w"]))
+            ok, msg = self.set_cpu_tdp_limits(int(target["pl1_w"]), int(target["pl2_w"]), allow_elevation=allow_elevation)
             if ok:
                 applied_parts.append(f"TDP {target['pl1_w']}/{target['pl2_w']}W")
             else:
@@ -4843,4 +5015,283 @@ class HardwareBackend:
             lines.append(f"- *Falha ao coletar capacidades/UDEV:* {e}")
 
         return "\n".join(lines)
+
+    # =========================================================================
+    # Preferências Gerais do Aplicativo, OSD, AC/Bateria e Backup JSON
+    # =========================================================================
+    def get_osd_enabled(self) -> bool:
+        return bool(self.settings.get("osd_enabled", True))
+
+    def set_osd_enabled(self, enabled: bool) -> None:
+        self.settings.set("osd_enabled", bool(enabled))
+
+    def get_osd_position(self) -> str:
+        pos = str(self.settings.get("osd_position", "bottom-center") or "bottom-center")
+        return pos if pos in ("bottom-center", "top-center", "top-right") else "bottom-center"
+
+    def set_osd_position(self, pos: str) -> None:
+        if pos not in ("bottom-center", "top-center", "top-right"):
+            pos = "bottom-center"
+        self.settings.set("osd_position", pos)
+
+    def get_osd_duration_ms(self) -> int:
+        try:
+            val = int(self.settings.get("osd_duration_ms", 1800))
+        except (TypeError, ValueError):
+            val = 1800
+        return max(1000, min(4000, val))
+
+    def set_osd_duration_ms(self, duration_ms: int) -> None:
+        clamped = max(1000, min(4000, int(duration_ms)))
+        self.settings.set("osd_duration_ms", clamped)
+
+    def get_minimize_to_tray(self) -> bool:
+        return bool(self.settings.get("minimize_to_tray", True))
+
+    def set_minimize_to_tray(self, enabled: bool) -> None:
+        self.settings.set("minimize_to_tray", bool(enabled))
+
+    def get_ac_profile(self) -> str:
+        raw = str(self.settings.get("ac_profile", "performance") or "performance")
+        norm = self.normalize_profile(raw)
+        supported = self.get_supported_canonical_profiles()
+        if supported and norm not in supported:
+            return "performance" if "performance" in supported else ("balanced" if "balanced" in supported else supported[-1])
+        return norm
+
+    def set_ac_profile(self, profile: str) -> None:
+        self.settings.set("ac_profile", self.normalize_profile(profile))
+
+    def get_battery_profile(self) -> str:
+        raw = str(self.settings.get("battery_profile", "low-power") or "low-power")
+        norm = self.normalize_profile(raw)
+        supported = self.get_supported_canonical_profiles()
+        if supported and norm not in supported:
+            return "low-power" if "low-power" in supported else ("balanced" if "balanced" in supported else supported[0])
+        return norm
+
+    def set_battery_profile(self, profile: str) -> None:
+        self.settings.set("battery_profile", self.normalize_profile(profile))
+
+    def export_settings(self, dst_path: str) -> Tuple[bool, str]:
+        return self.settings.export_to_file(dst_path)
+
+    def import_settings(self, src_path: str) -> Tuple[bool, str]:
+        ok, msg = self.settings.import_from_file(src_path)
+        if ok:
+            self._cached_running_game = None
+            self._last_game_scan_time = 0.0
+        return ok, msg
+
+    # =========================================================================
+    # Teclado RGB 4-Zonas (Auto-Discovery USB ITE hidraw / multicolor sysfs)
+    # =========================================================================
+    def _scan_rgb_keyboard(self) -> None:
+        """Detecta teclados RGB 4-zonas Lenovo Legion/LOQ via hidraw (ITE 048d) ou sysfs multicolor."""
+        self.paths.rgb_hidraw = None
+        self.paths.rgb_sysfs_dir = None
+        self._rgb_backend_name = "none"
+        self.features.rgb_keyboard = False
+
+        # 1. Controlador USB ITE 4-Zone (048d:c9xx / 048d:c1xx) em /sys/class/hidraw/
+        for hdir in sorted(glob.glob("/sys/class/hidraw/hidraw*")):
+            uevent = self._read_file_text(os.path.join(hdir, "device", "uevent")) or ""
+            hid_up = uevent.upper()
+            if "0000048D" in hid_up and re.search(r"0000048D:0000C[19][0-9A-F]{2}", hid_up):
+                dev_path = f"/dev/{os.path.basename(hdir)}"
+                if os.path.exists(dev_path):
+                    self.paths.rgb_hidraw = dev_path
+                    self._rgb_backend_name = "ite-hidraw"
+                    self.features.rgb_keyboard = True
+                    return
+
+        # 2. Fallback: sysfs LEDs multicolor (multi_intensity)
+        for led_dir in sorted(glob.glob("/sys/class/leds/*rgb*") + glob.glob("/sys/class/leds/*kbd_backlight*")):
+            mi = os.path.join(led_dir, "multi_intensity")
+            if os.path.exists(mi):
+                self.paths.rgb_sysfs_dir = led_dir
+                self._rgb_backend_name = "sysfs-multicolor"
+                self.features.rgb_keyboard = True
+                return
+
+    @staticmethod
+    def _parse_hex_rgb(hex_color: str) -> Tuple[int, int, int]:
+        clean = str(hex_color or "").strip().lstrip("#")
+        if len(clean) == 6:
+            try:
+                return int(clean[0:2], 16), int(clean[2:4], 16), int(clean[4:6], 16)
+            except ValueError:
+                pass
+        return 0, 210, 255
+
+    @classmethod
+    def _build_ite_rgb_packet(cls, mode: str, zones: List[str], brightness: int, speed: int) -> bytes:
+        """Constrói pacote HID Feature Report de 33 bytes para teclados Lenovo ITE 4-Zonas."""
+        mode_map = {
+            "off": 0x01,
+            "static": 0x01,
+            "breath": 0x03,
+            "wave": 0x04,
+            "smooth": 0x06,
+        }
+        m_low = (mode or "static").lower().strip()
+        effect_byte = mode_map.get(m_low, 0x01)
+        br = 0 if m_low == "off" else max(1, min(2, int(brightness)))
+        spd = max(1, min(4, int(speed)))
+
+        pkt = bytearray(33)
+        pkt[0] = 0xCC
+        pkt[1] = 0x16
+        pkt[2] = effect_byte
+        pkt[3] = spd
+        pkt[4] = br
+
+        safe_zones = list(zones or [])
+        while len(safe_zones) < 4:
+            safe_zones.append("#00d2ff")
+        for idx in range(4):
+            r, g, b = (0, 0, 0) if m_low == "off" else cls._parse_hex_rgb(safe_zones[idx])
+            base = 5 + (idx * 3)
+            pkt[base] = r
+            pkt[base + 1] = g
+            pkt[base + 2] = b
+
+        pkt[18] = 1 if m_low == "wave" else 0
+        return bytes(pkt)
+
+    def get_rgb_keyboard_state(self) -> Dict[str, Any]:
+        zones = self.settings.get("rgb_zones", ["#00d2ff", "#00d2ff", "#00d2ff", "#00d2ff"])
+        if not isinstance(zones, list) or len(zones) != 4:
+            zones = ["#00d2ff", "#00d2ff", "#00d2ff", "#00d2ff"]
+        return {
+            "supported": bool(self.features.rgb_keyboard),
+            "backend": self._rgb_backend_name,
+            "mode": str(self.settings.get("rgb_mode", "static")),
+            "brightness": int(self.settings.get("rgb_brightness", 2)),
+            "speed": int(self.settings.get("rgb_speed", 2)),
+            "zones": [str(z) for z in zones],
+        }
+
+    def set_rgb_keyboard_state(self, mode: str, zones: List[str], brightness: int = 2, speed: int = 2) -> Tuple[bool, str]:
+        """Aplica cores e efeito no teclado RGB 4-zonas (hidraw ITE ou sysfs multicolor)."""
+        if not self.features.rgb_keyboard:
+            return False, "Teclado RGB 4-Zonas não detectado neste dispositivo."
+
+        m_low = (mode or "static").lower().strip()
+        if m_low not in ("static", "breath", "wave", "smooth", "off"):
+            m_low = "static"
+        br = max(0, min(2, int(brightness)))
+        spd = max(1, min(4, int(speed)))
+        safe_zones = [str(z) for z in (zones or ["#00d2ff"] * 4)][:4]
+        while len(safe_zones) < 4:
+            safe_zones.append("#00d2ff")
+
+        if self.paths.rgb_hidraw and os.path.exists(self.paths.rgb_hidraw):
+            pkt = self._build_ite_rgb_packet(m_low, safe_zones, br, spd)
+            hidiocsfeature = (3 << 30) | (len(pkt) << 16) | (ord("H") << 8) | 0x06
+            try:
+                fd = os.open(self.paths.rgb_hidraw, os.O_RDWR)
+                try:
+                    buf = bytearray(pkt)
+                    fcntl.ioctl(fd, hidiocsfeature, buf)
+                finally:
+                    os.close(fd)
+            except PermissionError:
+                return False, (
+                    f"Sem permissão em {self.paths.rgb_hidraw}. "
+                    "Atualize as Regras UDEV na aba 'Sobre o Dispositivo' para liberar hidraw 048d."
+                )
+            except Exception as e:
+                return False, f"Falha ao enviar comando RGB ITE em {self.paths.rgb_hidraw}: {e}"
+        elif self.paths.rgb_sysfs_dir:
+            mi_path = os.path.join(self.paths.rgb_sysfs_dir, "multi_intensity")
+            br_path = os.path.join(self.paths.rgb_sysfs_dir, "brightness")
+            r, g, b = (0, 0, 0) if m_low == "off" else self._parse_hex_rgb(safe_zones[0])
+            ok_mi, msg_mi = PermissionsManager.write_sysfs_value(mi_path, f"{r} {g} {b}", allow_elevation=True)
+            if not ok_mi:
+                return False, msg_mi
+            if os.path.exists(br_path):
+                PermissionsManager.write_sysfs_value(br_path, str(0 if m_low == "off" else br), allow_elevation=True)
+        else:
+            return False, "Interface de teclado RGB indisponível."
+
+        self.settings.set("rgb_mode", m_low)
+        self.settings.set("rgb_brightness", br)
+        self.settings.set("rgb_speed", spd)
+        self.settings.set("rgb_zones", safe_zones)
+        return True, f"Iluminação RGB aplicada ({m_low.upper()}, brilho {br})."
+
+    # =========================================================================
+    # Verificador Manual de Atualizações no GitHub (Zero Telemetria)
+    # =========================================================================
+    def check_for_updates(self, timeout: float = 5.0) -> Dict[str, Any]:
+        """Consulta manualmente o último commit em GITHUB_REPO e compara com o commit local."""
+        repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        local_sha = ""
+        if shutil.which("git") and os.path.isdir(os.path.join(repo_dir, ".git")):
+            try:
+                res = subprocess.run(
+                    ["git", "-C", repo_dir, "rev-parse", "--short", "HEAD"],
+                    capture_output=True, text=True, timeout=2
+                )
+                if res.returncode == 0:
+                    local_sha = res.stdout.strip()
+            except Exception:
+                pass
+
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
+        repo_web_url = f"https://github.com/{GITHUB_REPO}"
+        req = urllib.request.Request(
+            api_url,
+            headers={
+                "User-Agent": f"Ducksvantage/{APP_VERSION}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            remote_full = str(data.get("sha", "")).strip()
+            remote_sha = remote_full[:7] if remote_full else ""
+            commit_obj = data.get("commit", {}) or {}
+            remote_msg = str(commit_obj.get("message", "")).splitlines()[0][:90] if commit_obj.get("message") else ""
+            remote_date = str((commit_obj.get("committer") or {}).get("date", ""))[:10]
+
+            if local_sha and remote_full:
+                up_to_date = remote_full.lower().startswith(local_sha.lower())
+            else:
+                up_to_date = False
+
+            if up_to_date:
+                status_msg = f"Você já está na versão mais recente (commit {local_sha})."
+            elif local_sha and remote_sha:
+                status_msg = f"Nova atualização disponível no GitHub! Local: {local_sha} → Remoto: {remote_sha}."
+            elif remote_sha:
+                status_msg = f"Última versão no GitHub: commit {remote_sha} ({remote_date})."
+            else:
+                status_msg = "Consulta concluída sem hash de commit remoto."
+
+            return {
+                "ok": True,
+                "up_to_date": up_to_date,
+                "local_version": APP_VERSION,
+                "local_sha": local_sha or "N/A",
+                "remote_sha": remote_sha or "N/A",
+                "remote_message": remote_msg,
+                "remote_date": remote_date,
+                "url": repo_web_url,
+                "message": status_msg,
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "up_to_date": None,
+                "local_version": APP_VERSION,
+                "local_sha": local_sha or "N/A",
+                "remote_sha": "N/A",
+                "remote_message": "",
+                "remote_date": "",
+                "url": repo_web_url,
+                "message": f"Não foi possível consultar o GitHub ({e}).",
+            }
 

@@ -12,7 +12,7 @@ import os
 from core.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QFrame, QScrollArea, QPushButton, Qt, QFont, QIcon,
-    Signal, QSizePolicy
+    Signal, QSizePolicy, QPainter, QColor, QPen, QPainterPath, QPointF
 )
 from ui.theme_tokens import ThemeTokens
 from ui.gauges import HardwareGaugesCard
@@ -26,6 +26,92 @@ def get_asset_icon(name: str) -> QIcon:
     if os.path.exists(path):
         return QIcon(path)
     return QIcon()
+
+
+class LiveThermalChart(QWidget):
+    """Gráfico leve em QPainter com os últimos ~2 minutos de temperatura de CPU e GPU (°C)."""
+
+    MAX_SAMPLES = 80
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.cpu_samples: list[float] = []
+        self.gpu_samples: list[float] = []
+        self.peak_cpu: float = 0.0
+        self.peak_gpu: float = 0.0
+        self.setMinimumHeight(130)
+
+    def add_sample(self, cpu_temp: float, gpu_temp: float = 0.0) -> None:
+        c_val = max(0.0, float(cpu_temp))
+        g_val = max(0.0, float(gpu_temp))
+        self.cpu_samples.append(c_val)
+        self.gpu_samples.append(g_val)
+        if len(self.cpu_samples) > self.MAX_SAMPLES:
+            self.cpu_samples = self.cpu_samples[-self.MAX_SAMPLES:]
+            self.gpu_samples = self.gpu_samples[-self.MAX_SAMPLES:]
+        if c_val > self.peak_cpu:
+            self.peak_cpu = c_val
+        if g_val > self.peak_gpu:
+            self.peak_gpu = g_val
+        self.update()
+
+    def reset_peaks(self) -> None:
+        self.peak_cpu = self.cpu_samples[-1] if self.cpu_samples else 0.0
+        self.peak_gpu = self.gpu_samples[-1] if self.gpu_samples else 0.0
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+
+        w = float(self.width())
+        h = float(self.height())
+        painter.setPen(QPen(QColor(ThemeTokens.BORDER_DEFAULT), 1))
+        painter.setBrush(QColor("#0d1322"))
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 8, 8)
+
+        pad_l, pad_r, pad_t, pad_b = 36.0, 14.0, 16.0, 18.0
+        pw = max(30.0, w - pad_l - pad_r)
+        ph = max(30.0, h - pad_t - pad_b)
+        y_min, y_max = 30.0, 105.0
+
+        def ty(v: float) -> float:
+            norm = max(0.0, min(1.0, (v - y_min) / (y_max - y_min)))
+            return pad_t + ph * (1.0 - norm)
+
+        painter.setFont(QFont("Segoe UI", 8))
+        for deg in (40, 60, 80, 90):
+            yy = ty(float(deg))
+            is_warn = (deg == 90)
+            painter.setPen(QPen(QColor("#7f1d1d" if is_warn else "#1e293b"), 1, Qt.PenStyle.DashLine if is_warn else Qt.PenStyle.DotLine))
+            painter.drawLine(int(pad_l), int(yy), int(pad_l + pw), int(yy))
+            painter.setPen(QColor("#f87171" if is_warn else ThemeTokens.TEXT_LIGHT_GRAY))
+            painter.drawText(2, int(yy - 7), int(pad_l - 6), 14, int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), f"{deg}°")
+
+        n = len(self.cpu_samples)
+        if n >= 2:
+            for samples, col in ((self.cpu_samples, ThemeTokens.BORDER_CYAN), (self.gpu_samples, ThemeTokens.THERMAL_CUSTOM)):
+                if not any(s > 0.0 for s in samples):
+                    continue
+                path = QPainterPath()
+                for idx, val in enumerate(samples):
+                    xx = pad_l + (idx / float(max(1, n - 1))) * pw
+                    yy = ty(val if val > 0.0 else y_min)
+                    pt = QPointF(xx, yy)
+                    if idx == 0:
+                        path.moveTo(pt)
+                    else:
+                        path.lineTo(pt)
+                painter.setPen(QPen(QColor(col), 2.0))
+                painter.drawPath(path)
+
+        painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        painter.setPen(QColor(ThemeTokens.BORDER_CYAN))
+        painter.drawText(int(pad_l + 6), int(h - 14), "■ CPU °C")
+        painter.setPen(QColor(ThemeTokens.THERMAL_CUSTOM))
+        painter.drawText(int(pad_l + 68), int(h - 14), "■ GPU °C")
+        painter.end()
 
 
 class ThermalBlock(QFrame):
@@ -467,6 +553,61 @@ class VantageDashboardView(QWidget):
 
         sf_layout.addLayout(sf_grid)
         left_col.addWidget(storage_fan_card)
+
+        # 4. Card de Histórico Térmico ao Vivo (~2 min CPU / GPU)
+        self.live_chart_card = QFrame()
+        self.live_chart_card.setProperty("class", "vantageCard")
+        self.live_chart_card.setStyleSheet(f"""
+            QFrame.vantageCard {{
+                background-color: {ThemeTokens.BG_CARD};
+                border: 1px solid {ThemeTokens.BORDER_DEFAULT};
+                border-radius: {ThemeTokens.RADIUS_CARD}px;
+                padding: 16px;
+            }}
+        """)
+        lc_layout = QVBoxLayout(self.live_chart_card)
+        lc_layout.setSpacing(10)
+
+        lc_header = QHBoxLayout()
+        ic_temp = QLabel()
+        ic_temp.setPixmap(get_asset_icon("temp.svg").pixmap(20, 20))
+        lc_header.addWidget(ic_temp)
+
+        lc_title = QLabel("Monitor Térmico ao Vivo (Últimos 2 min)")
+        lc_title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        lc_title.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        lc_header.addWidget(lc_title)
+        lc_header.addStretch()
+
+        self.live_peaks_badge = StatusBadge("PICOS: CPU --°C | GPU --°C", bg_color="#1e293b", text_color="#00d2ff")
+        lc_header.addWidget(self.live_peaks_badge)
+
+        self.btn_reset_peaks = QPushButton("Zerar Picos")
+        self.btn_reset_peaks.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_reset_peaks.setFixedHeight(24)
+        self.btn_reset_peaks.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #192338;
+                color: {ThemeTokens.TEXT_LIGHT_GRAY};
+                border: 1px solid {ThemeTokens.BORDER_DEFAULT};
+                border-radius: 5px;
+                padding: 2px 10px;
+                font-size: 10px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                border-color: {ThemeTokens.BORDER_CYAN};
+                color: {ThemeTokens.TEXT_WHITE_100};
+            }}
+        """)
+        self.btn_reset_peaks.clicked.connect(self._on_reset_thermal_peaks)
+        lc_header.addWidget(self.btn_reset_peaks)
+        lc_layout.addLayout(lc_header)
+
+        self.live_thermal_chart = LiveThermalChart()
+        lc_layout.addWidget(self.live_thermal_chart)
+        left_col.addWidget(self.live_chart_card)
+
         left_col.addStretch()
 
         main_layout.addLayout(left_col, stretch=65)
@@ -642,6 +783,17 @@ class VantageDashboardView(QWidget):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.addWidget(scroll)
 
+    def _on_reset_thermal_peaks(self):
+        self.live_thermal_chart.reset_peaks()
+        self._sync_live_peaks_badge()
+
+    def _sync_live_peaks_badge(self):
+        c_pk = self.live_thermal_chart.peak_cpu
+        g_pk = self.live_thermal_chart.peak_gpu
+        c_str = f"{c_pk:.0f}°C" if c_pk > 0 else "--°C"
+        g_str = f"{g_pk:.0f}°C" if g_pk > 0 else "D3cold"
+        self.live_peaks_badge.setText(f"PICOS: CPU {c_str} | GPU {g_str}")
+
     def _add_stat(self, grid: QGridLayout, r: int, c: int, title: str, default: str) -> QLabel:
         box = QFrame()
         box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 6px; padding: 8px 10px;")
@@ -670,8 +822,11 @@ class VantageDashboardView(QWidget):
         fan = self.backend.get_fan_metrics()
         disks = self.backend.get_storage_devices()
 
-        # 1. Gauges Circulares
+        # 1. Gauges Circulares & Gráfico Térmico ao Vivo
         self.gauges_card.update_metrics(cpu, gpu, ram)
+        gpu_temp_val = gpu.temperature_c if gpu.available else 0.0
+        self.live_thermal_chart.add_sample(cpu.temperature_c, gpu_temp_val)
+        self._sync_live_peaks_badge()
 
         # 2. Thermal Mode (incluindo Max-Power dinâmico)
         if self.backend.features.platform_profile:

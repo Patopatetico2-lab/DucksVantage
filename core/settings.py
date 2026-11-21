@@ -6,7 +6,7 @@ Salva e recupera as preferências do usuário em ~/.config/ducksvantage/settings
 import os
 import json
 import tempfile
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 CONFIG_DIR = os.path.expanduser("~/.config/ducksvantage")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "settings.json")
@@ -69,6 +69,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "auto_power_transition": True,
     "game_auto_switch": True,
     "game_target_profile": "max-power",
+    "game_target_preset_id": "",
+    "game_ignore_list": [],
+    "game_session_summary_enabled": True,
     "game_auto_refresh_max": False,
     "game_auto_lock_touchpad": False,
     "eco_travel_mode": False,
@@ -77,6 +80,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "rapid_charge": False,
     "touchpad_locked": False,
     "osd_enabled": True,
+    "osd_position": "bottom-center",
+    "osd_duration_ms": 1800,
     "minimize_to_tray": True,
     "custom_pl1_w": 45,
     "custom_pl2_w": 70,
@@ -99,6 +104,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "lcd_overdrive_enabled": False,
     "key_mappings": DEFAULT_KEY_MAPPINGS,
     "user_presets": [],
+    "rgb_mode": "static",
+    "rgb_brightness": 2,
+    "rgb_speed": 2,
+    "rgb_zones": ["#00d2ff", "#00d2ff", "#00d2ff", "#00d2ff"],
     "battery_history": []
 }
 
@@ -173,3 +182,49 @@ class SettingsManager:
     def set(self, key: str, value: Any):
         self._data[key] = value
         self.save()
+
+    def export_to_file(self, dst_path: str) -> Tuple[bool, str]:
+        """Exporta as configurações atuais para um arquivo JSON de backup."""
+        if not dst_path:
+            return False, "Caminho de destino inválido."
+        try:
+            parent = os.path.dirname(os.path.abspath(dst_path))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(dst_path, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, indent=4, ensure_ascii=False)
+            return True, f"Backup exportado com sucesso para {os.path.basename(dst_path)}."
+        except Exception as e:
+            return False, f"Falha ao exportar backup: {e}"
+
+    def import_from_file(self, src_path: str) -> Tuple[bool, str]:
+        """Importa configurações de um arquivo JSON validando apenas chaves conhecidas."""
+        if not src_path or not os.path.exists(src_path):
+            return False, "Arquivo de backup não encontrado."
+        try:
+            with open(src_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if not isinstance(loaded, dict):
+                return False, "Formato de backup inválido (esperado objeto JSON)."
+
+            accepted = 0
+            for k, v in loaded.items():
+                if k in DEFAULT_SETTINGS:
+                    self._data[k] = v
+                    accepted += 1
+
+            if accepted == 0:
+                return False, "Nenhuma configuração válida do Ducksvantage foi encontrada no arquivo."
+
+            km = self._data.get("key_mappings")
+            if not isinstance(km, dict) or not km:
+                self._data["key_mappings"] = json.loads(json.dumps(DEFAULT_SETTINGS["key_mappings"]))
+            else:
+                for def_k, def_v in DEFAULT_KEY_MAPPINGS.items():
+                    if def_k not in km:
+                        km[def_k] = json.loads(json.dumps(def_v))
+
+            self.save()
+            return True, f"{accepted} configurações importadas com sucesso."
+        except Exception as e:
+            return False, f"Falha ao importar backup: {e}"

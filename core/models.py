@@ -98,6 +98,8 @@ class BatteryInfo:
     conservation_mode_active: bool = False
     rapid_charge_supported: bool = False
     rapid_charge_active: bool = False
+    estimated_minutes: Optional[int] = None
+    estimated_label: str = ""
 
 
 @dataclass
@@ -108,6 +110,7 @@ class BatteryHistoryEntry:
     health_percent: float = 100.0
     cycle_count: int = 0
     conservation_active: bool = True
+    is_estimated: bool = False
 
     @property
     def date(self) -> str:
@@ -164,6 +167,7 @@ class HardwareFeatures:
     wifi_power_save: bool = False
     eth_power_save: bool = False
     eco_travel: bool = False
+    rgb_keyboard: bool = False
 
 
 @dataclass
@@ -204,6 +208,8 @@ class HardwarePaths:
     hwmon_pwm1_enable: Optional[str] = None
     lcd_overdrive: Optional[str] = None
     gpu_mode: Optional[str] = None
+    rgb_hidraw: Optional[str] = None
+    rgb_sysfs_dir: Optional[str] = None
 
 
 @dataclass

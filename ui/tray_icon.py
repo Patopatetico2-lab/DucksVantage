@@ -22,6 +22,10 @@ APP_ICON_PATH = os.path.join(BASE_DIR, "assets", "app_icon.svg")
 class SystemTrayManager(QObject):
     """Gerencia o ícone da bandeja e o menu de acesso rápido no painel do KDE."""
     profile_requested = Signal(str)
+    preset_requested = Signal(str, str)
+    refresh_rate_requested = Signal(int)
+    game_auto_toggled = Signal(bool)
+    touchpad_toggled = Signal(bool)
     conservation_toggled = Signal(bool)
     eco_travel_toggled = Signal(bool)
     autostart_toggled = Signal(bool)
@@ -122,6 +126,34 @@ class SystemTrayManager(QObject):
 
         self.profile_menu.menuAction().setVisible(bool(feat.platform_profile and supported_profiles))
 
+        # Submenu de Presets Personalizados (1 Clique)
+        self.presets_menu = self.menu.addMenu("Presets Personalizados")
+        self.presets_menu.setIcon(self._get_icon("mode_custom.svg"))
+        self.presets_menu.setStyleSheet(self.menu.styleSheet())
+        self.rebuild_presets_menu()
+
+        # Submenu de Taxa de Atualização (Hz)
+        self.refresh_menu = self.menu.addMenu("Taxa de Atualização (Hz)")
+        self.refresh_menu.setIcon(self._get_icon("refresh.svg"))
+        self.refresh_menu.setStyleSheet(self.menu.styleSheet())
+        self.rebuild_refresh_menu()
+
+        # Auto-Switch em Jogos
+        self.action_game_auto = QAction("Auto-Switch em Jogos", self.menu)
+        self.action_game_auto.setIcon(self._get_icon("game_controller.svg"))
+        self.action_game_auto.setCheckable(True)
+        self.action_game_auto.triggered.connect(self.game_auto_toggled.emit)
+        self.action_game_auto.setVisible(feat.platform_profile)
+        self.menu.addAction(self.action_game_auto)
+
+        # Trava do Touchpad
+        self.action_touchpad = QAction("Bloquear Touchpad", self.menu)
+        self.action_touchpad.setIcon(self._get_icon("edge_touchpad.svg"))
+        self.action_touchpad.setCheckable(True)
+        self.action_touchpad.triggered.connect(self.touchpad_toggled.emit)
+        self.action_touchpad.setVisible(feat.touchpad_control)
+        self.menu.addAction(self.action_touchpad)
+
         # Modo Viagem (Eco-Mode Extremo)
         self.action_eco_travel = QAction("Modo Viagem (Eco-Mode Extremo)", self.menu)
         self.action_eco_travel.setIcon(self._get_icon("eco_travel.svg"))
@@ -202,6 +234,48 @@ class SystemTrayManager(QObject):
         painter.end()
         return pixmap
 
+    def rebuild_presets_menu(self):
+        """Reconstrói o submenu de presets salvos respeitando as capacidades do hardware."""
+        self.presets_menu.clear()
+        feat = self.backend.features
+        supported_profiles = self.backend.get_supported_canonical_profiles()
+        has_perf_ctrl = any((
+            bool(feat.platform_profile and supported_profiles),
+            feat.cpu_governor,
+            feat.turbo_boost,
+            feat.custom_tdp,
+            feat.refresh_rate,
+        ))
+        presets = self.backend.get_user_presets()
+        self.presets_menu.menuAction().setVisible(bool(has_perf_ctrl and presets))
+        for p in presets:
+            pid = str(p.get("id", ""))
+            pname = str(p.get("name", pid))
+            act = QAction(pname, self.presets_menu)
+            act.setIcon(self._get_icon("mode_custom.svg"))
+            act.triggered.connect(lambda _c=False, i=pid, n=pname: self.preset_requested.emit(i, n))
+            self.presets_menu.addAction(act)
+
+    def rebuild_refresh_menu(self):
+        """Reconstrói o submenu de taxas de atualização suportadas pelo painel."""
+        self.refresh_menu.clear()
+        self._refresh_actions = {}
+        if not self.backend.features.refresh_rate:
+            self.refresh_menu.menuAction().setVisible(False)
+            return
+        info = self.backend.get_display_refresh_info()
+        can_switch = bool(info.available and len(info.available_rates) > 1)
+        self.refresh_menu.menuAction().setVisible(can_switch)
+        if not can_switch:
+            return
+        for hz in info.available_rates:
+            act = QAction(f"{hz} Hz", self.refresh_menu)
+            act.setCheckable(True)
+            act.setChecked(hz == info.current_hz)
+            act.triggered.connect(lambda _c=False, h=hz: self.refresh_rate_requested.emit(h))
+            self.refresh_menu.addAction(act)
+            self._refresh_actions[hz] = act
+
     def update_tray_state(self):
         """Atualiza o ícone, o menu e a tooltip do system tray com telemetria recente."""
         prof = self.backend.normalize_profile(self.backend.get_platform_profile())
@@ -216,11 +290,20 @@ class SystemTrayManager(QObject):
         else:
             self.action_performance.setChecked(prof in ("performance", "max-power"))
 
+        if self.backend.features.platform_profile:
+            self.action_game_auto.setChecked(self.backend.get_game_auto_switch())
+        if self.backend.features.touchpad_control:
+            self.action_touchpad.setChecked(self.backend.get_touchpad_status())
         if self.backend.features.eco_travel:
             self.action_eco_travel.setChecked(self.backend.get_eco_travel_mode())
         if self.backend.features.conservation_mode:
             self.action_conservation.setChecked(self.backend.get_conservation_mode())
         self.action_autostart.setChecked(self.backend.get_autostart_enabled())
+
+        if self.backend.features.refresh_rate and getattr(self, "_refresh_actions", None):
+            cur_hz = self.backend.get_display_refresh_info().current_hz
+            for hz, act in self._refresh_actions.items():
+                act.setChecked(hz == cur_hz)
 
         bat = self.backend.get_battery_info()
         cpu = self.backend.get_cpu_metrics()
@@ -229,6 +312,13 @@ class SystemTrayManager(QObject):
         lines = [f"Ducksvantage ({self.backend.system_info.display_model_name})"]
         if self.backend.features.platform_profile:
             lines.append(f"• Perfil: {prof.upper()}")
+            active_game = self.backend.get_active_game()
+            if active_game:
+                lines.append(f"• Jogo/App: {active_game}")
+        if self.backend.features.refresh_rate:
+            ref = self.backend.get_display_refresh_info()
+            if ref.available:
+                lines.append(f"• Tela: {ref.current_hz} Hz")
         if bat.available:
             bat_str = f"{bat.capacity_percent}% ({'AC' if bat.ac_connected else 'Bateria'}) • {bat.temperature_c:.0f}°C"
             lines.append(f"• Bateria: {bat_str}")

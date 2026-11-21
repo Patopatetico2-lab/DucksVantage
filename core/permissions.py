@@ -48,6 +48,9 @@ ACTION=="add|change", SUBSYSTEM=="hwmon", RUN+="/bin/sh -c 'chmod 0666 /sys/clas
 
 # 9. Controle de Economia de Energia de Rede (Wi-Fi / Ethernet PCIe Runtime PM)
 ACTION=="add|change", SUBSYSTEM=="net", RUN+="/bin/sh -c 'chmod 0666 /sys/class/net/*/device/power/control 2>/dev/null || true'"
+
+# 10. Teclado RGB 4-Zonas Lenovo Legion/LOQ (Controlador USB ITE 048d)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="048d", MODE="0666"
 """
 
 

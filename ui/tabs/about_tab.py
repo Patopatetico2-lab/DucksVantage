@@ -8,24 +8,48 @@ Zero emojis: utiliza exclusivamente ícones vetoriais SVG.
 import os
 from core.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
-    QFrame, QPushButton, QScrollArea, Qt, Signal, QFont,
-    QMessageBox, QApplication, QIcon, QPixmap
+    QFrame, QPushButton, QScrollArea, QComboBox, QFileDialog,
+    Qt, Signal, QFont, QThread, QMessageBox, QApplication, QIcon, QPixmap
 )
+from core.backend import APP_VERSION
 from ui.theme_tokens import ThemeTokens
 from ui.components import StatusBadge, ToggleSwitch
 from core.permissions import PermissionsManager
 
 ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "assets", "icons")
 
+PROFILE_LABELS_PREFS = {
+    "low-power": "Modo Silencioso (Low-Power)",
+    "balanced": "Modo Equilibrado (Balanced)",
+    "performance": "Modo Desempenho (Performance)",
+    "max-power": "Desempenho Máximo (Max-Power)",
+}
 
-class AboutTab(QWidget):
-    """Informações completas de DMI/BIOS do sistema, Autostart XDG e reparo compacto de permissões UDEV."""
-    permissions_updated = Signal()
-    autostart_toggled = Signal(bool)
+
+class UpdateCheckWorker(QThread):
+    """Thread leve para verificar atualizações no GitHub sem travar a interface."""
+    finished_check = Signal(dict)
 
     def __init__(self, backend, parent=None):
         super().__init__(parent)
         self.backend = backend
+
+    def run(self):
+        res = self.backend.check_for_updates()
+        self.finished_check.emit(res)
+
+
+class AboutTab(QWidget):
+    """Informações completas de DMI/BIOS do sistema, Preferências, Autostart XDG e reparo compacto de permissões UDEV."""
+    permissions_updated = Signal()
+    autostart_toggled = Signal(bool)
+    preferences_changed = Signal()
+    test_osd_requested = Signal()
+
+    def __init__(self, backend, parent=None):
+        super().__init__(parent)
+        self.backend = backend
+        self._update_worker = None
 
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
@@ -67,7 +91,7 @@ class AboutTab(QWidget):
 
         info_header.addStretch()
 
-        ver_badge = StatusBadge("DUCKSVANTAGE v2.0", bg_color="#1e293b", text_color="#00d2ff")
+        ver_badge = StatusBadge(f"DUCKSVANTAGE v{APP_VERSION}", bg_color="#1e293b", text_color="#00d2ff")
         info_header.addWidget(ver_badge)
 
         info_layout.addLayout(info_header)
@@ -97,12 +121,19 @@ class AboutTab(QWidget):
         self.btn_copy_diag.clicked.connect(self._copy_diagnostic_action)
         diag_row.addWidget(self.btn_copy_diag)
 
-        diag_hint = QLabel(
-            "Gera um relatório técnico em Markdown (DMI, BIOS, módulos kernel, capacidades e UDEV, sem dados pessoais) pronto para issues no GitHub."
+        self.btn_check_updates = QPushButton("Verificar Atualizações")
+        self.btn_check_updates.setIcon(QIcon(os.path.join(ICON_DIR, "update.svg")))
+        self.btn_check_updates.setProperty("class", "secondaryButton")
+        self.btn_check_updates.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_check_updates.clicked.connect(self._check_updates_action)
+        diag_row.addWidget(self.btn_check_updates)
+
+        self.update_status_lbl = QLabel(
+            "Diagnóstico Markdown sem dados pessoais • Checagem manual no GitHub (zero telemetria)."
         )
-        diag_hint.setWordWrap(True)
-        diag_hint.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px;")
-        diag_row.addWidget(diag_hint, stretch=1)
+        self.update_status_lbl.setWordWrap(True)
+        self.update_status_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px;")
+        diag_row.addWidget(self.update_status_lbl, stretch=1)
         info_layout.addLayout(diag_row)
 
         layout.addWidget(info_card)
@@ -198,6 +229,198 @@ class AboutTab(QWidget):
         autostart_layout.addWidget(self.autostart_toggle)
 
         layout.addWidget(autostart_card)
+
+        # =====================================================================
+        # 2.5 Card de Preferências do App, OSD, Transição AC/Bateria & Backup JSON
+        # =====================================================================
+        feat = self.backend.features
+        supported_profiles = self.backend.get_supported_canonical_profiles()
+        self.prefs_card = QFrame()
+        self.prefs_card.setProperty("class", "card")
+        prefs_layout = QVBoxLayout(self.prefs_card)
+        prefs_layout.setContentsMargins(20, 18, 20, 18)
+        prefs_layout.setSpacing(12)
+
+        prefs_header = QHBoxLayout()
+        ic_pref = QLabel()
+        g_path = os.path.join(ICON_DIR, "gear.svg")
+        if os.path.exists(g_path):
+            ic_pref.setPixmap(QPixmap(g_path).scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        prefs_header.addWidget(ic_pref)
+
+        pref_titles = QVBoxLayout()
+        pt_t = QLabel("Preferências do Aplicativo, Pop-up OSD & Backup")
+        pt_t.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        pt_t.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        pref_titles.addWidget(pt_t)
+
+        pt_s = QLabel("Personalize o overlay OSD no Wayland/X11, perfis de tomada/bateria e exporte suas configurações.")
+        pt_s.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        pref_titles.addWidget(pt_s)
+        prefs_header.addLayout(pref_titles, stretch=1)
+        prefs_layout.addLayout(prefs_header)
+
+        # Linha 1: OSD Ativo, Posição, Duração e Testar OSD
+        osd_box = QFrame()
+        osd_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 12px;")
+        osd_v = QVBoxLayout(osd_box)
+        osd_v.setContentsMargins(6, 4, 6, 4)
+        osd_v.setSpacing(8)
+
+        osd_row1 = QHBoxLayout()
+        osd_lbl = QLabel("Exibir Pop-up Flutuante (OSD) ao trocar Fn+Q, Jogos ou Brilho")
+        osd_lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        osd_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        osd_row1.addWidget(osd_lbl, stretch=1)
+        self.sw_osd_enabled = ToggleSwitch(checked=self.backend.get_osd_enabled())
+        self.sw_osd_enabled.toggled.connect(self._on_pref_changed)
+        osd_row1.addWidget(self.sw_osd_enabled)
+        osd_v.addLayout(osd_row1)
+
+        osd_row2 = QHBoxLayout()
+        osd_row2.setSpacing(10)
+        pos_lbl = QLabel("Posição:")
+        pos_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        osd_row2.addWidget(pos_lbl)
+
+        self.combo_osd_position = QComboBox()
+        self.combo_osd_position.setFixedHeight(28)
+        self.combo_osd_position.setStyleSheet(f"""
+            QComboBox {{
+                background-color: #192338;
+                color: {ThemeTokens.TEXT_WHITE_100};
+                border: 1px solid {ThemeTokens.BORDER_DEFAULT};
+                border-radius: 6px;
+                padding: 3px 10px;
+                font-size: 11px;
+            }}
+        """)
+        for pid, plbl in [
+            ("bottom-center", "Inferior Central"),
+            ("top-center", "Topo Central"),
+            ("top-right", "Canto Superior Direito"),
+        ]:
+            self.combo_osd_position.addItem(plbl, pid)
+        p_idx = self.combo_osd_position.findData(self.backend.get_osd_position())
+        if p_idx >= 0:
+            self.combo_osd_position.setCurrentIndex(p_idx)
+        self.combo_osd_position.currentIndexChanged.connect(self._on_pref_changed)
+        osd_row2.addWidget(self.combo_osd_position)
+
+        dur_lbl = QLabel("Duração:")
+        dur_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        osd_row2.addWidget(dur_lbl)
+
+        self.combo_osd_duration = QComboBox()
+        self.combo_osd_duration.setFixedHeight(28)
+        self.combo_osd_duration.setStyleSheet(self.combo_osd_position.styleSheet())
+        for ms_val, ms_lbl in [(1200, "1,2s (Rápido)"), (1800, "1,8s (Padrão)"), (2800, "2,8s"), (4000, "4,0s (Longo)")]:
+            self.combo_osd_duration.addItem(ms_lbl, ms_val)
+        d_idx = self.combo_osd_duration.findData(self.backend.get_osd_duration_ms())
+        if d_idx >= 0:
+            self.combo_osd_duration.setCurrentIndex(d_idx)
+        self.combo_osd_duration.currentIndexChanged.connect(self._on_pref_changed)
+        osd_row2.addWidget(self.combo_osd_duration)
+
+        osd_row2.addStretch()
+
+        self.btn_test_osd = QPushButton("Testar OSD")
+        self.btn_test_osd.setProperty("class", "secondaryButton")
+        self.btn_test_osd.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_test_osd.clicked.connect(self.test_osd_requested.emit)
+        osd_row2.addWidget(self.btn_test_osd)
+        osd_v.addLayout(osd_row2)
+        prefs_layout.addWidget(osd_box)
+
+        # Linha 2: Minimizar ao fechar + Resumo Pós-Jogo
+        beh_box = QFrame()
+        beh_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 12px;")
+        beh_v = QVBoxLayout(beh_box)
+        beh_v.setContentsMargins(6, 4, 6, 4)
+        beh_v.setSpacing(8)
+
+        min_row = QHBoxLayout()
+        min_lbl = QLabel("Minimizar para a bandeja do sistema ao clicar em Fechar (X)")
+        min_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; font-size: 11px;")
+        min_row.addWidget(min_lbl, stretch=1)
+        self.sw_minimize_to_tray = ToggleSwitch(checked=self.backend.get_minimize_to_tray())
+        self.sw_minimize_to_tray.toggled.connect(self._on_pref_changed)
+        min_row.addWidget(self.sw_minimize_to_tray)
+        beh_v.addLayout(min_row)
+
+        self.game_summary_row_widget = QWidget()
+        sum_row = QHBoxLayout(self.game_summary_row_widget)
+        sum_row.setContentsMargins(0, 0, 0, 0)
+        sum_lbl = QLabel("Notificar resumo pós-jogo (duração e pico de temperatura CPU/GPU ao sair do jogo)")
+        sum_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; font-size: 11px;")
+        sum_row.addWidget(sum_lbl, stretch=1)
+        self.sw_game_summary = ToggleSwitch(checked=self.backend.get_game_session_summary_enabled())
+        self.sw_game_summary.toggled.connect(self._on_pref_changed)
+        sum_row.addWidget(self.sw_game_summary)
+        self.game_summary_row_widget.setVisible(bool(feat.platform_profile and supported_profiles))
+        beh_v.addWidget(self.game_summary_row_widget)
+        prefs_layout.addWidget(beh_box)
+
+        # Linha 3: Perfis automáticos AC vs Bateria (oculto se não houver ACPI + bateria)
+        self.ac_bat_prefs_widget = QFrame()
+        self.ac_bat_prefs_widget.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 12px;")
+        ab_row = QHBoxLayout(self.ac_bat_prefs_widget)
+        ab_row.setContentsMargins(6, 4, 6, 4)
+        ab_row.setSpacing(10)
+
+        ac_l = QLabel("Perfil na Tomada (AC):")
+        ac_l.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        ab_row.addWidget(ac_l)
+
+        self.combo_ac_profile = QComboBox()
+        self.combo_ac_profile.setFixedHeight(28)
+        self.combo_ac_profile.setStyleSheet(self.combo_osd_position.styleSheet())
+        bat_l = QLabel("Perfil na Bateria:")
+        bat_l.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        self.combo_battery_profile = QComboBox()
+        self.combo_battery_profile.setFixedHeight(28)
+        self.combo_battery_profile.setStyleSheet(self.combo_osd_position.styleSheet())
+
+        for pid in supported_profiles:
+            plabel = PROFILE_LABELS_PREFS.get(pid, pid.upper())
+            self.combo_ac_profile.addItem(plabel, pid)
+            self.combo_battery_profile.addItem(plabel, pid)
+
+        ac_i = self.combo_ac_profile.findData(self.backend.get_ac_profile())
+        if ac_i >= 0:
+            self.combo_ac_profile.setCurrentIndex(ac_i)
+        bat_i = self.combo_battery_profile.findData(self.backend.get_battery_profile())
+        if bat_i >= 0:
+            self.combo_battery_profile.setCurrentIndex(bat_i)
+
+        self.combo_ac_profile.currentIndexChanged.connect(self._on_pref_changed)
+        self.combo_battery_profile.currentIndexChanged.connect(self._on_pref_changed)
+        ab_row.addWidget(self.combo_ac_profile, stretch=1)
+        ab_row.addWidget(bat_l)
+        ab_row.addWidget(self.combo_battery_profile, stretch=1)
+        self.ac_bat_prefs_widget.setVisible(bool(feat.platform_profile and feat.battery and supported_profiles))
+        prefs_layout.addWidget(self.ac_bat_prefs_widget)
+
+        # Linha 4: Backup & Restauração JSON
+        backup_row = QHBoxLayout()
+        backup_row.setSpacing(10)
+        self.btn_export_cfg = QPushButton("Exportar Backup (JSON)")
+        self.btn_export_cfg.setIcon(QIcon(os.path.join(ICON_DIR, "copy.svg")))
+        self.btn_export_cfg.setProperty("class", "secondaryButton")
+        self.btn_export_cfg.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_export_cfg.clicked.connect(self._export_settings_action)
+        backup_row.addWidget(self.btn_export_cfg)
+
+        self.btn_import_cfg = QPushButton("Importar Backup (JSON)")
+        self.btn_import_cfg.setIcon(QIcon(os.path.join(ICON_DIR, "tools.svg")))
+        self.btn_import_cfg.setProperty("class", "secondaryButton")
+        self.btn_import_cfg.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_import_cfg.clicked.connect(self._import_settings_action)
+        backup_row.addWidget(self.btn_import_cfg)
+        backup_row.addStretch()
+        prefs_layout.addLayout(backup_row)
+
+        layout.addWidget(self.prefs_card)
 
         # =====================================================================
         # 3. Card Compacto de Status UDEV e Reparo de Permissões (Sem Bloco Gigante)
@@ -344,6 +567,80 @@ class AboutTab(QWidget):
             self.permissions_updated.emit()
         else:
             QMessageBox.critical(self, "Erro na Instalação UDEV", message)
+
+    def cleanup_workers(self):
+        """Aguarda threads de checagem assíncrona antes de encerrar a janela."""
+        if self._update_worker and self._update_worker.isRunning():
+            self._update_worker.wait(1500)
+
+    def _on_pref_changed(self, _val=None):
+        self.backend.set_osd_enabled(self.sw_osd_enabled.isChecked())
+        pos = self.combo_osd_position.currentData()
+        if pos:
+            self.backend.set_osd_position(str(pos))
+        dur = self.combo_osd_duration.currentData()
+        if dur is not None:
+            self.backend.set_osd_duration_ms(int(dur))
+        self.backend.set_minimize_to_tray(self.sw_minimize_to_tray.isChecked())
+        self.backend.set_game_session_summary_enabled(self.sw_game_summary.isChecked())
+        if self.combo_ac_profile.count() > 0 and self.combo_ac_profile.currentData():
+            self.backend.set_ac_profile(str(self.combo_ac_profile.currentData()))
+        if self.combo_battery_profile.count() > 0 and self.combo_battery_profile.currentData():
+            self.backend.set_battery_profile(str(self.combo_battery_profile.currentData()))
+        self.preferences_changed.emit()
+
+    def _export_settings_action(self):
+        dst, _ = QFileDialog.getSaveFileName(
+            self, "Exportar Backup de Configurações",
+            os.path.expanduser("~/ducksvantage-backup.json"),
+            "Arquivos JSON (*.json)"
+        )
+        if not dst:
+            return
+        ok, msg = self.backend.export_settings(dst)
+        if ok:
+            QMessageBox.information(self, "Backup Exportado", msg)
+        else:
+            QMessageBox.critical(self, "Erro no Backup", msg)
+
+    def _import_settings_action(self):
+        src, _ = QFileDialog.getOpenFileName(
+            self, "Importar Backup de Configurações",
+            os.path.expanduser("~"),
+            "Arquivos JSON (*.json)"
+        )
+        if not src:
+            return
+        ok, msg = self.backend.import_settings(src)
+        if ok:
+            self.preferences_changed.emit()
+            QMessageBox.information(
+                self, "Backup Importado",
+                f"{msg}\nAlgumas listas (como Presets ou App Rules) podem exigir reabrir a janela ou trocar de aba."
+            )
+        else:
+            QMessageBox.critical(self, "Erro ao Importar", msg)
+
+    def _check_updates_action(self):
+        if self._update_worker and self._update_worker.isRunning():
+            return
+        self.btn_check_updates.setEnabled(False)
+        self.update_status_lbl.setText("Consultando último commit no GitHub...")
+        self._update_worker = UpdateCheckWorker(self.backend, self)
+        self._update_worker.finished_check.connect(self._on_check_updates_done)
+        self._update_worker.start()
+
+    def _on_check_updates_done(self, res: dict):
+        self.btn_check_updates.setEnabled(True)
+        msg = res.get("message", "")
+        self.update_status_lbl.setText(msg)
+        if not res.get("ok"):
+            QMessageBox.warning(self, "Verificar Atualizações", msg)
+        elif res.get("up_to_date"):
+            QMessageBox.information(self, "Ducksvantage Atualizado", msg)
+        else:
+            extra = f"\n\nÚltimo commit ({res.get('remote_sha')} em {res.get('remote_date')}):\n{res.get('remote_message')}\n\nRepositório: {res.get('url')}"
+            QMessageBox.information(self, "Atualização Disponível", msg + extra)
 
     def _copy_diagnostic_action(self):
         report = self.backend.generate_hardware_diagnostic_report()

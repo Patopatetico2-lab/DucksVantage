@@ -9,7 +9,7 @@ try:
     from PyQt6 import QtCore, QtGui, QtWidgets
     from PyQt6.QtCore import (
         Qt, QTimer, pyqtSignal as Signal, pyqtSlot as Slot,
-        QSize, QPoint, QPointF, QObject, QVariantAnimation, QRectF
+        QSize, QPoint, QPointF, QObject, QVariantAnimation, QRectF, QThread
     )
     from PyQt6.QtGui import (
         QColor, QFont, QPainter, QPainterPath, QPolygonF, QBrush, QPen,
@@ -21,14 +21,14 @@ try:
         QGridLayout, QLabel, QPushButton, QFrame, QScrollArea,
         QProgressBar, QStackedWidget, QMessageBox, QGraphicsDropShadowEffect,
         QSizePolicy, QSystemTrayIcon, QMenu, QGraphicsOpacityEffect,
-        QSlider, QComboBox, QLineEdit, QDialog
+        QSlider, QComboBox, QLineEdit, QDialog, QFileDialog, QColorDialog
     )
     QT_LIB = "PyQt6"
 except ImportError:
     try:
         from PySide6.QtCore import (
             Qt, QTimer, Signal, Slot,
-            QSize, QPoint, QPointF, QObject, QVariantAnimation, QRectF
+            QSize, QPoint, QPointF, QObject, QVariantAnimation, QRectF, QThread
         )
         from PySide6.QtGui import (
             QColor, QFont, QPainter, QPainterPath, QPolygonF, QBrush, QPen,
@@ -40,7 +40,7 @@ except ImportError:
             QGridLayout, QLabel, QPushButton, QFrame, QScrollArea,
             QProgressBar, QStackedWidget, QMessageBox, QGraphicsDropShadowEffect,
             QSizePolicy, QSystemTrayIcon, QMenu, QGraphicsOpacityEffect,
-            QSlider, QComboBox, QLineEdit, QDialog
+            QSlider, QComboBox, QLineEdit, QDialog, QFileDialog, QColorDialog
         )
         QT_LIB = "PySide6"
     except ImportError:
