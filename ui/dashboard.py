@@ -115,6 +115,7 @@ class EdgeControlItem(QFrame):
         text_layout.setSpacing(1)
 
         self.t_label = QLabel(title)
+        self.t_label.setWordWrap(True)
         self.t_label.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.Medium))
         self.t_label.setStyleSheet(
             f"color: {ThemeTokens.TEXT_WHITE_100 if supported else ThemeTokens.TEXT_WHITE_40}; background: transparent;"
@@ -122,6 +123,7 @@ class EdgeControlItem(QFrame):
         text_layout.addWidget(self.t_label)
 
         self.sub_label = QLabel(subtitle if supported else "Não suportado")
+        self.sub_label.setWordWrap(True)
         self.sub_label.setFont(QFont(ThemeTokens.FONT_NAME, 8))
         self.sub_label.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_40}; background: transparent;")
         self.sub_label.setVisible(False)
@@ -170,7 +172,7 @@ class KeyboardBacklightEdgeItem(QFrame):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 9, 2, 4)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
 
         title = QLabel("Luz do Teclado")
         title.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.Medium))
@@ -224,7 +226,7 @@ class KeyboardBacklightEdgeItem(QFrame):
                         color: {ThemeTokens.TEXT_WHITE_100};
                         border: 1px solid {ThemeTokens.ACCENT_STEEL};
                         border-radius: 4px;
-                        padding: 0px 8px;
+                        padding: 0px 6px;
                     }}
                 """)
             else:
@@ -234,7 +236,7 @@ class KeyboardBacklightEdgeItem(QFrame):
                         color: {ThemeTokens.TEXT_LIGHT_GRAY if self.supported else ThemeTokens.TEXT_WHITE_40};
                         border: none;
                         border-radius: 4px;
-                        padding: 0px 8px;
+                        padding: 0px 6px;
                     }}
                     QPushButton:hover {{
                         color: {ThemeTokens.TEXT_WHITE_100};
@@ -266,8 +268,8 @@ class VantageDashboardView(QWidget):
 
         container = QWidget()
         main_layout = QHBoxLayout(container)
-        main_layout.setContentsMargins(20, 16, 20, 16)
-        main_layout.setSpacing(16)
+        main_layout.setContentsMargins(16, 14, 16, 14)
+        main_layout.setSpacing(12)
 
         # =====================================================================
         # COLUNA ESQUERDA (65%)
@@ -290,7 +292,7 @@ class VantageDashboardView(QWidget):
             }}
         """)
         th_layout = QVBoxLayout(self.thermal_card)
-        th_layout.setContentsMargins(18, 12, 18, 14)
+        th_layout.setContentsMargins(14, 12, 14, 14)
         th_layout.setSpacing(10)
 
         supported_profiles = self.backend.get_supported_canonical_profiles()
@@ -383,11 +385,13 @@ class VantageDashboardView(QWidget):
             }}
         """)
         lc_layout = QVBoxLayout(self.live_chart_card)
-        lc_layout.setContentsMargins(18, 14, 18, 12)
+        lc_layout.setContentsMargins(14, 14, 14, 12)
         lc_layout.setSpacing(10)
 
         lc_header = QHBoxLayout()
-        lc_title = QLabel("Histórico Térmico (2 min)")
+        lc_header.setSpacing(6)
+        lc_title = QLabel("Histórico Térmico")
+        lc_title.setToolTip("Histórico térmico dos últimos 2 minutos")
         lc_title.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.DemiBold))
         lc_title.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         lc_header.addWidget(lc_title)
@@ -402,7 +406,7 @@ class VantageDashboardView(QWidget):
         lc_header.addWidget(self.throttling_badge)
 
         self.live_peaks_badge = StatusBadge(
-            "PICOS: CPU --°C | GPU --°C",
+            "PICOS: --°C / --°C",
             bg_color="transparent",
             text_color=ThemeTokens.TEXT_LIGHT_GRAY,
         )
@@ -472,7 +476,7 @@ class VantageDashboardView(QWidget):
             }}
         """)
         edge_layout = QVBoxLayout(self.edge_card)
-        edge_layout.setContentsMargins(18, 14, 18, 14)
+        edge_layout.setContentsMargins(14, 14, 14, 14)
         edge_layout.setSpacing(0)
 
         edge_header = QHBoxLayout()
@@ -603,7 +607,7 @@ class VantageDashboardView(QWidget):
         g_pk = self.live_thermal_chart.peak_gpu
         c_str = f"{c_pk:.0f}°C" if c_pk > 0 else "--°C"
         g_str = f"{g_pk:.0f}°C" if g_pk > 0 else "D3cold"
-        self.live_peaks_badge.setText(f"Picos: CPU {c_str} | GPU {g_str}")
+        self.live_peaks_badge.setText(f"Picos: {c_str} / {g_str}")
 
     def update_telemetry(self):
         """Atualiza todos os sensores e controles do Dashboard."""

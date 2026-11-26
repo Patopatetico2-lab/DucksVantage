@@ -29,7 +29,7 @@ class CircularGauge(QWidget):
         self.center_sub_text = ""
         self.bottom_sub_text = "Aguardando..."
 
-        self.setMinimumSize(165, 172)
+        self.setMinimumSize(140, 166)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.anim = QVariantAnimation(self)
