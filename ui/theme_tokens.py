@@ -1,70 +1,73 @@
 """
 Tokens de Design e Constantes Visuais do Ducksvantage (ui/theme_tokens.py).
-Compilado a partir da engenharia reversa dos arquivos SCSS/CSS do Lenovo Vantage
-(VAN-11517, app.theme.scss, widget-legion-edge.component.scss).
+Estilo 3 — Vantage Refinado: paleta obsidiana/grafite fosca com destaque azul-aço sóbrio.
 Todas as cores utilizam códigos hexadecimais puros para total compatibilidade com QPainter e QSS.
 """
 
 
 class ThemeTokens:
     # -------------------------------------------------------------------------
-    # Paleta de Cores Hexadecimal Oficial (Lenovo Vantage / Legion Zone)
+    # Superfícies Neutras Foscas (Estilo Obsidiana / Grafite Industrial)
     # -------------------------------------------------------------------------
-    BG_APP = "#11192c"                 # Fundo principal ($gaming_bg, VAN-11517)
-    BG_SIDEBAR = "#151f36"             # Sidebar ($gaming_rightbg)
-    BG_HEADER = "#151f36"              # Cabeçalho superior
-    BG_CARD = "#1f2a42"                # Fundo dos cartões ($gaming_darkest / $darkCell)
-    BG_CARD_HOVER = "#253048"          # Hover em cartões ($gaming_darker)
-    BG_CARD_ACTIVE = "#293c4f"         # Estado selecionado ($gaming_dark)
-    BG_POPUP = "#293757"               # Fundo de diálogos e modais ($darkPopup)
-    BG_OSD = "#1a1e29"                 # Fundo do popup OSD translúcido
+    BG_APP = "#141517"                 # Fundo principal da janela
+    BG_SIDEBAR = "#16171a"             # Barra lateral de navegação
+    BG_HEADER = "#181a1d"              # Cabeçalho superior fino
+    BG_CARD = "#1c1e22"                # Cartões principais
+    BG_CARD_HOVER = "#23262b"          # Superfície secundária / hover
+    BG_CARD_ACTIVE = "#222936"         # Item / bloco selecionado
+    BG_POPUP = "#202328"               # Diálogos e menus
+    BG_OSD = "#181a1e"                 # Fundo do popup OSD flutuante
+    BG_SURFACE_DEEP = "#121316"        # Fundos de gráficos e campos de entrada
 
-    # Bordas e Divisores
-    BORDER_DEFAULT = "#30415a"         # $gaming-slate-blue
-    BORDER_HOVER = "#425067"           # $gaming_blue_grey_light
-    BORDER_CYAN = "#00d2ff"            # Destaque Ciano Elétrico
+    # Bordas e Destaque Coeso
+    BORDER_DEFAULT = "#2c3037"         # Divisor e contorno padrão 1px
+    BORDER_HOVER = "#3d434d"           # Contorno em hover
+    BORDER_CYAN = "#60a5fa"            # Alias preservado: Azul-aço refinado
+    ACCENT_STEEL = "#60a5fa"           # Azul-aço principal de destaque
+    ACCENT_MUTED = "#94a3b8"           # Ardósia suave para séries secundárias
 
-    # Tipografia, Textos e Ícones (Hex puros compatíveis com QColor e QSS)
-    TEXT_WHITE_100 = "#fbfdff"         # Texto primário branco puro
-    TEXT_LIGHT_GRAY = "#cbd5e1"        # Títulos de gauges e subtítulos claros (#cbd5e1)
-    TEXT_WHITE_80 = "#cbd5e1"          # Subtítulos primários (#cbd5e1)
-    TEXT_WHITE_60 = "#cbd5e1"          # Subtítulos secundários (#cbd5e1)
-    TEXT_WHITE_40 = "#8b949e"          # Textos auxiliares e legendas discretas (#8b949e)
-    ICON_INACTIVE = "#8b949e"          # Cor de ícones inativos (#8b949e)
+    # Tipografia, Textos e Ícones
+    TEXT_WHITE_100 = "#f4f5f7"         # Texto primário
+    TEXT_LIGHT_GRAY = "#8f96a3"        # Labels secundários e metadados
+    TEXT_WHITE_80 = "#c9ced6"          # Texto intermediário
+    TEXT_WHITE_60 = "#8f96a3"          # Subtítulos secundários
+    TEXT_WHITE_40 = "#666d7a"          # Textos auxiliares discretos
+    ICON_INACTIVE = "#7b8290"          # Cor base de ícones inativos
 
-    # Cores dos Perfis Térmicos Oficiais (Thermal Modes)
-    THERMAL_QUIET = "#00d2ff"          # Azul Modo Silencioso (#00d2ff)
-    THERMAL_BALANCED = "#2ec5eb"       # Branco/Ciano Modo Equilibrado (#2ec5eb)
-    THERMAL_PERFORMANCE = "#ff3b30"    # Vermelho Legion Modo Desempenho (#ff3b30)
-    THERMAL_CUSTOM = "#9e3dff"         # Roxo Neon Modo Custom / Max-Power
+    # Cores dos Perfis Térmicos (Sóbrias)
+    THERMAL_QUIET = "#60a5fa"          # Azul-aço Modo Silencioso
+    THERMAL_BALANCED = "#93c5fd"       # Azul claro Modo Equilibrado
+    THERMAL_PERFORMANCE = "#ef4444"    # Vermelho discreto Modo Desempenho
+    THERMAL_CUSTOM = "#818cf8"         # Índigo suave Modo Custom / Max-Power
 
     # Cores de Ação e Status
-    COLOR_PRIMARY = "#0160d6"          # $btn_primary_color
-    COLOR_PRIMARY_HOVER = "#257eff"    # $btn_secondary_color
-    COLOR_SUCCESS = "#2cd283"          # $go
-    STATUS_GREEN = "#2cd283"           # Alias verde neon de status
-    COLOR_WARNING = "#ffb703"          # Âmbar
-    STATUS_WARNING = "#ffb703"
-    COLOR_DANGER = "#ff3b30"           # Vermelho Alerta
-    STATUS_DANGER = "#ff3b30"
-    LEGION_RED = "#ff3b30"             # Vermelho Legion Oficial
+    COLOR_PRIMARY = "#3b82f6"
+    COLOR_PRIMARY_HOVER = "#60a5fa"
+    COLOR_SUCCESS = "#34d399"
+    STATUS_GREEN = "#34d399"
+    COLOR_WARNING = "#f59e0b"
+    STATUS_WARNING = "#f59e0b"
+    COLOR_DANGER = "#ef4444"
+    STATUS_DANGER = "#ef4444"
+    LEGION_RED = "#ef4444"
 
-    # Gradientes de Hardware (Início, Fim)
-    GRAD_CPU = ("#2D58DE", "#00FAF3")     # Anel da CPU (Azul -> Ciano)
-    GRAD_GPU = ("#FF9F00", "#FF2815")     # Anel da GPU (Laranja -> Vermelho)
-    GRAD_RAM = ("#7800BF", "#FF2AE8")     # Anel da RAM (Roxo -> Magenta Neon)
-    GRAD_STORAGE = ("#0ea5e9", "#2cd283") # Armazenamento (Azul -> Verde)
-    GRAD_BATTERY = ("#2fcc74", "#33dfa6") # Carga da Bateria (Verde)
-    GRAD_BUTTON = ("#2e62d9", "#4980fc")  # Botão Primário
+    # Gradientes Coesos dos Medidores (Paleta Aço Refinada)
+    GRAD_CPU = ("#3b82f6", "#60a5fa")
+    GRAD_GPU = ("#60a5fa", "#93c5fd")
+    GRAD_RAM = ("#3b82f6", "#60a5fa")
+    GRAD_STORAGE = ("#3b82f6", "#60a5fa")
+    GRAD_BATTERY = ("#10b981", "#34d399")
+    GRAD_BUTTON = ("#2563eb", "#3b82f6")
 
     # Geometria e Raios de Borda
-    RADIUS_CARD = 9                    # $border_radius = 0.9rem
-    RADIUS_BUTTON = 6                  # $border_radius_sm = 0.6rem
-    RADIUS_TAG = 4
-    RADIUS_OSD = 16                    # Cantos arredondados do pop-up OSD
+    RADIUS_CARD = 10
+    RADIUS_BUTTON = 6
+    RADIUS_TAG = 5
+    RADIUS_OSD = 14
 
     # Tipografia
-    FONT_FAMILY = '"Segoe UI", "Inter", "Roboto", "Noto Sans", sans-serif'
+    FONT_NAME = "Inter"
+    FONT_FAMILY = '"Inter", "Noto Sans", "Segoe UI", "Roboto", sans-serif'
     FONT_SIZE_TITLE = 18
     FONT_SIZE_SUBTITLE = 14
     FONT_SIZE_BODY = 12

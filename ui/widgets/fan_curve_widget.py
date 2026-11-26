@@ -180,17 +180,17 @@ class FanCurveWidget(QWidget):
 
         rect = self.rect().adjusted(1, 1, -1, -1)
         painter.setPen(QPen(QColor(ThemeTokens.BORDER_DEFAULT), 1))
-        painter.setBrush(QBrush(QColor("#0d1322")))
+        painter.setBrush(QBrush(QColor(ThemeTokens.BG_APP)))
         painter.drawRoundedRect(rect, 8, 8)
 
         pad_left, pad_top, plot_w, plot_h = self._plot_bounds()
 
         # Grade horizontal (PWM % e RPM estimado)
-        painter.setFont(QFont("Segoe UI", 8))
+        painter.setFont(QFont(ThemeTokens.FONT_NAME, 8))
         for pwm_val in (0, 25, 50, 75, 100):
             yy = self._pwm_to_y(pwm_val)
             rpm_est = int(round((pwm_val / 100.0) * self.MAX_RPM))
-            painter.setPen(QPen(QColor("#1e293b"), 1, Qt.PenStyle.DotLine))
+            painter.setPen(QPen(QColor("#22252b"), 1, Qt.PenStyle.DotLine))
             painter.drawLine(int(pad_left), int(yy), int(pad_left + plot_w), int(yy))
             painter.setPen(QColor(ThemeTokens.TEXT_LIGHT_GRAY))
             label_y = "0% (0 RPM)" if pwm_val == 0 else f"{pwm_val}% ({rpm_est // 100 * 100})"
@@ -203,7 +203,7 @@ class FanCurveWidget(QWidget):
         # Grade vertical (Temperatura °C)
         for t_val in (30, 45, 60, 75, 90, 100):
             xx = self._temp_to_x(t_val)
-            painter.setPen(QPen(QColor("#1e293b"), 1, Qt.PenStyle.DotLine))
+            painter.setPen(QPen(QColor("#22252b"), 1, Qt.PenStyle.DotLine))
             painter.drawLine(int(xx), int(pad_top), int(xx), int(pad_top + plot_h))
             painter.setPen(QColor(ThemeTokens.TEXT_LIGHT_GRAY))
             painter.drawText(
@@ -252,15 +252,15 @@ class FanCurveWidget(QWidget):
                 painter.setBrush(QBrush(halo))
                 painter.drawEllipse(pt, 12.0, 12.0)
 
-            painter.setPen(QPen(QColor("#0b0f19"), 2.0))
-            painter.setBrush(QBrush(QColor("#ffffff" if is_active_node else accent_hex)))
+            painter.setPen(QPen(QColor(ThemeTokens.BG_APP), 2.0))
+            painter.setBrush(QBrush(QColor("#f4f5f7" if is_active_node else accent_hex)))
             painter.drawEllipse(pt, radius, radius)
 
             # Rótulo do ponto quando arrastado ou sob o mouse
             if is_active_node:
                 rpm_pt = int(round((pwm / 100.0) * self.MAX_RPM))
                 tag = f"{t}°C • {pwm}% (~{rpm_pt} RPM)"
-                painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+                painter.setFont(QFont(ThemeTokens.FONT_NAME, 8, QFont.Weight.Bold))
                 painter.setPen(QColor("#ffffff"))
                 painter.drawText(
                     int(pt.x() - 55), int(max(pad_top - 4, pt.y() - 22)), 110, 16,
@@ -291,12 +291,12 @@ class FanCurveWidget(QWidget):
         painter.setBrush(QBrush(glow))
         painter.drawEllipse(op_pt, 10.0, 10.0)
 
-        painter.setPen(QPen(QColor("#0b0f19"), 2))
+        painter.setPen(QPen(QColor(ThemeTokens.BG_APP), 2))
         painter.setBrush(QBrush(QColor(ThemeTokens.STATUS_GREEN)))
         painter.drawEllipse(op_pt, 5.2, 5.2)
 
         # Cabeçalho interno do gráfico
-        painter.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        painter.setFont(QFont(ThemeTokens.FONT_NAME, 9, QFont.Weight.Bold))
         painter.setPen(QColor(accent_hex))
         painter.drawText(int(pad_left + 4), 22, curve_title)
 

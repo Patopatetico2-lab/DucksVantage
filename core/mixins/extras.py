@@ -42,6 +42,8 @@ class PresetsDiagnosticsRgbMixin:
             parts.append("Turbo On" if preset["turbo_enabled"] else "Turbo Off")
         if "pl1_w" in preset and "pl2_w" in preset:
             parts.append(f"TDP {preset['pl1_w']}/{preset['pl2_w']}W")
+        if preset.get("fan_curve_enabled"):
+            parts.append("Curva EC")
         if "refresh_hz" in preset and preset["refresh_hz"]:
             parts.append(f"{preset['refresh_hz']} Hz")
         return " • ".join(parts) if parts else "Preset vazio"
@@ -75,6 +77,15 @@ class PresetsDiagnosticsRgbMixin:
             pl1_w, pl2_w = self.get_cpu_tdp_limits()
             preset["pl1_w"] = int(pl1_w)
             preset["pl2_w"] = int(pl2_w)
+            captured_any = True
+        if self.features.fan_control:
+            fan_cfg = self.get_custom_fan_curve()
+            preset["fan_curve_enabled"] = bool(fan_cfg.get("enabled", False))
+            preset["fan_curve_points"] = list(fan_cfg.get("points", []))
+            if "cpu_temp_limit" in fan_cfg:
+                preset["cpu_temp_limit"] = int(fan_cfg["cpu_temp_limit"])
+            if "gpu_temp_limit" in fan_cfg:
+                preset["gpu_temp_limit"] = int(fan_cfg["gpu_temp_limit"])
             captured_any = True
         if self.features.refresh_rate:
             try:
@@ -145,6 +156,18 @@ class PresetsDiagnosticsRgbMixin:
             else:
                 errors.append(f"TDP: {msg}")
 
+        if "fan_curve_enabled" in target and "fan_curve_points" in target and self.features.fan_control:
+            ok_fc, msg_fc = self.set_custom_fan_curve(
+                target["fan_curve_points"],
+                bool(target["fan_curve_enabled"]),
+                target.get("cpu_temp_limit"),
+                target.get("gpu_temp_limit"),
+            )
+            if ok_fc and target["fan_curve_enabled"]:
+                applied_parts.append("Curva EC")
+            elif not ok_fc:
+                errors.append(f"Fan EC: {msg_fc}")
+
         if "refresh_hz" in target and self.features.refresh_rate:
             hz = int(target["refresh_hz"])
             ok, msg = self.set_refresh_rate(hz)
@@ -169,6 +192,55 @@ class PresetsDiagnosticsRgbMixin:
             return False, "Preset não encontrado."
         self.settings.set("user_presets", filtered)
         return True, "Preset removido com sucesso."
+
+    def export_user_preset_to_file(self, preset_id: str, dst_path: str) -> Tuple[bool, str]:
+        """Exporta um preset 1-clique completo (perfil, TDP, curva EC, Hz) para JSON."""
+        presets = self.get_user_presets()
+        target = next((p for p in presets if p.get("id") == preset_id), None)
+        if not target:
+            return False, "Preset não encontrado."
+        try:
+            parent = os.path.dirname(os.path.abspath(dst_path))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(dst_path, "w", encoding="utf-8") as fh:
+                json.dump({"ducksvantage_preset": target}, fh, indent=2, ensure_ascii=False)
+            return True, f"Preset '{target['name']}' exportado para {os.path.basename(dst_path)}."
+        except Exception as e:
+            return False, f"Falha ao exportar preset: {e}"
+
+    def import_user_preset_from_file(self, src_path: str) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """Importa um preset 1-clique de arquivo JSON validando seus campos."""
+        if not src_path or not os.path.exists(src_path):
+            return False, "Arquivo de preset não encontrado.", None
+        try:
+            with open(src_path, "r", encoding="utf-8") as fh:
+                raw = json.load(fh)
+            obj = raw.get("ducksvantage_preset", raw) if isinstance(raw, dict) else None
+            if not isinstance(obj, dict) or not obj.get("name"):
+                return False, "Arquivo JSON não contém um preset Ducksvantage válido.", None
+
+            clean_name = " ".join(str(obj["name"]).split())[:40]
+            pid = str(obj.get("id") or re.sub(r"[^a-z0-9]+", "-", clean_name.lower()).strip("-")) or f"preset-{int(time.time())}"
+            imported = dict(obj)
+            imported["id"] = pid
+            imported["name"] = clean_name
+
+            presets = self.get_user_presets()
+            replaced = False
+            for idx, cur in enumerate(presets):
+                if cur.get("id") == pid:
+                    presets[idx] = imported
+                    replaced = True
+                    break
+            if not replaced:
+                if len(presets) >= 12:
+                    return False, "Limite máximo de 12 presets atingido.", None
+                presets.append(imported)
+            self.settings.set("user_presets", presets)
+            return True, f"Preset '{clean_name}' importado ({self.format_user_preset_summary(imported)}).", imported
+        except Exception as e:
+            return False, f"Falha ao importar preset: {e}", None
 
     # =========================================================================
     # Diagnóstico Técnico Completo para Suporte e Issues (Sem Dados Pessoais)
@@ -333,6 +405,17 @@ class PresetsDiagnosticsRgbMixin:
 
     def set_minimize_to_tray(self, enabled: bool) -> None:
         self.settings.set("minimize_to_tray", bool(enabled))
+
+    def get_ui_mode(self) -> str:
+        val = str(self.settings.get("ui_mode", "basic") or "basic").strip().lower()
+        return "advanced" if val == "advanced" else "basic"
+
+    def set_ui_mode(self, mode: str) -> None:
+        norm = "advanced" if str(mode or "").strip().lower() == "advanced" else "basic"
+        self.settings.set("ui_mode", norm)
+
+    def is_advanced_mode(self) -> bool:
+        return self.get_ui_mode() == "advanced"
 
     def get_ac_profile(self) -> str:
         raw = str(self.settings.get("ac_profile", "performance") or "performance")

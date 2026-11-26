@@ -20,15 +20,33 @@ from core.qt_compat import is_qt_available
 
 
 def _terminate_previous_instances() -> None:
-    """Encerra instâncias antigas minimizadas na bandeja para evitar conflito de timers do Fn+Q."""
+    """Encerra instâncias GUI antigas do Ducksvantage evitando colisão com outros 'main.py' ou chamadas CLI."""
     my_pid = os.getpid()
+    self_path = os.path.abspath(__file__)
+    cli_flags = {
+        "--status", "--json", "--diagnostic", "--list-presets",
+        "--cycle-profile", "--cycle-hz", "--apply-preset",
+        "--profile", "--conservation", "--install-udev", "--autostart",
+        "--cinema", "--audio-preset", "--eco",
+    }
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
             if proc.info["pid"] == my_pid:
                 continue
-            cmdline = " ".join(proc.info.get("cmdline") or [])
-            if ("main.py" in cmdline or "ducksvantage" in cmdline) and "python" in (proc.info.get("name") or "").lower():
-                proc.terminate()
+            cmd_list = proc.info.get("cmdline") or []
+            cmdline = " ".join(cmd_list)
+            pname = (proc.info.get("name") or "").lower()
+            is_ducksvantage_proc = (
+                self_path in cmd_list
+                or "DucksVantage/main.py" in cmdline
+                or "/bin/ducksvantage" in cmdline
+                or "ducksvantage" in pname
+            )
+            if not is_ducksvantage_proc:
+                continue
+            if any(arg in cli_flags or any(arg.startswith(f + "=") for f in cli_flags) for arg in cmd_list):
+                continue
+            proc.terminate()
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
 
@@ -42,13 +60,18 @@ def run_cli_mode(args, backend: HardwareBackend):
             cpu = backend.get_cpu_metrics()
             gpu = backend.get_gpu_metrics()
             bat = backend.get_battery_info()
+            ref = backend.get_display_refresh_info()
             payload = {
                 "model": backend.system_info.display_model_name,
                 "profile": backend.get_platform_profile(),
                 "active_game": backend.get_active_game(),
+                "eco_mode": backend.get_eco_travel_mode(),
+                "cinema_mode": backend.get_cinema_mode(),
+                "audio_preset": backend.get_audio_preset(),
                 "cpu": {"temp_c": cpu.temperature_c, "freq_mhz": cpu.frequency_mhz, "governor": cpu.governor},
                 "gpu": {"available": gpu.available, "temp_c": gpu.temperature_c, "power_w": gpu.power_draw_w, "state": gpu.runtime_state},
                 "battery": {"available": bat.available, "percent": bat.capacity_percent, "status": bat.status, "ac": bat.ac_connected, "eta": bat.estimated_label},
+                "display": {"available": ref.available, "hz": ref.current_hz, "vrr": ref.vrr_policy},
             }
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             return
@@ -137,6 +160,22 @@ def run_cli_mode(args, backend: HardwareBackend):
         ok, msg = backend.set_autostart_enabled(enable)
         print(f"[{'OK' if ok else 'ERRO'}] Autostart XDG ({'Ativado' if enable else 'Desativado'}): {msg}")
 
+    if getattr(args, "eco", None):
+        arg_e = str(args.eco).lower()
+        target_e = (not backend.get_eco_travel_mode()) if arg_e == "toggle" else (arg_e in ("1", "true", "on"))
+        ok, msg = backend.set_eco_travel_mode(target_e)
+        print(json.dumps({"ok": ok, "eco_mode": target_e, "message": msg}, ensure_ascii=False) if use_json else f"[{'OK' if ok else 'ERRO'}] Eco-Mode: {msg}")
+
+    if getattr(args, "cinema", None):
+        arg_c = str(args.cinema).lower()
+        target_c = (not backend.get_cinema_mode()) if arg_c == "toggle" else (arg_c in ("1", "true", "on"))
+        ok, msg = backend.set_cinema_mode(target_c)
+        print(json.dumps({"ok": ok, "cinema_mode": target_c, "message": msg}, ensure_ascii=False) if use_json else f"[{'OK' if ok else 'ERRO'}] Modo Cinema: {msg}")
+
+    if getattr(args, "audio_preset", None):
+        ok, msg = backend.set_audio_preset(str(args.audio_preset))
+        print(json.dumps({"ok": ok, "audio_preset": str(args.audio_preset), "message": msg}, ensure_ascii=False) if use_json else f"[{'OK' if ok else 'ERRO'}] Áudio: {msg}")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -173,12 +212,16 @@ def main():
     parser.add_argument("--apply-preset", type=str, help="Aplica um preset personalizado pelo nome ou ID")
     parser.add_argument("--list-presets", action="store_true", help="Lista todos os presets personalizados salvos")
     parser.add_argument("--diagnostic", action="store_true", help="Imprime o relatório técnico de diagnóstico de hardware")
+    parser.add_argument("--eco", type=str, choices=["on", "off", "toggle"], help="Ativa/desativa/alterna o Modo Viagem")
+    parser.add_argument("--cinema", type=str, choices=["on", "off", "toggle"], help="Ativa/desativa/alterna o Modo Cinema & DND")
+    parser.add_argument("--audio-preset", type=str, choices=["normal", "voice_call", "privacy_mute"], help="Aplica preset de áudio PipeWire")
     parser.add_argument("--json", action="store_true", help="Formata saída CLI compatível em JSON (status, presets, ações)")
     args = parser.parse_args()
 
     if (
         args.status or args.profile or args.conservation or args.install_udev or args.autostart
         or args.cycle_profile or args.cycle_hz or args.apply_preset or args.list_presets or args.diagnostic
+        or args.eco or args.cinema or args.audio_preset
     ):
         backend = HardwareBackend()
         try:

@@ -61,7 +61,7 @@ class LightingTab(QWidget):
 
         titles = QVBoxLayout()
         t_lbl = QLabel("Iluminação RGB do Teclado • 4 Zonas Lenovo")
-        t_lbl.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        t_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 13, QFont.Weight.Bold))
         t_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         titles.addWidget(t_lbl)
 
@@ -72,38 +72,29 @@ class LightingTab(QWidget):
 
         self.rgb_badge = StatusBadge(
             f"BACKEND: {str(state.get('backend', 'none')).upper()}",
-            bg_color="#1e293b",
-            text_color="#00d2ff"
+            bg_color=ThemeTokens.BG_CARD_HOVER,
+            text_color=ThemeTokens.ACCENT_STEEL
         )
         header.addWidget(self.rgb_badge)
         c_layout.addLayout(header)
 
         # Efeito + Presets rápidos
         eff_box = QFrame()
-        eff_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 10px 14px;")
+        eff_box.setProperty("class", "subBox")
         eff_layout = QVBoxLayout(eff_box)
+        eff_layout.setContentsMargins(14, 12, 14, 12)
         eff_layout.setSpacing(10)
 
         eff_row = QHBoxLayout()
         lbl_eff = QLabel("Efeito de Iluminação:")
-        lbl_eff.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        lbl_eff.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        lbl_eff.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.DemiBold))
+        lbl_eff.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; border: none;")
         eff_row.addWidget(lbl_eff)
         eff_row.addStretch()
 
         self.combo_mode = QComboBox()
         self.combo_mode.setMinimumWidth(240)
         self.combo_mode.setFixedHeight(30)
-        self.combo_mode.setStyleSheet(f"""
-            QComboBox {{
-                background-color: #192338;
-                color: {ThemeTokens.TEXT_WHITE_100};
-                border: 1px solid {ThemeTokens.BORDER_DEFAULT};
-                border-radius: 6px;
-                padding: 3px 10px;
-                font-size: 11px;
-            }}
-        """)
         for mid, mlabel in RGB_EFFECTS:
             self.combo_mode.addItem(mlabel, mid)
         cur_idx = self.combo_mode.findData(state.get("mode", "static"))
@@ -141,12 +132,13 @@ class LightingTab(QWidget):
 
         # Seletores das 4 Zonas
         zones_box = QFrame()
-        zones_box.setStyleSheet(f"background-color: {ThemeTokens.BG_CARD_HOVER}; border-radius: 8px; padding: 12px 14px;")
+        zones_box.setProperty("class", "subBox")
         z_v = QVBoxLayout(zones_box)
+        z_v.setContentsMargins(14, 12, 14, 12)
         z_v.setSpacing(10)
 
         z_top = QLabel("Cores das 4 Zonas Físicas do Teclado (Esquerda → NumPad)")
-        z_top.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        z_top.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.Bold))
         z_top.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         z_v.addWidget(z_top)
 
@@ -178,16 +170,16 @@ class LightingTab(QWidget):
             bp.setFixedHeight(28)
             bp.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: #192338;
+                    background-color: {ThemeTokens.BG_CARD_HOVER};
                     color: {ThemeTokens.TEXT_LIGHT_GRAY};
                     border: 1px solid {ThemeTokens.BORDER_DEFAULT};
                     border-radius: 5px;
                     padding: 2px 10px;
                     font-size: 10px;
-                    font-weight: bold;
+                    font-weight: 600;
                 }}
                 QPushButton:hover {{
-                    border-color: {ThemeTokens.BORDER_CYAN};
+                    border-color: {ThemeTokens.ACCENT_STEEL};
                     color: {ThemeTokens.TEXT_WHITE_100};
                 }}
             """)
@@ -197,22 +189,9 @@ class LightingTab(QWidget):
         act_row.addStretch()
 
         self.btn_apply_rgb = QPushButton("Aplicar no Teclado")
+        self.btn_apply_rgb.setProperty("class", "primaryButton")
         self.btn_apply_rgb.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_apply_rgb.setFixedHeight(32)
-        self.btn_apply_rgb.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {ThemeTokens.BORDER_CYAN};
-                color: #0b0f19;
-                border: none;
-                border-radius: 6px;
-                padding: 4px 16px;
-                font-weight: bold;
-                font-size: 11px;
-            }}
-            QPushButton:hover {{
-                background-color: #38bdf8;
-            }}
-        """)
         self.btn_apply_rgb.clicked.connect(self._on_apply_rgb)
         act_row.addWidget(self.btn_apply_rgb)
         z_v.addLayout(act_row)

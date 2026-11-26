@@ -39,7 +39,9 @@ ACTION=="add|change", SUBSYSTEM=="cpu", RUN+="/bin/sh -c 'chmod 0666 /sys/device
 ACTION=="add|change", SUBSYSTEM=="powercap", RUN+="/bin/sh -c 'chmod 0666 /sys/class/powercap/intel-rapl*/constraint_*_power_limit_uw 2>/dev/null || true'"
 ACTION=="add|change", SUBSYSTEM=="pci", RUN+="/bin/sh -c 'chmod 0666 /sys/bus/pci/devices/*/power/control 2>/dev/null || true'"
 
-# 7. Leitura de Eventos de Teclas Especiais (Tecla Copilot F23 / WMI Hotkeys)
+# 7. Leitura de Eventos de Teclas Especiais (Tecla Copilot F8/F23, Ideapad extra buttons & Teclados)
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", MODE="0644"
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="Ideapad extra buttons", MODE="0644"
 ACTION=="add|change", SUBSYSTEM=="input", RUN+="/bin/sh -c 'chmod 0644 /dev/input/by-path/*kbd* /dev/input/by-path/*VPC* 2>/dev/null || true'"
 
 # 8. Atributos Térmicos e de Potência Lenovo WMI Other (CPU/GPU Temp Limits, AC Offset, PPT, Overdrive) e Hwmon PWM
@@ -51,6 +53,9 @@ ACTION=="add|change", SUBSYSTEM=="net", RUN+="/bin/sh -c 'chmod 0666 /sys/class/
 
 # 10. Teclado RGB 4-Zonas Lenovo Legion/LOQ (Controlador USB ITE 048d)
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="048d", MODE="0666"
+
+# 11. Controle de Wake-on-USB (evita receptor/mouse 2.4GHz acordar notebook na mochila)
+ACTION=="add|change", SUBSYSTEM=="usb", RUN+="/bin/sh -c 'chmod 0666 /sys/bus/usb/devices/*/power/wakeup 2>/dev/null || true'"
 """
 
 
@@ -88,6 +93,8 @@ class PermissionsManager:
                 "firmware-attributes",
                 "energy_performance_preference",
                 "net/*/device/power/control",
+                "Ideapad extra buttons",
+                "power/wakeup",
             )
             return all(m in content for m in required_markers)
         except OSError:
@@ -127,6 +134,7 @@ class PermissionsManager:
             "chmod 0666 /sys/class/firmware-attributes/*/attributes/*/current_value 2>/dev/null || true",
             "chmod 0666 /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null || true",
             "chmod 0666 /sys/class/net/*/device/power/control 2>/dev/null || true",
+            "chmod 0666 /sys/bus/usb/devices/*/power/wakeup 2>/dev/null || true",
             "chmod 0644 /dev/input/by-path/*kbd* /dev/input/by-path/*VPC* 2>/dev/null || true",
         ]
 

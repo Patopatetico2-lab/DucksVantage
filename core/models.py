@@ -39,6 +39,7 @@ class GPUMetrics:
     memory_total_mb: int = 0
     power_draw_w: float = 0.0
     pstate: str = "P0"
+    throttle_reasons: List[str] = field(default_factory=list)
 
     @property
     def memory_percent(self) -> float:
@@ -168,6 +169,11 @@ class HardwareFeatures:
     eth_power_save: bool = False
     eco_travel: bool = False
     rgb_keyboard: bool = False
+    cinema_mode: bool = False
+    audio_control: bool = False
+    usb_wakeup: bool = False
+    external_monitor_dock: bool = False
+    thermal_throttling: bool = False
 
 
 @dataclass
@@ -266,6 +272,8 @@ class DisplayRefreshInfo:
     resolution: str = ""
     backend_name: str = "none"  # "kscreen-doctor", "wlr-randr", "xrandr", "drm"
     auto_switch_ac: bool = True
+    vrr_supported: bool = False
+    vrr_policy: str = "never"  # "never", "always", "automatic"
 
 
 @dataclass

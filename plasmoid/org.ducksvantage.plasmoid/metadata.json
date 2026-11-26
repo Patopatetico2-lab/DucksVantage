@@ -1,0 +1,22 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "Ducksvantage"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Monitoramento de temperatura CPU/GPU e troca de perfis térmicos Lenovo em 1 clique",
+        "Description[pt_BR]": "Monitoramento de temperatura CPU/GPU e troca de perfis térmicos Lenovo em 1 clique",
+        "EnabledByDefault": true,
+        "Icon": "ducksvantage",
+        "Id": "org.ducksvantage.plasmoid",
+        "License": "GPL-3.0",
+        "Name": "Ducksvantage",
+        "Name[pt_BR]": "Ducksvantage",
+        "Version": "1.0"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-MainScript": "ui/main.qml"
+}

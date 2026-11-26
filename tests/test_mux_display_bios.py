@@ -554,25 +554,39 @@ DP-1 disconnected (normal left inverted right x axis y axis)
         osd.close()
 
     def test_performance_tab_ui_initialization(self):
-        """Verifica se a aba Desempenho instancia os cartões dos Recursos 1, 2 e 3 sem erros."""
+        """Verifica se PerformanceTab, GpuDisplayTab e AutomationTab instanciam corretamente."""
         from ui.tabs.performance_tab import PerformanceTab
+        from ui.tabs.gpu_display_tab import GpuDisplayTab
+        from ui.tabs.automation_tab import AutomationTab
+
         tab = PerformanceTab(self.backend)
+        gdisp = GpuDisplayTab(self.backend)
+        auto = AutomationTab(self.backend)
 
         # Recurso 1: Cartão GPU MUX Switch presente e com 3 blocos
-        self.assertIn("hybrid", tab.mux_blocks)
-        self.assertIn("dedicated", tab.mux_blocks)
-        self.assertIn("integrated", tab.mux_blocks)
+        self.assertIn("hybrid", gdisp.mux_blocks)
+        self.assertIn("dedicated", gdisp.mux_blocks)
+        self.assertIn("integrated", gdisp.mux_blocks)
 
         # Recurso 2: Display refresh rate widgets inicializados
-        self.assertIsNotNone(tab.ref_rate_badge)
-        self.assertIsNotNone(tab.ref_auto_switch)
+        self.assertIsNotNone(gdisp.ref_rate_badge)
+        self.assertIsNotNone(gdisp.ref_auto_switch)
 
         # Recurso 3: LCD Overdrive e container dinâmico de BIOS
-        self.assertIsNotNone(tab.lcd_overdrive_switch)
-        self.assertIsNotNone(tab.bios_dyn_container)
+        self.assertIsNotNone(gdisp.lcd_overdrive_switch)
+        self.assertIsNotNone(gdisp.bios_dyn_container)
+
+        # Automação & Atalhos
+        self.assertIsNotNone(auto.presets_card)
+        self.assertIsNotNone(auto.rules_card)
+        self.assertIsNotNone(auto.remap_card)
 
         tab.refresh_profile_state()
+        gdisp.refresh_all()
+        auto.refresh_automation_state()
         tab.close()
+        gdisp.close()
+        auto.close()
 
 
 if __name__ == "__main__":

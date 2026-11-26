@@ -7,6 +7,7 @@ import os
 import json
 import tempfile
 from typing import Any, Dict, Tuple
+from core.key_mapper import sanitize_key_mapping_slot
 
 CONFIG_DIR = os.path.expanduser("~/.config/ducksvantage")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "settings.json")
@@ -14,17 +15,21 @@ LEGACY_CONFIG_FILE = os.path.expanduser("~/.config/lenovo-loq-control/settings.j
 
 DEFAULT_KEY_MAPPINGS: Dict[str, Dict[str, Any]] = {
     "copilot_key": {
-        "label": "Tecla Copilot (F23 / Meta+Shift+F23)",
-        "qt_shortcut": "F23",
+        "label": "Tecla Copilot (F8 / Meta+Shift+F23)",
+        "qt_shortcut": "Meta+Shift+F23",
         "evdev_code": 193,
+        "evdev_modifiers": ["Meta", "Shift"],
+        "extra_evdev_codes": [583],  # KEY_ASSISTANT
         "action": "cycle_profile",
         "custom_command": "",
         "enabled": True,
     },
     "special_launch": {
-        "label": "Tecla Especial / Multimídia (F24)",
+        "label": "Tecla Especial / Extra (F24)",
         "qt_shortcut": "F24",
         "evdev_code": 194,
+        "evdev_modifiers": [],
+        "extra_evdev_codes": [],
         "action": "toggle_max_power",
         "custom_command": "",
         "enabled": True,
@@ -32,7 +37,9 @@ DEFAULT_KEY_MAPPINGS: Dict[str, Dict[str, Any]] = {
     "eco_hotkey": {
         "label": "Atalho Rápido Eco-Mode (Ctrl+Alt+E)",
         "qt_shortcut": "Ctrl+Alt+E",
-        "evdev_code": 0,
+        "evdev_code": 18,  # KEY_E
+        "evdev_modifiers": ["Ctrl", "Alt"],
+        "extra_evdev_codes": [],
         "action": "toggle_eco_mode",
         "custom_command": "",
         "enabled": True,
@@ -40,7 +47,9 @@ DEFAULT_KEY_MAPPINGS: Dict[str, Dict[str, Any]] = {
     "refresh_rate_hotkey": {
         "label": "Taxa de Atualização de Tela (Fn+R / Alt+R)",
         "qt_shortcut": "Alt+R",
-        "evdev_code": 431,  # KEY_DISPLAYTOGGLE (Lenovo Fn+R)
+        "evdev_code": 19,  # KEY_R
+        "evdev_modifiers": ["Alt"],
+        "extra_evdev_codes": [562, 431],  # KEY_REFRESH_RATE_TOGGLE / KEY_DISPLAYTOGGLE (Fn+R)
         "action": "cycle_refresh_rate",
         "custom_command": "",
         "enabled": True,
@@ -71,9 +80,25 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "game_target_profile": "max-power",
     "game_target_preset_id": "",
     "game_ignore_list": [],
-    "game_session_summary_enabled": True,
     "game_auto_refresh_max": False,
     "game_auto_lock_touchpad": False,
+    "game_vrr_policy": "keep",
+    "game_session_history": [],
+    "dock_mode_enabled": False,
+    "dock_target_profile": "performance",
+    "dock_keep_max_hz": True,
+    "dock_inhibit_lid_sleep": False,
+    "usb_wakeup_blocked": False,
+    "cinema_mode_active": False,
+    "audio_preset": "normal",
+    "thermal_checkup_history": [],
+    "wifi_power_rules": [],
+    "night_schedule_enabled": False,
+    "night_start_time": "23:00",
+    "night_end_time": "07:00",
+    "night_profile": "low-power",
+    "night_kbd_off": True,
+    "night_conservation": True,
     "eco_travel_mode": False,
     "ac_profile": "performance",
     "battery_profile": "low-power",
@@ -83,6 +108,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "osd_position": "bottom-center",
     "osd_duration_ms": 1800,
     "minimize_to_tray": True,
+    "ui_mode": "basic",
     "custom_pl1_w": 45,
     "custom_pl2_w": 70,
     "custom_fan_curve_enabled": False,
@@ -131,13 +157,23 @@ class SettingsManager:
                     if isinstance(loaded, dict):
                         self._data.update(loaded)
                 km = self._data.get("key_mappings")
+                repaired = False
                 if not isinstance(km, dict) or not km:
                     self._data["key_mappings"] = json.loads(json.dumps(DEFAULT_KEY_MAPPINGS))
+                    repaired = True
                 else:
+                    for slot_id in list(km.keys()):
+                        sanitized = sanitize_key_mapping_slot(
+                            slot_id, km.get(slot_id), DEFAULT_KEY_MAPPINGS.get(slot_id)
+                        )
+                        if sanitized != km.get(slot_id):
+                            km[slot_id] = sanitized
+                            repaired = True
                     for def_k, def_v in DEFAULT_KEY_MAPPINGS.items():
                         if def_k not in km:
                             km[def_k] = json.loads(json.dumps(def_v))
-                if target == LEGACY_CONFIG_FILE and not os.path.exists(CONFIG_FILE):
+                            repaired = True
+                if (target == LEGACY_CONFIG_FILE and not os.path.exists(CONFIG_FILE)) or repaired:
                     self.save()
             except Exception as e:
                 print(f"[Aviso] Falha ao ler configurações: {e}")
@@ -220,6 +256,10 @@ class SettingsManager:
             if not isinstance(km, dict) or not km:
                 self._data["key_mappings"] = json.loads(json.dumps(DEFAULT_SETTINGS["key_mappings"]))
             else:
+                for slot_id in list(km.keys()):
+                    km[slot_id] = sanitize_key_mapping_slot(
+                        slot_id, km.get(slot_id), DEFAULT_KEY_MAPPINGS.get(slot_id)
+                    )
                 for def_k, def_v in DEFAULT_KEY_MAPPINGS.items():
                     if def_k not in km:
                         km[def_k] = json.loads(json.dumps(def_v))

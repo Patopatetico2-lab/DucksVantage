@@ -21,7 +21,14 @@ import subprocess
 import shutil
 import urllib.request
 import psutil
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Tuple, Any, Set
+
+from core.key_mapper import (
+    MODIFIER_EVDEV_MAP,
+    normalize_modifiers,
+    format_shortcut,
+    matches_evdev_trigger,
+)
 
 from core.models import (
     CPUMetrics, GPUMetrics, RAMMetrics, StorageDevice, FanMetrics,
@@ -37,6 +44,7 @@ from core.mixins import (
     TelemetryBatteryNetworkMixin,
     DisplayMuxBiosMixin,
     PresetsDiagnosticsRgbMixin,
+    SmartFeaturesMixin,
 )
 from core.mixins.cpu_thermal import (
     UNDERVOLT_CANARY_FILE,
@@ -147,6 +155,7 @@ class HardwareBackend(
     TelemetryBatteryNetworkMixin,
     DisplayMuxBiosMixin,
     PresetsDiagnosticsRgbMixin,
+    SmartFeaturesMixin,
 ):
     """Núcleo universal de comunicação direta com o Linux (/sys/, ACPI, DRM, HWMon, RAPL, evdev)."""
 
@@ -183,14 +192,47 @@ class HardwareBackend(
         self._pre_game_refresh_hz: Optional[int] = None
         self._pre_game_turbo: Optional[bool] = None
         self._pre_game_tdp: Optional[Tuple[int, int]] = None
+        self._pre_game_fan_curve: Optional[Dict[str, Any]] = None
+        self._pre_game_vrr_policy: Optional[str] = None
         self._game_changed_refresh: bool = False
         self._game_changed_turbo: bool = False
         self._game_changed_tdp: bool = False
+        self._game_changed_fan_curve: bool = False
+        self._game_changed_vrr: bool = False
         self._game_locked_touchpad: bool = False
         self._game_session_start_ts: float = 0.0
         self._game_peak_cpu_c: float = 0.0
         self._game_peak_gpu_c: float = 0.0
+        self._game_power_sum_w: float = 0.0
+        self._game_power_samples: int = 0
         self._rgb_backend_name: str = "none"
+
+        # Estado dos novos recursos inteligentes (Throttling, Dock, USB, Cinema, Áudio, Wi-Fi, Noite, Checkup)
+        self._prev_cpu_throttle_sum: Optional[int] = None
+        self._cached_gpu_throttle_reasons: List[str] = []
+        self._cinema_mode_active: bool = False
+        self._cinema_inhibit_proc: Optional[Any] = None
+        self._cinema_dnd_cookie: Optional[int] = None
+        self._pre_cinema_kbd: Optional[int] = None
+        self._pw_echo_module_id: Optional[int] = None
+        self._pre_privacy_camera: Optional[bool] = None
+        self._checkup_procs: List[Any] = []
+        self._checkup_state: Optional[Dict[str, Any]] = None
+        self._prev_rapl_uj: Optional[int] = None
+        self._prev_rapl_ts: float = 0.0
+        self._cached_wifi_ssid: Optional[str] = None
+        self._last_wifi_ssid_scan: float = 0.0
+        self._last_applied_wifi_ssid: Optional[str] = None
+        self._night_mode_active: bool = False
+        self._pre_night_profile: str = "balanced"
+        self._pre_night_kbd: Optional[int] = None
+        self._dock_active: Optional[bool] = None
+        self._dock_pre_profile: str = "balanced"
+        self._dock_pre_hz: Optional[int] = None
+        self._dock_lid_proc: Optional[Any] = None
+        self._proc_cpu_map: Dict[int, Any] = {}
+        self._cached_top_procs: Optional[List[Dict[str, Any]]] = None
+        self._last_top_procs_scan: float = 0.0
 
         # Estado da Curva de Ventoinhas e Undervolt Seguro
         self._last_applied_pwm: int = -1
@@ -202,8 +244,14 @@ class HardwareBackend(
         self._alerted_80_this_session: bool = False
         self._last_temp_alert_ts: float = 0.0
 
-        # Descritores não-bloqueantes /dev/input para capturar tecla Copilot (F23) se acessível
+        # Descritores não-bloqueantes /dev/input para capturar tecla Copilot (F23), F8 e atalhos
         self._input_fds: List[int] = []
+        self._input_fd_info: Dict[int, Dict[str, str]] = {}
+        self._evdev_held_mods: Dict[int, Set[int]] = {}
+        self._evdev_last_trigger_ts: Dict[str, float] = {}
+        self._evdev_capture_active: bool = False
+        self._evdev_capture_mods: Set[int] = set()
+        self._evdev_capture_cooldown_until: float = 0.0
 
         # Caches de telemetria e processos para evitar micro-travamentos (stutters) na interface
         self._cached_cpu_vendor: Optional[str] = None
@@ -283,13 +331,48 @@ class HardwareBackend(
         return vendor
 
     def close(self):
-        """Fecha com segurança descritores de arquivo abertos de evdev."""
+        """Fecha com segurança descritores de arquivo evdev e processos filhos ativos."""
         for fd in list(self._input_fds):
             try:
                 os.close(fd)
             except Exception:
                 pass
         self._input_fds.clear()
+        self._input_fd_info.clear()
+        self._evdev_held_mods.clear()
+        self._evdev_capture_active = False
+        self._evdev_capture_mods.clear()
+
+        if hasattr(self, "cancel_thermal_checkup"):
+            try:
+                self.cancel_thermal_checkup()
+            except Exception:
+                pass
+
+        for attr in ("_cinema_inhibit_proc", "_dock_lid_proc"):
+            proc = getattr(self, attr, None)
+            if proc is not None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=1.0)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                setattr(self, attr, None)
+
+        if hasattr(self, "_set_kde_notifications_inhibited"):
+            try:
+                self._set_kde_notifications_inhibited(False)
+            except Exception:
+                pass
+
+        if hasattr(self, "_unload_pipewire_echo_cancel"):
+            try:
+                self._unload_pipewire_echo_cancel()
+            except Exception:
+                pass
 
     def __del__(self):
         try:
@@ -533,6 +616,24 @@ class HardwareBackend(
             or self.paths.nvidia_pci_power_control
             or self.features.kbd_backlight
         )
+
+        # 14. Novos Recursos Inteligentes (Cinema, Áudio PipeWire, Wake-on-USB, Dock HDMI, Throttling)
+        self.features.cinema_mode = bool(
+            shutil.which("kde-inhibit") or shutil.which("systemd-inhibit") or shutil.which("qdbus6")
+        )
+        self.features.audio_control = bool(shutil.which("wpctl") or shutil.which("pactl"))
+        self.features.usb_wakeup = bool(self.get_usb_wakeup_devices())
+        self.features.external_monitor_dock = bool(glob.glob("/sys/class/drm/card*-*/status"))
+        self.features.thermal_throttling = bool(
+            glob.glob("/sys/devices/system/cpu/cpu*/thermal_throttle/*") or self.nvidia_available
+        )
+
+        # Aplica bloqueio de Wake-on-USB salvo no boot se já estiver liberado via UDEV (sem elevation)
+        if self.features.usb_wakeup and bool(self.settings.get("usb_wakeup_blocked", False)):
+            try:
+                self.set_usb_wakeup_blocked(True, allow_elevation=False)
+            except Exception:
+                pass
 
     def _scan_touchpad(self) -> None:
         """Detecta se o notebook possui touchpad físico e backend real para bloqueá-lo."""
@@ -853,30 +954,218 @@ class HardwareBackend(
     # =========================================================================
     # Detecção Infalível de Eventos (Polling de 200ms para Fn+Q, AC e Teclas)
     # =========================================================================
+    @staticmethod
+    def _discover_evdev_keyboard_candidates() -> List[Tuple[str, str]]:
+        """
+        Descobre nós /dev/input/event* de teclados e botões especiais Lenovo (ex: Ideapad extra buttons),
+        descartando botões de energia/tampa/áudio e deduplicando symlinks (usb- vs usbv2-).
+        """
+        discovered: List[Tuple[str, str]] = []
+        seen_paths: Set[str] = set()
+        ignore_names = ("power button", "lid switch", "sleep button", "pc speaker", "video bus")
+        hotkey_tokens = ("keyboard", "ideapad", "lenovo", "wmi", "hotkey", "extra buttons")
+
+        proc_devices = "/proc/bus/input/devices"
+        if os.path.exists(proc_devices):
+            try:
+                with open(proc_devices, "r", encoding="utf-8", errors="ignore") as f:
+                    blocks = f.read().strip().split("\n\n")
+                for block in blocks:
+                    lines = block.splitlines()
+                    name = next((l[8:].strip('"') for l in lines if l.startswith("N: Name=")), "")
+                    handlers = next((l[12:] for l in lines if l.startswith("H: Handlers=")), "")
+                    name_low = name.lower()
+                    if any(tok in name_low for tok in ignore_names):
+                        continue
+                    has_kbd = "kbd" in handlers.split()
+                    has_hotkey_name = any(tok in name_low for tok in hotkey_tokens)
+                    if not (has_kbd or has_hotkey_name):
+                        continue
+                    ev_token = next((h for h in handlers.split() if h.startswith("event")), None)
+                    if not ev_token:
+                        continue
+                    dev_path = f"/dev/input/{ev_token}"
+                    real = os.path.realpath(dev_path)
+                    if real not in seen_paths:
+                        seen_paths.add(real)
+                        discovered.append((dev_path, name or ev_token))
+            except Exception:
+                pass
+
+        for sym in sorted(glob.glob("/dev/input/by-path/*kbd*") + glob.glob("/dev/input/by-path/*VPC*")):
+            real = os.path.realpath(sym)
+            if real not in seen_paths:
+                seen_paths.add(real)
+                discovered.append((sym, os.path.basename(sym)))
+
+        return discovered
+
     def _init_evdev_listeners(self) -> None:
-        """Abre dispositivos de teclado em /dev/input de forma não-bloqueante se houver permissão."""
-        for fd in self._input_fds:
+        """Abre dispositivos de teclado/hotkeys em /dev/input deduplicados e não-bloqueantes."""
+        for fd in list(self._input_fds):
             try:
                 os.close(fd)
             except Exception:
                 pass
         self._input_fds.clear()
+        self._input_fd_info.clear()
+        self._evdev_held_mods.clear()
 
-        candidates = sorted(
-            glob.glob("/dev/input/by-path/*kbd*")
-            + glob.glob("/dev/input/by-path/*VPC*")
-        )
-        for dev in candidates:
-            if os.path.exists(dev) and os.access(dev, os.R_OK):
+        seen_rdevs: Set[Tuple[int, int]] = set()
+        seen_reals: Set[str] = set()
+        for dev, dev_name in self._discover_evdev_keyboard_candidates():
+            if not (os.path.exists(dev) and os.access(dev, os.R_OK)):
+                continue
+            real = os.path.realpath(dev)
+            if real in seen_reals:
+                continue
+            try:
+                st = os.stat(real)
+                rdev = int(getattr(st, "st_rdev", 0) or 0)
+                rdev_key = (int(getattr(st, "st_mode", 0) or 0) & 0o170000, rdev)
+                if rdev and rdev_key in seen_rdevs:
+                    continue
+                fd = os.open(real, os.O_RDONLY | os.O_NONBLOCK)
+                seen_reals.add(real)
+                if rdev:
+                    seen_rdevs.add(rdev_key)
+                self._input_fds.append(fd)
+                self._input_fd_info[fd] = {"path": real, "name": dev_name}
+                self._evdev_held_mods[fd] = set()
+            except Exception:
+                pass
+
+    def has_evdev_access(self) -> bool:
+        """Retorna True se ao menos um dispositivo de teclado/hotkey estiver aberto no evdev."""
+        if not self._input_fds:
+            self._init_evdev_listeners()
+        return len(self._input_fds) > 0
+
+    def get_evdev_monitored_devices(self) -> List[str]:
+        """Lista legível dos dispositivos monitorados pelo leitor evdev (sem duplicatas)."""
+        if not self._input_fds:
+            self._init_evdev_listeners()
+        items: List[str] = []
+        for fd in list(self._input_fds):
+            info = self._input_fd_info.get(fd)
+            if info:
+                items.append(f"{info['name']} ({os.path.basename(info['path'])})")
+            else:
+                items.append(f"fd:{fd}")
+        return items
+
+    def _drain_evdev_events(self) -> None:
+        """Esvazia eventos pendentes nos descritores evdev sem bloquear."""
+        event_size = struct.calcsize("llHHi")
+        for fd in list(self._input_fds):
+            try:
+                while True:
+                    data = os.read(fd, event_size * 32)
+                    if not data:
+                        break
+            except (BlockingIOError, OSError):
+                continue
+
+    def start_evdev_capture(self) -> bool:
+        """Inicia captura em tempo real de uma tecla/atalho diretamente pelo kernel (evdev)."""
+        if not self._input_fds:
+            self._init_evdev_listeners()
+        if not self._input_fds:
+            return False
+        self._drain_evdev_events()
+        self._evdev_capture_mods.clear()
+        self._evdev_capture_active = True
+        return True
+
+    def stop_evdev_capture(self) -> None:
+        """Encerra a captura live via evdev e aplica breve cooldown contra disparo acidental."""
+        self._drain_evdev_events()
+        self._evdev_capture_active = False
+        self._evdev_capture_mods.clear()
+        for fd in list(self._input_fds):
+            self._evdev_held_mods[fd] = set()
+        self._evdev_capture_cooldown_until = time.time() + 0.45
+
+    def get_evdev_capture_preview(self) -> str:
+        """Retorna prévia dos modificadores segurados durante a captura (ex: 'Meta+Shift+...')."""
+        mods = normalize_modifiers(MODIFIER_EVDEV_MAP[c] for c in self._evdev_capture_mods if c in MODIFIER_EVDEV_MAP)
+        if mods:
+            return "+".join(mods) + "+..."
+        return ""
+
+    def poll_evdev_capture(self) -> Optional[Dict[str, Any]]:
+        """Lê o próximo evento de tecla real no evdev durante o modo de captura do botão."""
+        if not self._evdev_capture_active:
+            return None
+
+        event_size = struct.calcsize("llHHi")
+        dead_fds: List[int] = []
+        captured: Optional[Dict[str, Any]] = None
+
+        for fd in list(self._input_fds):
+            try:
+                while True:
+                    data = os.read(fd, event_size * 32)
+                    if not data:
+                        dead_fds.append(fd)
+                        break
+                    for offset in range(0, len(data) - event_size + 1, event_size):
+                        _sec, _usec, ev_type, ev_code, ev_val = struct.unpack(
+                            "llHHi", data[offset:offset + event_size]
+                        )
+                        if ev_type != 1:
+                            continue
+                        if ev_code in MODIFIER_EVDEV_MAP:
+                            if ev_val in (1, 2):
+                                self._evdev_capture_mods.add(ev_code)
+                            elif ev_val == 0:
+                                self._evdev_capture_mods.discard(ev_code)
+                            continue
+                        if ev_val == 1:
+                            if ev_code == 1:  # KEY_ESC
+                                captured = {"cancelled": True}
+                            else:
+                                mods = normalize_modifiers(
+                                    MODIFIER_EVDEV_MAP[c]
+                                    for c in self._evdev_capture_mods
+                                    if c in MODIFIER_EVDEV_MAP
+                                )
+                                captured = {
+                                    "cancelled": False,
+                                    "evdev_code": int(ev_code),
+                                    "evdev_modifiers": mods,
+                                    "qt_shortcut": format_shortcut(int(ev_code), mods),
+                                }
+                            break
+                    if captured is not None:
+                        break
+            except BlockingIOError:
+                pass
+            except (OSError, Exception):
+                dead_fds.append(fd)
+            if captured is not None:
+                break
+
+        if dead_fds:
+            for fd in dead_fds:
                 try:
-                    fd = os.open(dev, os.O_RDONLY | os.O_NONBLOCK)
-                    self._input_fds.append(fd)
+                    os.close(fd)
                 except Exception:
                     pass
+                if fd in self._input_fds:
+                    self._input_fds.remove(fd)
+                self._input_fd_info.pop(fd, None)
+                self._evdev_held_mods.pop(fd, None)
+
+        if captured is not None:
+            self.stop_evdev_capture()
+        return captured
 
     def _poll_evdev_keys(self) -> List[Dict[str, Any]]:
-        """Lê pacotes struct input_event (24 bytes em 64-bit) para capturar tecla Copilot (F23=193) etc."""
-        triggered = []
+        """Lê pacotes struct input_event (24 bytes em 64-bit) para capturar Copilot (F8/F23), F24 e atalhos globais."""
+        triggered: List[Dict[str, Any]] = []
+        if self._evdev_capture_active:
+            return triggered
 
         now = time.time()
         if not self._input_fds:
@@ -887,17 +1176,15 @@ class HardwareBackend(
                 return triggered
 
         mappings = self.get_key_mappings()
-        code_to_slot = {}
-        for slot_id, cfg in mappings.items():
-            if cfg.get("enabled", True) and cfg.get("evdev_code", 0) > 0:
-                code_to_slot[int(cfg["evdev_code"])] = (slot_id, cfg)
+        active_slots = [(sid, cfg) for sid, cfg in mappings.items() if cfg.get("enabled", True)]
 
         event_size = struct.calcsize("llHHi")
-        dead_fds = []
+        dead_fds: List[int] = []
         for fd in list(self._input_fds):
+            held_set = self._evdev_held_mods.setdefault(fd, set())
             try:
                 while True:
-                    data = os.read(fd, event_size * 8)
+                    data = os.read(fd, event_size * 32)
                     if not data:
                         dead_fds.append(fd)
                         break
@@ -905,15 +1192,42 @@ class HardwareBackend(
                         _sec, _usec, ev_type, ev_code, ev_val = struct.unpack(
                             "llHHi", data[offset:offset + event_size]
                         )
-                        # EV_KEY == 1, ev_val == 1 (Key Down)
-                        if ev_type == 1 and ev_val == 1 and ev_code in code_to_slot:
-                            slot_id, cfg = code_to_slot[ev_code]
+                        if ev_type != 1:
+                            continue
+                        if ev_code in MODIFIER_EVDEV_MAP:
+                            if ev_val in (1, 2):
+                                held_set.add(ev_code)
+                            elif ev_val == 0:
+                                held_set.discard(ev_code)
+                            continue
+
+                        # ev_val == 1 (Key Down; ignora auto-repeat ev_val == 2 e Key Up 0)
+                        if ev_val != 1:
+                            continue
+                        if now < self._evdev_capture_cooldown_until:
+                            continue
+
+                        all_held_codes: Set[int] = set()
+                        for mset in self._evdev_held_mods.values():
+                            all_held_codes.update(mset)
+                        held_mods = {
+                            MODIFIER_EVDEV_MAP[c] for c in all_held_codes if c in MODIFIER_EVDEV_MAP
+                        }
+
+                        for slot_id, cfg in active_slots:
+                            if not matches_evdev_trigger(cfg, ev_code, held_mods):
+                                continue
+                            last_ts = self._evdev_last_trigger_ts.get(slot_id, 0.0)
+                            if (now - last_ts) < 0.35:
+                                break
+                            self._evdev_last_trigger_ts[slot_id] = now
                             triggered.append({
                                 "type": "custom_key_pressed",
                                 "slot": slot_id,
                                 "action": cfg.get("action", "cycle_profile"),
-                                "custom_command": cfg.get("custom_command", "")
+                                "custom_command": cfg.get("custom_command", ""),
                             })
+                            break
             except BlockingIOError:
                 continue
             except (OSError, Exception):
@@ -928,6 +1242,8 @@ class HardwareBackend(
                     pass
                 if fd in self._input_fds:
                     self._input_fds.remove(fd)
+                self._input_fd_info.pop(fd, None)
+                self._evdev_held_mods.pop(fd, None)
 
         return triggered
 

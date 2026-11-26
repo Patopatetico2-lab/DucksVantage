@@ -1,5 +1,6 @@
-"""Mixin de Auto-Switching por Jogo e Regras de Energia por Aplicativo."""
+"""Mixin de Auto-Switching por Jogo, VRR, Histórico de Sessões e Regras por Aplicativo."""
 
+import datetime
 import json
 import os
 import re
@@ -28,13 +29,19 @@ class GamingAutoSwitchMixin:
             self._pre_game_refresh_hz = None
             self._pre_game_turbo = None
             self._pre_game_tdp = None
+            self._pre_game_fan_curve = None
+            self._pre_game_vrr_policy = None
             self._game_changed_refresh = False
             self._game_changed_turbo = False
             self._game_changed_tdp = False
+            self._game_changed_fan_curve = False
+            self._game_changed_vrr = False
             self._game_locked_touchpad = False
             self._game_session_start_ts = 0.0
             self._game_peak_cpu_c = 0.0
             self._game_peak_gpu_c = 0.0
+            self._game_power_sum_w = 0.0
+            self._game_power_samples = 0
 
     def get_game_target_profile(self) -> str:
         """Retorna o perfil térmico preferido ao detectar jogos ('performance' ou 'max-power')."""
@@ -75,11 +82,28 @@ class GamingAutoSwitchMixin:
     def set_game_target_preset_id(self, preset_id: str) -> None:
         self.settings.set("game_target_preset_id", str(preset_id or "").strip())
 
-    def get_game_session_summary_enabled(self) -> bool:
-        return bool(self.settings.get("game_session_summary_enabled", True))
+    # -------------------------------------------------------------------------
+    # VRR em Jogos & Histórico Persistente de Sessões
+    # -------------------------------------------------------------------------
+    def get_game_vrr_policy(self) -> str:
+        val = str(self.settings.get("game_vrr_policy", "keep") or "keep").strip().lower()
+        return val if val in ("keep", "automatic", "always", "never") else "keep"
 
-    def set_game_session_summary_enabled(self, enable: bool) -> None:
-        self.settings.set("game_session_summary_enabled", bool(enable))
+    def set_game_vrr_policy(self, policy: str) -> None:
+        val = str(policy or "keep").strip().lower()
+        if val not in ("keep", "automatic", "always", "never"):
+            val = "keep"
+        self.settings.set("game_vrr_policy", val)
+
+    def get_game_session_history(self) -> List[Dict[str, Any]]:
+        """Retorna o histórico persistente das últimas sessões de jogo registradas."""
+        raw = self.settings.get("game_session_history", [])
+        if not isinstance(raw, list):
+            return []
+        return [dict(item) for item in raw if isinstance(item, dict)]
+
+    def clear_game_session_history(self) -> None:
+        self.settings.set("game_session_history", [])
 
     def get_game_ignore_list(self) -> List[str]:
         raw = self.settings.get("game_ignore_list", [])
@@ -108,14 +132,17 @@ class GamingAutoSwitchMixin:
         self._last_game_scan_time = 0.0
         return True, f"'{clean}' removido das exclusões."
 
-    def update_game_session_peaks(self, cpu_temp: float, gpu_temp: float) -> None:
-        """Atualiza os picos térmicos registrados durante a sessão de jogo ativa."""
+    def update_game_session_peaks(self, cpu_temp: float, gpu_temp: float, power_w: float = 0.0) -> None:
+        """Atualiza os picos térmicos e consumo médio registrados durante a sessão de jogo ativa."""
         if not self._active_game_name or self._active_rule_exec or self._game_session_start_ts <= 0:
             return
         if cpu_temp > self._game_peak_cpu_c:
             self._game_peak_cpu_c = float(cpu_temp)
         if gpu_temp > self._game_peak_gpu_c:
             self._game_peak_gpu_c = float(gpu_temp)
+        if power_w > 0:
+            self._game_power_sum_w = float(getattr(self, "_game_power_sum_w", 0.0)) + float(power_w)
+            self._game_power_samples = int(getattr(self, "_game_power_samples", 0)) + 1
 
     def detect_running_game(self, force: bool = False) -> Optional[str]:
         """
@@ -129,6 +156,9 @@ class GamingAutoSwitchMixin:
 
         ignored_bins = {
             "steam", "steamwebhelper", "steamservice", "steam-runtime",
+            "steam-runtime-launch-client", "steam-runtime-launcher-service",
+            "steam-runtime-launcher-interface-0", "steam-runtime-supervisor",
+            "srt-logger",
             "heroic", "lutris", "wineserver", "services.exe", "winedevice.exe",
             "explorer.exe", "plugplay.exe", "svchost.exe", "rpcss.exe",
             "tabtip.exe", "conhost.exe", "start.exe", "wineboot.exe",
@@ -146,6 +176,13 @@ class GamingAutoSwitchMixin:
         }
         user_ignored = set(self.get_game_ignore_list())
         ignored_bins.update(user_ignored)
+
+        def _is_ignored_bin(bin_low: str) -> bool:
+            return (
+                bin_low in ignored_bins
+                or bin_low.startswith(("steam-runtime-", "srt-", "pv-", "pressure-vessel"))
+            )
+
         runtime_wrappers = {
             "wine", "wine64", "wine-preloader", "wine64-preloader",
             "sniper", "soldier", "pv-adverb", "pressure-vessel-wrap",
@@ -171,7 +208,7 @@ class GamingAutoSwitchMixin:
                     p_low = pname.lower()
                     if p_low == "gamemoded":
                         saw_gamemoded = True
-                    if not pname or p_low in ignored_bins:
+                    if not pname or _is_ignored_bin(p_low):
                         continue
 
                     exe_str = (proc.info.get("exe") or "").strip()
@@ -189,7 +226,7 @@ class GamingAutoSwitchMixin:
                             idx = cmdline.index("--")
                             if idx + 1 < len(cmdline):
                                 g_bin = os.path.basename(cmdline[idx + 1].replace("\\", "/"))
-                                if g_bin.lower() not in ignored_bins:
+                                if not _is_ignored_bin(g_bin.lower()):
                                     found_game = f"{g_bin} (Steam #{app_id})"
                                     break
                         found_game = f"Steam Game (AppID {app_id})"
@@ -222,12 +259,12 @@ class GamingAutoSwitchMixin:
                                 continue
                             clean_arg = os.path.basename(arg_norm)
                             c_low = clean_arg.lower()
-                            if c_low.endswith((".exe", ".x86_64", ".bin")) and c_low not in ignored_bins and c_low not in runtime_wrappers:
+                            if c_low.endswith((".exe", ".x86_64", ".bin")) and not _is_ignored_bin(c_low) and c_low not in runtime_wrappers:
                                 found_game = clean_arg
                                 break
                         if not found_game and p_low not in runtime_wrappers:
                             cand_bin = os.path.basename(exe_norm) if exe_str else pname
-                            if cand_bin.lower() not in ignored_bins and cand_bin.lower() not in runtime_wrappers:
+                            if not _is_ignored_bin(cand_bin.lower()) and cand_bin.lower() not in runtime_wrappers:
                                 found_game = os.path.basename(exe_str.replace("\\", "/")) or pname
                         if found_game:
                             break
@@ -242,10 +279,10 @@ class GamingAutoSwitchMixin:
                                 continue
                             clean_arg = os.path.basename(arg_norm)
                             c_low = clean_arg.lower()
-                            if c_low.endswith(".exe") and c_low not in ignored_bins and c_low not in runtime_wrappers:
+                            if c_low.endswith(".exe") and not _is_ignored_bin(c_low) and c_low not in runtime_wrappers:
                                 found_game = clean_arg
                                 break
-                        if not found_game and p_low.endswith(".exe") and p_low not in ignored_bins:
+                        if not found_game and p_low.endswith(".exe") and not _is_ignored_bin(p_low):
                             found_game = pname
                         if found_game:
                             break
@@ -291,18 +328,29 @@ class GamingAutoSwitchMixin:
             rules = json.loads(json.dumps(DEFAULT_APP_POWER_RULES)) if "json" in globals() else list(DEFAULT_APP_POWER_RULES)
         return rules
 
-    def add_app_power_rule(self, executable: str, profile: str, label: str = "") -> Tuple[bool, str]:
-        """Adiciona ou atualiza uma regra de perfil de energia vinculada a um executável."""
+    def add_app_power_rule(
+        self, executable: str, profile: str, label: str = "", preset_id: str = ""
+    ) -> Tuple[bool, str]:
+        """Adiciona ou atualiza uma regra de perfil/preset de energia vinculada a um executável."""
         clean_exec = os.path.basename(executable.strip()).lower()
         if not clean_exec:
             return False, "Informe o nome do executável (ex: blender, resolve, firefox)."
         norm_prof = self.normalize_profile(profile)
-        clean_label = label.strip() or f"{clean_exec} ({self.get_profile_info(norm_prof)['short_title']})"
+        clean_preset = str(preset_id or "").strip()
+        target_desc = self.get_profile_info(norm_prof)["short_title"]
+        if clean_preset:
+            p_obj = next((p for p in self.get_user_presets() if p.get("id") == clean_preset), None)
+            if p_obj:
+                target_desc = f"Preset: {p_obj['name']}"
+                if p_obj.get("profile"):
+                    norm_prof = self.normalize_profile(str(p_obj["profile"]))
+        clean_label = label.strip() or f"{clean_exec} ({target_desc})"
         rules = list(self.get_app_power_rules())
         updated = False
         for item in rules:
             if str(item.get("executable", "")).lower() == clean_exec:
                 item["profile"] = norm_prof
+                item["preset_id"] = clean_preset
                 item["label"] = clean_label
                 item["enabled"] = True
                 updated = True
@@ -312,10 +360,11 @@ class GamingAutoSwitchMixin:
                 "executable": clean_exec,
                 "label": clean_label,
                 "profile": norm_prof,
+                "preset_id": clean_preset,
                 "enabled": True,
             })
         self.settings.set("app_power_rules", rules)
-        return True, f"Regra '{clean_exec}' -> {self.get_profile_info(norm_prof)['short_title']} salva com sucesso."
+        return True, f"Regra '{clean_exec}' -> {target_desc} salva com sucesso."
 
     def remove_app_power_rule(self, executable: str) -> Tuple[bool, str]:
         clean_exec = os.path.basename(executable.strip()).lower()
@@ -409,6 +458,7 @@ class GamingAutoSwitchMixin:
             "executable": str(best.get("executable", "")).lower(),
             "label": str(best.get("label") or best.get("executable")),
             "profile": self.normalize_profile(str(best.get("profile", "performance"))),
+            "preset_id": str(best.get("preset_id", "") or "").strip(),
         }
         self._cached_running_app_rule = res
         self._last_app_rule_scan_time = now
@@ -455,6 +505,11 @@ class GamingAutoSwitchMixin:
             target_name = f"{detected_rule['label']}"
             target_prof = detected_rule["profile"]
             rule_exec = detected_rule["executable"]
+            rule_pid = str(detected_rule.get("preset_id", "") or "").strip()
+            if rule_pid:
+                target_preset = next((p for p in self.get_user_presets() if p.get("id") == rule_pid), None)
+                if target_preset and target_preset.get("profile"):
+                    target_prof = self.normalize_profile(str(target_preset["profile"]))
 
         # Novo jogo ou aplicativo mapeado iniciou (ou mudou de regra ativa)
         if target_name and target_name != self._active_game_name:
@@ -468,18 +523,23 @@ class GamingAutoSwitchMixin:
                 self._game_session_start_ts = time.time()
                 self._game_peak_cpu_c = 0.0
                 self._game_peak_gpu_c = 0.0
+                self._game_power_sum_w = 0.0
+                self._game_power_samples = 0
 
             extras: List[str] = []
             ok_prof = False
 
-            if not rule_exec and target_preset is not None:
-                # Salva estados extras antes de aplicar o preset vinculado
+            if target_preset is not None:
+                # Salva estados extras antes de aplicar o preset vinculado (Jogo ou App Rule)
                 if "turbo_enabled" in target_preset and self.features.turbo_boost and not self._game_changed_turbo:
                     self._pre_game_turbo = self.get_cpu_turbo()
                     self._game_changed_turbo = True
                 if "pl1_w" in target_preset and "pl2_w" in target_preset and self.features.custom_tdp and not self._game_changed_tdp:
                     self._pre_game_tdp = self.get_cpu_tdp_limits()
                     self._game_changed_tdp = True
+                if "fan_curve_enabled" in target_preset and self.features.fan_control and not getattr(self, "_game_changed_fan_curve", False):
+                    self._pre_game_fan_curve = self.get_custom_fan_curve()
+                    self._game_changed_fan_curve = True
                 if "refresh_hz" in target_preset and self.features.refresh_rate and not self._game_changed_refresh:
                     try:
                         ref_cur = self.get_display_refresh_info()
@@ -496,6 +556,8 @@ class GamingAutoSwitchMixin:
                     self._pre_game_turbo = None
                     self._game_changed_tdp = False
                     self._pre_game_tdp = None
+                    self._game_changed_fan_curve = False
+                    self._pre_game_fan_curve = None
                     self._game_changed_refresh = False
                     self._pre_game_refresh_hz = None
                 else:
@@ -535,6 +597,22 @@ class GamingAutoSwitchMixin:
                     except Exception:
                         pass
 
+                # 3. VRR (Adaptive Sync) automático durante o jogo
+                pref_vrr = self.get_game_vrr_policy()
+                if pref_vrr != "keep" and self.features.refresh_rate and not getattr(self, "_game_changed_vrr", False):
+                    try:
+                        ref_vrr = self.get_display_refresh_info()
+                        if ref_vrr.vrr_supported and ref_vrr.vrr_policy != pref_vrr:
+                            self._pre_game_vrr_policy = ref_vrr.vrr_policy
+                            ok_vrr, _ = self.set_vrr_policy(pref_vrr)
+                            if ok_vrr:
+                                self._game_changed_vrr = True
+                                extras.append(f"VRR:{pref_vrr}")
+                            else:
+                                self._pre_game_vrr_policy = None
+                    except Exception:
+                        pass
+
             return {
                 "type": "app_rule_started" if rule_exec else "game_started",
                 "game": target_name,
@@ -547,20 +625,39 @@ class GamingAutoSwitchMixin:
         # Jogo ou aplicativo mapeado fechou
         if not target_name and self._active_game_name:
             finished_game = self._active_game_name
+            was_rule_exec = bool(self._active_rule_exec)
             self._active_game_name = None
             self._active_rule_exec = None
 
             session_summary = None
-            if self._game_session_start_ts > 0:
+            if not was_rule_exec and self._game_session_start_ts > 0:
                 dur_s = max(0, int(round(time.time() - self._game_session_start_ts)))
+                p_samples = int(getattr(self, "_game_power_samples", 0) or 0)
+                p_sum = float(getattr(self, "_game_power_sum_w", 0.0) or 0.0)
+                avg_w = round(p_sum / p_samples, 1) if p_samples > 0 else 0.0
                 session_summary = {
                     "duration_sec": dur_s,
                     "peak_cpu_c": round(self._game_peak_cpu_c, 1),
                     "peak_gpu_c": round(self._game_peak_gpu_c, 1),
+                    "avg_power_w": avg_w,
                 }
+                if dur_s >= 30:
+                    hist = self.get_game_session_history()
+                    hist.append({
+                        "timestamp": datetime.datetime.now().strftime("%d/%m %H:%M"),
+                        "game": finished_game,
+                        "duration_sec": dur_s,
+                        "peak_cpu_c": round(self._game_peak_cpu_c, 1),
+                        "peak_gpu_c": round(self._game_peak_gpu_c, 1),
+                        "avg_power_w": avg_w,
+                        "profile": str(self.get_platform_profile()),
+                    })
+                    self.settings.set("game_session_history", hist[-30:])
             self._game_session_start_ts = 0.0
             self._game_peak_cpu_c = 0.0
             self._game_peak_gpu_c = 0.0
+            self._game_power_sum_w = 0.0
+            self._game_power_samples = 0
 
             restore_prof = self._pre_game_profile
             if restore_prof in ("performance", "max-power"):
@@ -585,6 +682,18 @@ class GamingAutoSwitchMixin:
                 if prev_tdp is not None and self.features.custom_tdp:
                     self.set_cpu_tdp_limits(prev_tdp[0], prev_tdp[1], allow_elevation=False)
 
+            if getattr(self, "_game_changed_fan_curve", False):
+                prev_fc = getattr(self, "_pre_game_fan_curve", None)
+                self._game_changed_fan_curve = False
+                self._pre_game_fan_curve = None
+                if isinstance(prev_fc, dict) and self.features.fan_control:
+                    self.set_custom_fan_curve(
+                        prev_fc.get("points", []),
+                        bool(prev_fc.get("enabled", False)),
+                        prev_fc.get("cpu_temp_limit"),
+                        prev_fc.get("gpu_temp_limit"),
+                    )
+
             if self._game_changed_refresh:
                 prev_hz = self._pre_game_refresh_hz
                 self._game_changed_refresh = False
@@ -605,6 +714,16 @@ class GamingAutoSwitchMixin:
                         extras.append("Touchpad Liberado")
                 except Exception:
                     pass
+
+            if getattr(self, "_game_changed_vrr", False):
+                prev_vrr = getattr(self, "_pre_game_vrr_policy", None)
+                self._game_changed_vrr = False
+                self._pre_game_vrr_policy = None
+                if prev_vrr:
+                    try:
+                        self.set_vrr_policy(prev_vrr)
+                    except Exception:
+                        pass
 
             return {
                 "type": "game_stopped",

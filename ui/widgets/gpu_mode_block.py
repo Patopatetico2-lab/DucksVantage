@@ -25,20 +25,20 @@ class GpuModeBlock(QFrame):
 
         top = QHBoxLayout()
         self.badge = QLabel("ATIVO")
-        self.badge.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        self.badge.setFont(QFont(ThemeTokens.FONT_NAME, 8, QFont.Weight.Bold))
         self.badge.setVisible(False)
         top.addStretch()
         top.addWidget(self.badge)
         layout.addLayout(top)
 
         self.title_lbl = QLabel(title)
-        self.title_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        self.title_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 11, QFont.Weight.Bold))
         self.title_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         layout.addWidget(self.title_lbl)
 
         self.sub_lbl = QLabel(subtitle)
         self.sub_lbl.setWordWrap(True)
-        self.sub_lbl.setFont(QFont("Segoe UI", 9))
+        self.sub_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 9))
         self.sub_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY};")
         layout.addWidget(self.sub_lbl)
 
@@ -49,10 +49,11 @@ class GpuModeBlock(QFrame):
         self.badge.setVisible(active)
         if active:
             self.badge.setStyleSheet(f"""
-                background-color: {self.accent_color};
-                color: #0b0f19;
+                background-color: {ThemeTokens.BG_CARD_HOVER};
+                color: {self.accent_color};
+                border: 1px solid {self.accent_color};
                 padding: 2px 7px;
-                border-radius: 4px;
+                border-radius: 5px;
             """)
         self.update_style()
 
@@ -61,19 +62,20 @@ class GpuModeBlock(QFrame):
             self.setStyleSheet(f"""
                 GpuModeBlock {{
                     background-color: {ThemeTokens.BG_CARD_ACTIVE};
-                    border: 2px solid {self.accent_color};
+                    border: 1.5px solid {self.accent_color};
                     border-radius: {ThemeTokens.RADIUS_CARD}px;
                 }}
             """)
         else:
             self.setStyleSheet(f"""
                 GpuModeBlock {{
-                    background-color: {ThemeTokens.BG_CARD_HOVER};
+                    background-color: {ThemeTokens.BG_HEADER};
                     border: 1px solid {ThemeTokens.BORDER_DEFAULT};
                     border-radius: {ThemeTokens.RADIUS_CARD}px;
                 }}
                 GpuModeBlock:hover {{
-                    border-color: {self.accent_color};
+                    background-color: {ThemeTokens.BG_CARD_HOVER};
+                    border-color: {ThemeTokens.BORDER_HOVER};
                 }}
             """)
 

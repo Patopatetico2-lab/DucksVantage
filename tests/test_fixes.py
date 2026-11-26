@@ -1202,6 +1202,285 @@ class TestDucksVantageFixes(unittest.TestCase):
             self.assertFalse(res_err["ok"])
             self.assertIn("Não foi possível consultar", res_err["message"])
 
+    # -------------------------------------------------------------------------
+    # 27. Correção Completa do Mapeador de Teclas (Copilot F8/F23, evdev & Qt)
+    # -------------------------------------------------------------------------
+    def test_key_mapping_sanitizes_broken_meta_shift_and_syncs_codes(self):
+        """Slots corrompidos com 'Meta+Shift+' são reparados automaticamente e derivam evdev_code/modifiers."""
+        from core.settings import SettingsManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_file = os.path.join(tmpdir, "settings.json")
+            broken_data = {
+                "key_mappings": {
+                    "copilot_key": {
+                        "label": "Tecla Copilot (F23 / Meta+Shift+F23)",
+                        "qt_shortcut": "Meta+Shift+",
+                        "evdev_code": 193,
+                        "action": "toggle_max_power",
+                        "custom_command": "",
+                        "enabled": False,
+                    },
+                    "special_launch": {
+                        "label": "Tecla Especial / Multimídia (F24)",
+                        "qt_shortcut": "Meta+Shift+",
+                        "evdev_code": 194,
+                        "action": "toggle_max_power",
+                        "custom_command": "",
+                        "enabled": False,
+                    },
+                    "eco_hotkey": {
+                        "label": "Atalho Rápido Eco-Mode (Ctrl+Alt+E)",
+                        "qt_shortcut": "Ctrl+Alt+E",
+                        "evdev_code": 0,
+                        "action": "toggle_eco_mode",
+                        "custom_command": "",
+                        "enabled": True,
+                    },
+                    "refresh_rate_hotkey": {
+                        "label": "Taxa de Atualização de Tela (Fn+R / Alt+R)",
+                        "qt_shortcut": "Alt+R",
+                        "evdev_code": 431,
+                        "action": "cycle_refresh_rate",
+                        "custom_command": "",
+                        "enabled": True,
+                    },
+                }
+            }
+            with open(cfg_file, "w", encoding="utf-8") as fh:
+                json.dump(broken_data, fh)
+
+            with patch("core.settings.CONFIG_DIR", tmpdir), \
+                 patch("core.settings.CONFIG_FILE", cfg_file), \
+                 patch("core.settings.LEGACY_CONFIG_FILE", "/nonexistent"):
+                sm = SettingsManager()
+                km = sm.get("key_mappings")
+
+                self.assertEqual(km["copilot_key"]["qt_shortcut"], "Meta+Shift+F23")
+                self.assertEqual(km["copilot_key"]["evdev_code"], 193)
+                self.assertEqual(km["copilot_key"]["evdev_modifiers"], ["Meta", "Shift"])
+                self.assertEqual(km["copilot_key"]["extra_evdev_codes"], [583])
+                self.assertEqual(km["copilot_key"]["action"], "toggle_max_power")
+
+                self.assertEqual(km["special_launch"]["qt_shortcut"], "F24")
+                self.assertEqual(km["special_launch"]["evdev_code"], 194)
+                self.assertEqual(km["special_launch"]["evdev_modifiers"], [])
+
+                self.assertEqual(km["eco_hotkey"]["evdev_code"], 18)
+                self.assertEqual(km["eco_hotkey"]["evdev_modifiers"], ["Ctrl", "Alt"])
+
+                self.assertEqual(km["refresh_rate_hotkey"]["evdev_code"], 19)
+                self.assertEqual(km["refresh_rate_hotkey"]["evdev_modifiers"], ["Alt"])
+                self.assertEqual(km["refresh_rate_hotkey"]["extra_evdev_codes"], [562, 431])
+
+    def test_evdev_listener_deduplicates_usb_symlinks(self):
+        """_init_evdev_listeners não deve abrir o mesmo /dev/input/eventX em duplicidade (usb- e usbv2-)."""
+        opened_paths = []
+        fake_candidates = [
+            ("/dev/input/event3", "AT Translated Set 2 keyboard"),
+            ("/dev/input/by-path/pci-0000:00:14.0-usb-0:3:1.0-event-kbd", "usb-kbd"),
+            ("/dev/input/by-path/pci-0000:00:14.0-usbv2-0:3:1.0-event-kbd", "usbv2-kbd"),
+            ("/dev/input/event12", "Ideapad extra buttons"),
+        ]
+
+        def fake_realpath(path):
+            if "usb" in path:
+                return "/dev/input/event4"
+            return path
+
+        fake_stats = {
+            "/dev/input/event3": MagicMock(st_mode=0o20644, st_rdev=1),
+            "/dev/input/event4": MagicMock(st_mode=0o20644, st_rdev=2),
+            "/dev/input/event12": MagicMock(st_mode=0o20644, st_rdev=3),
+        }
+
+        def fake_open(path, flags):
+            opened_paths.append(path)
+            return 200 + len(opened_paths)
+
+        with patch.object(HardwareBackend, "_discover_evdev_keyboard_candidates", return_value=fake_candidates), \
+             patch("os.path.exists", return_value=True), \
+             patch("os.access", return_value=True), \
+             patch("os.path.realpath", side_effect=fake_realpath), \
+             patch("os.stat", side_effect=lambda p: fake_stats[p]), \
+             patch("os.open", side_effect=fake_open), \
+             patch("os.close"):
+            self.backend._init_evdev_listeners()
+
+        self.assertEqual(len(self.backend._input_fds), 3)
+        self.assertEqual(opened_paths, ["/dev/input/event3", "/dev/input/event4", "/dev/input/event12"])
+
+    def test_evdev_poll_modifiers_f8_copilot_refresh_and_debounce(self):
+        """_poll_evdev_keys suporta Meta+Shift+F23, F8, Ctrl+Alt+E, Fn+R(562), bloqueia letra avulsa e aplica debounce."""
+        import struct
+
+        def pack_events(pairs):
+            return b"".join(struct.pack("llHHi", 0, 0, 1, code, val) for code, val in pairs)
+
+        self.backend._input_fds = [77]
+        self.backend._input_fd_info = {77: {"path": "/dev/input/event3", "name": "Test Kbd"}}
+        self.backend._evdev_held_mods = {77: set()}
+        self.backend._evdev_last_trigger_ts = {}
+        self.backend._evdev_capture_cooldown_until = 0.0
+
+        self.backend.settings._data["key_mappings"] = {
+            "copilot_key": {
+                "label": "Tecla Copilot",
+                "qt_shortcut": "Meta+Shift+F23",
+                "evdev_code": 193,
+                "evdev_modifiers": ["Meta", "Shift"],
+                "extra_evdev_codes": [583],
+                "action": "toggle_max_power",
+                "custom_command": "",
+                "enabled": True,
+            },
+            "eco_hotkey": {
+                "label": "Eco",
+                "qt_shortcut": "Ctrl+Alt+E",
+                "evdev_code": 18,
+                "evdev_modifiers": ["Ctrl", "Alt"],
+                "extra_evdev_codes": [],
+                "action": "toggle_eco_mode",
+                "custom_command": "",
+                "enabled": True,
+            },
+            "refresh_rate_hotkey": {
+                "label": "Refresh",
+                "qt_shortcut": "Alt+R",
+                "evdev_code": 19,
+                "evdev_modifiers": ["Alt"],
+                "extra_evdev_codes": [562, 431],
+                "action": "cycle_refresh_rate",
+                "custom_command": "",
+                "enabled": True,
+            },
+            "custom_f8": {
+                "label": "F8",
+                "qt_shortcut": "F8",
+                "evdev_code": 66,
+                "evdev_modifiers": [],
+                "extra_evdev_codes": [],
+                "action": "toggle_touchpad",
+                "custom_command": "",
+                "enabled": True,
+            },
+        }
+
+        # 1) E (18) e R (19) sem modificadores NÃO podem disparar
+        # 2) Ctrl+Alt+E dispara eco_hotkey
+        # 3) Meta+Shift+F23 dispara copilot_key
+        # 4) Fn+R (562) dispara refresh_rate_hotkey
+        # 5) F8 (66) dispara custom_f8 e o segundo F8 em <350ms é filtrado por debounce
+        seq_bytes = pack_events([
+            (18, 1), (18, 0),
+            (19, 1), (19, 0),
+            (29, 1), (56, 1), (18, 1), (18, 0), (56, 0), (29, 0),
+            (125, 1), (42, 1), (193, 1), (193, 0), (42, 0), (125, 0),
+            (562, 1), (562, 0),
+            (66, 1), (66, 0),
+            (66, 1), (66, 0),
+        ])
+        reads = [seq_bytes]
+
+        def fake_read(fd, sz):
+            if reads:
+                return reads.pop(0)
+            raise BlockingIOError()
+
+        with patch("os.read", side_effect=fake_read):
+            ev = self.backend._poll_evdev_keys()
+
+        actions = [e["action"] for e in ev]
+        self.assertEqual(actions, ["toggle_eco_mode", "toggle_max_power", "cycle_refresh_rate", "toggle_touchpad"])
+
+    def test_evdev_live_capture_and_qt_key_capture_button(self):
+        """Captura evdev ao vivo e KeyCaptureButton não produzem 'Meta+Shift+' quebrado e capturam F8 / Copilot."""
+        import struct
+        from core.qt_compat import Qt, QtGui
+        from ui.widgets.key_capture_button import KeyCaptureButton
+
+        def pack_events(pairs):
+            return b"".join(struct.pack("llHHi", 0, 0, 1, code, val) for code, val in pairs)
+
+        self.backend._input_fds = [88]
+        self.backend._input_fd_info = {88: {"path": "/dev/input/event3", "name": "Test Kbd"}}
+        self.backend._evdev_held_mods = {88: set()}
+
+        # Teste 1: Captura evdev de Meta+Shift+F23
+        bufs = [b"", pack_events([(125, 1), (42, 1), (193, 1)])]
+
+        def read_seq(fd, sz):
+            if bufs:
+                data = bufs.pop(0)
+                if data:
+                    return data
+            raise BlockingIOError()
+
+        with patch("os.read", side_effect=read_seq):
+            self.assertTrue(self.backend.start_evdev_capture())
+            res = self.backend.poll_evdev_capture()
+
+        self.assertIsNotNone(res)
+        self.assertFalse(res["cancelled"])
+        self.assertEqual(res["qt_shortcut"], "Meta+Shift+F23")
+        self.assertEqual(res["evdev_code"], 193)
+        self.assertEqual(res["evdev_modifiers"], ["Meta", "Shift"])
+
+        # Teste 2: Esc cancela captura evdev
+        bufs_esc = [b"", pack_events([(1, 1)])]
+
+        def read_esc(fd, sz):
+            if bufs_esc:
+                data = bufs_esc.pop(0)
+                if data:
+                    return data
+            raise BlockingIOError()
+
+        with patch("os.read", side_effect=read_esc):
+            self.backend.start_evdev_capture()
+            res_esc = self.backend.poll_evdev_capture()
+        self.assertEqual(res_esc, {"cancelled": True})
+
+        # Teste 3: KeyCaptureButton fallback Qt rejeita key=0 ('Meta+Shift+') e aceita F8 / XF86Assistant
+        btn = KeyCaptureButton("F24", backend=None)
+        btn._start_capture()
+        btn._evdev_capturing = False
+
+        # Key_unknown com Meta+Shift NÃO pode alterar nem emitir sinal
+        ev_unknown = QtGui.QKeyEvent(
+            QtGui.QKeyEvent.Type.KeyPress,
+            int(Qt.Key.Key_unknown),
+            Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.ShiftModifier,
+        )
+        btn.keyPressEvent(ev_unknown)
+        self.assertTrue(btn._capturing)
+        self.assertEqual(btn.text(), "Pressione tecla...")
+        self.assertNotEqual(btn.text(), "Meta+Shift+")
+
+        # Pressionar F8 captura F8 com evdev_code == 66
+        captured_signals = []
+        btn.capture_completed.connect(lambda seq, code, mods: captured_signals.append((seq, code, mods)))
+        ev_f8 = QtGui.QKeyEvent(QtGui.QKeyEvent.Type.KeyPress, int(Qt.Key.Key_F8), Qt.KeyboardModifier.NoModifier)
+        btn.keyPressEvent(ev_f8)
+        self.assertFalse(btn._capturing)
+        self.assertEqual(btn.text(), "F8")
+        self.assertEqual(btn.evdev_code, 66)
+        self.assertEqual(captured_signals[-1], ("F8", 66, []))
+
+        # Simula XF86Assistant (nativeVirtualKey=0x1008ffac, key=0, Meta+Shift)
+        btn._capturing = True
+        btn._evdev_capturing = False
+        ev_assist = MagicMock()
+        ev_assist.key.return_value = 0
+        ev_assist.modifiers.return_value = Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.ShiftModifier
+        ev_assist.nativeVirtualKey.return_value = 0x1008FFAC
+        ev_assist.nativeScanCode.return_value = 201
+        btn.keyPressEvent(ev_assist)
+        self.assertFalse(btn._capturing)
+        self.assertEqual(btn.text(), "Meta+Shift+F23")
+        self.assertEqual(btn.evdev_code, 193)
+        self.assertEqual(btn.evdev_modifiers, ["Meta", "Shift"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,133 +1,186 @@
 /* ====================================================================
-   Ducksvantage - Stylesheet Oficial Lenovo Vantage (styles.qss)
-   Extraído e reconstruído a partir dos pacotes de interface do Lenovo Vantage
-   (VAN-11517, app.theme.scss, font-styles.scss, widget-legion-edge)
+   Ducksvantage - Stylesheet Estilo 3 (Vantage Refinado / Obsidiana Fosca)
+   Paleta neutra #141517 / #1c1e22 com azul-aço sóbrio #60a5fa
    ==================================================================== */
 
 QMainWindow, QWidget#centralWidget {
-    background-color: #11192c;
-    color: #fbfdff;
-    font-family: "Segoe UI", "Inter", "Roboto", "Noto Sans", sans-serif;
+    background-color: #141517;
+    color: #f4f5f7;
+    font-family: "Inter", "Noto Sans", "Segoe UI", "Roboto", sans-serif;
+}
+
+QLabel {
+    background-color: transparent;
+    border: none;
 }
 
 /* ====================================================================
-   Barra Superior (Header Bar)
+   Barra Superior Discreta (Slim Header Bar)
    ==================================================================== */
 QFrame#headerBar {
-    background-color: #151f36;
-    border-bottom: 1px solid #30415a;
-    padding: 10px 20px;
+    background-color: #181a1d;
+    border-bottom: 1px solid #2c3037;
+    padding: 6px 20px;
 }
 
 QLabel#headerTitle {
-    color: #fbfdff;
-    font-size: 15px;
-    font-weight: 700;
-    letter-spacing: 1.5px;
+    color: #f4f5f7;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
 }
 
 QLabel#headerSubtitle {
-    color: #00d2ff;
+    color: #8f96a3;
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 500;
 }
 
 /* ====================================================================
-   Barra Lateral (Sidebar de Navegação - 4 Abas Essenciais)
+   Barra Lateral (Sidebar Limpa)
    ==================================================================== */
 QFrame#sidebar {
-    background-color: #151f36;
-    border-right: 1px solid #30415a;
-    min-width: 220px;
-    max-width: 220px;
+    background-color: #16171a;
+    border-right: 1px solid #2c3037;
+    min-width: 206px;
+    max-width: 206px;
 }
 
 QPushButton#navButton {
     background-color: transparent;
-    color: #cbd5e1;
+    color: #8f96a3;
     border: none;
     border-left: 3px solid transparent;
+    border-radius: 0px;
     text-align: left;
-    padding: 14px 20px;
+    padding: 11px 16px;
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
 }
 
 QPushButton#navButton:hover {
-    background-color: #253048;
-    color: #fbfdff;
+    background-color: #202328;
+    color: #f4f5f7;
 }
 
 QPushButton#navButton:checked, QPushButton#navButton[active="true"] {
-    background-color: #1f2a42;
-    color: #00d2ff;
-    border-left: 3px solid #00d2ff;
-    font-weight: 700;
-}
-
-/* ====================================================================
-   Cartões Modulares (Vantage Cards / Legion & LOQ Edge)
-   ==================================================================== */
-QFrame.vantageCard, QFrame.card {
-    background-color: #1f2a42;
-    border: 1px solid #30415a;
-    border-radius: 9px;
-}
-
-QFrame.vantageCard:hover, QFrame.card:hover {
-    border: 1px solid #425067;
-}
-
-/* ====================================================================
-   Botões de Ação Primários e Secundários
-   ==================================================================== */
-QPushButton.primaryButton {
-    background-color: #0160d6;
-    color: #fbfdff;
-    border: none;
-    border-radius: 6px;
-    padding: 9px 18px;
-    font-size: 12px;
-    font-weight: 700;
-}
-
-QPushButton.primaryButton:hover {
-    background-color: #257eff;
-}
-
-QPushButton.secondaryButton {
-    background-color: #253048;
-    color: #cbd5e1;
-    border: 1px solid #30415a;
-    border-radius: 6px;
-    padding: 9px 18px;
-    font-size: 12px;
+    background-color: #22252b;
+    color: #f4f5f7;
+    border-left: 3px solid #60a5fa;
     font-weight: 600;
 }
 
-QPushButton.secondaryButton:hover {
-    background-color: #293c4f;
-    color: #fbfdff;
-    border-color: #00d2ff;
+/* ====================================================================
+   Cartões Modulares (Obsidiana Fosca)
+   ==================================================================== */
+QFrame.vantageCard, QFrame.card {
+    background-color: #1c1e22;
+    border: 1px solid #2c3037;
+    border-radius: 10px;
+}
+
+QFrame.vantageCard:hover, QFrame.card:hover {
+    border: 1px solid #3d434d;
+}
+
+QFrame.subBox {
+    background-color: #181a1d;
+    border: 1px solid #2c3037;
+    border-radius: 8px;
 }
 
 /* ====================================================================
-   Scrollbars Finas e Discretas
+   Botões, Inputs, Comboboxes e Sliders Globais
+   ==================================================================== */
+QPushButton.primaryButton, QPushButton[class="primaryButton"] {
+    background-color: #2563eb;
+    color: #f4f5f7;
+    border: 1px solid #3b82f6;
+    border-radius: 6px;
+    padding: 4px 14px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+QPushButton.primaryButton:hover, QPushButton[class="primaryButton"]:hover {
+    background-color: #3b82f6;
+    border-color: #60a5fa;
+}
+
+QPushButton.secondaryButton, QPushButton[class="secondaryButton"] {
+    background-color: #23262b;
+    color: #c9ced6;
+    border: 1px solid #2c3037;
+    border-radius: 6px;
+    padding: 4px 14px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+QPushButton.secondaryButton:hover, QPushButton[class="secondaryButton"]:hover {
+    background-color: #2b2f36;
+    color: #f4f5f7;
+    border-color: #60a5fa;
+}
+
+QComboBox, QLineEdit {
+    background-color: #121316;
+    color: #f4f5f7;
+    border: 1px solid #2c3037;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+}
+
+QComboBox:hover, QLineEdit:hover, QComboBox:focus, QLineEdit:focus {
+    border-color: #60a5fa;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #202328;
+    color: #f4f5f7;
+    border: 1px solid #2c3037;
+    selection-background-color: #222936;
+    selection-color: #f4f5f7;
+}
+
+QSlider::groove:horizontal {
+    height: 4px;
+    background: #2c3037;
+    border-radius: 2px;
+}
+
+QSlider::sub-page:horizontal {
+    background: #60a5fa;
+    border-radius: 2px;
+}
+
+QSlider::handle:horizontal {
+    background: #f4f5f7;
+    border: 1px solid #60a5fa;
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+}
+
+/* ====================================================================
+   Scrollbars Ultrafinas e Discretas
    ==================================================================== */
 QScrollBar:vertical {
-    background: #11192c;
-    width: 8px;
+    background: #141517;
+    width: 6px;
     margin: 0px;
 }
 
 QScrollBar::handle:vertical {
-    background: #30415a;
+    background: #2c3037;
     min-height: 24px;
-    border-radius: 4px;
+    border-radius: 3px;
 }
 
 QScrollBar::handle:vertical:hover {
-    background: #00d2ff;
+    background: #60a5fa;
 }
 
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {

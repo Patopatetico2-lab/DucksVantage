@@ -28,6 +28,7 @@ class SystemTrayManager(QObject):
     touchpad_toggled = Signal(bool)
     conservation_toggled = Signal(bool)
     eco_travel_toggled = Signal(bool)
+    cinema_mode_toggled = Signal(bool)
     autostart_toggled = Signal(bool)
     show_window_requested = Signal()
     quit_requested = Signal()
@@ -162,6 +163,14 @@ class SystemTrayManager(QObject):
         self.action_eco_travel.setVisible(feat.eco_travel)
         self.menu.addAction(self.action_eco_travel)
 
+        # Modo Cinema / Apresentação
+        self.action_cinema_mode = QAction("Modo Cinema / Apresentação", self.menu)
+        self.action_cinema_mode.setIcon(self._get_icon("power.svg"))
+        self.action_cinema_mode.setCheckable(True)
+        self.action_cinema_mode.triggered.connect(self.cinema_mode_toggled.emit)
+        self.action_cinema_mode.setVisible(feat.cinema_mode)
+        self.menu.addAction(self.action_cinema_mode)
+
         # Modo de Conservação de Bateria
         self.action_conservation = QAction("Modo de Conservação (~80%)", self.menu)
         self.action_conservation.setIcon(self._get_icon("edge_conservation.svg"))
@@ -227,7 +236,7 @@ class SystemTrayManager(QObject):
         painter.drawEllipse(6, 6, 52, 52)
 
         painter.setPen(QColor(ThemeTokens.TEXT_WHITE_100))
-        font = QFont("Segoe UI", 20, QFont.Weight.Bold)
+        font = QFont(ThemeTokens.FONT_NAME, 20, QFont.Weight.Bold)
         painter.setFont(font)
         painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "D")
 
@@ -296,6 +305,8 @@ class SystemTrayManager(QObject):
             self.action_touchpad.setChecked(self.backend.get_touchpad_status())
         if self.backend.features.eco_travel:
             self.action_eco_travel.setChecked(self.backend.get_eco_travel_mode())
+        if self.backend.features.cinema_mode and hasattr(self, "action_cinema_mode"):
+            self.action_cinema_mode.setChecked(self.backend.get_cinema_mode())
         if self.backend.features.conservation_mode:
             self.action_conservation.setChecked(self.backend.get_conservation_mode())
         self.action_autostart.setChecked(self.backend.get_autostart_enabled())

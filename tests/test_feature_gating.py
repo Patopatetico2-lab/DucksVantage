@@ -39,6 +39,8 @@ def _make_blank_backend(features: HardwareFeatures, paths: HardwarePaths = None)
     backend._cached_refresh_info = None
     backend._cached_bios_attrs = None
     backend._cached_net_power_status = None
+    with patch.object(backend.settings, "save", return_value=None):
+        backend.set_ui_mode("advanced")
     return backend
 
 
@@ -76,20 +78,15 @@ class TestFeatureGating(unittest.TestCase):
         with patch.object(backend, "get_bios_attributes", return_value=[fake_attr]), \
              patch.object(backend, "get_gpu_mux_info", return_value=GpuMuxInfo(available=False, available_modes=[], backend_name="none")), \
              patch.object(backend, "get_display_refresh_info", return_value=DisplayRefreshInfo(available=False, current_hz=60, available_rates=[60], backend_name="drm-fallback")):
-            from ui.dashboard import VantageDashboardView
-            from ui.tabs.performance_tab import PerformanceTab
+            from ui.tabs.gpu_display_tab import GpuDisplayTab
 
-            dash = VantageDashboardView(backend)
-            self.assertTrue(dash.item_lcd_overdrive.isHidden())
+            gdisp = GpuDisplayTab(backend)
+            self.assertTrue(gdisp.od_box.isHidden())
+            self.assertFalse(gdisp.bios_card.isHidden())
+            self.assertNotIn("LCD Overdrive", gdisp.bios_title_lbl.text())
+            self.assertEqual(gdisp.bios_count_badge.label.text(), "1 ITEM")
 
-            perf = PerformanceTab(backend)
-            self.assertTrue(perf.od_box.isHidden())
-            self.assertFalse(perf.bios_card.isHidden())
-            self.assertNotIn("LCD Overdrive", perf.bios_title_lbl.text())
-            self.assertEqual(perf.bios_count_badge.label.text(), "1 ITEM")
-
-            dash.close()
-            perf.close()
+            gdisp.close()
         backend.close()
 
     def test_bios_card_completely_hidden_when_no_overdrive_and_no_bios_attrs(self):
@@ -100,11 +97,12 @@ class TestFeatureGating(unittest.TestCase):
         with patch.object(backend, "get_bios_attributes", return_value=[]), \
              patch.object(backend, "get_gpu_mux_info", return_value=GpuMuxInfo(available=False, available_modes=[], backend_name="none")), \
              patch.object(backend, "get_display_refresh_info", return_value=DisplayRefreshInfo(available=False, current_hz=60, available_rates=[60], backend_name="drm-fallback")):
-            from ui.tabs.performance_tab import PerformanceTab
-            perf = PerformanceTab(backend)
-            self.assertTrue(perf.od_box.isHidden())
-            self.assertTrue(perf.bios_card.isHidden())
-            perf.close()
+            from ui.tabs.gpu_display_tab import GpuDisplayTab
+            gdisp = GpuDisplayTab(backend)
+            self.assertTrue(gdisp.od_box.isHidden())
+            self.assertTrue(gdisp.bios_card.isHidden())
+            self.assertFalse(gdisp.has_any_supported_feature())
+            gdisp.close()
         backend.close()
 
     def test_set_lcd_overdrive_fails_honestly_without_hardware_node(self):
@@ -151,6 +149,8 @@ class TestFeatureGating(unittest.TestCase):
             win = MainWindow(backend)
             dash = win.dashboard_tab
             perf = win.performance_tab
+            gdisp = win.gpu_display_tab
+            auto = win.automation_tab
             bat = win.battery_tab
             tray = win.tray_manager
 
@@ -159,32 +159,34 @@ class TestFeatureGating(unittest.TestCase):
             self.assertTrue(win.header_bat_pill.isHidden())
             self.assertTrue(win.header_eco_pill.isHidden())
 
-            # Dashboard
+            # Dashboard (Painel EDGE enxuto)
             self.assertTrue(dash.thermal_card.isHidden())
             self.assertTrue(dash.edge_card.isHidden())
             self.assertTrue(dash.item_eco_travel.isHidden())
             self.assertTrue(dash.item_game_auto.isHidden())
             self.assertTrue(dash.item_conservation.isHidden())
             self.assertTrue(dash.item_rapid_charge.isHidden())
-            self.assertTrue(dash.item_fn_lock.isHidden())
             self.assertTrue(dash.item_camera.isHidden())
-            self.assertTrue(dash.item_usb.isHidden())
             self.assertTrue(dash.item_touchpad.isHidden())
-            self.assertTrue(dash.item_auto_power.isHidden())
             self.assertTrue(dash.item_kbd_backlight.isHidden())
-            self.assertTrue(dash.item_lcd_overdrive.isHidden())
+            self.assertTrue(win.about_tab.fn_lock_row_widget.isHidden())
+            self.assertTrue(win.about_tab.usb_row_widget.isHidden())
 
-            # Performance Tab
+            # Performance Tab (CPU & Térmico)
             self.assertTrue(perf.cpu_card.isHidden())
             self.assertTrue(perf.tdp_card.isHidden())
             self.assertTrue(perf.uv_card.isHidden())
-            self.assertTrue(perf.presets_card.isHidden())
-            self.assertTrue(perf.rules_card.isHidden())
-            self.assertTrue(perf.gpu_card.isHidden())
-            self.assertTrue(perf.mux_card.isHidden())
-            self.assertTrue(perf.ref_card.isHidden())
-            self.assertTrue(perf.bios_card.isHidden())
-            self.assertTrue(perf.prof_card.isHidden())
+
+            # GPU & Tela Tab
+            self.assertTrue(gdisp.gpu_card.isHidden())
+            self.assertTrue(gdisp.mux_card.isHidden())
+            self.assertTrue(gdisp.ref_card.isHidden())
+            self.assertTrue(gdisp.bios_card.isHidden())
+            self.assertTrue(win.gpu_display_nav_btn.isHidden())
+
+            # Automação & Atalhos Tab
+            self.assertTrue(auto.presets_card.isHidden())
+            self.assertTrue(auto.rules_card.isHidden())
 
             # Battery Tab
             self.assertTrue(bat.cons_card.isHidden())
@@ -275,6 +277,8 @@ class TestFeatureGating(unittest.TestCase):
              ]):
             from ui.dashboard import VantageDashboardView
             from ui.tabs.performance_tab import PerformanceTab
+            from ui.tabs.gpu_display_tab import GpuDisplayTab
+            from ui.tabs.automation_tab import AutomationTab
             from ui.tabs.battery_tab import BatteryTab
             from ui.tabs.about_tab import AboutTab
 
@@ -287,22 +291,12 @@ class TestFeatureGating(unittest.TestCase):
             self.assertTrue(dash.block_max_power.isHidden())
             # EDGE: visíveis vs ocultos
             self.assertFalse(dash.item_conservation.isHidden())
-            self.assertFalse(dash.item_fn_lock.isHidden())
             self.assertFalse(dash.item_camera.isHidden())
             self.assertFalse(dash.item_touchpad.isHidden())
             self.assertTrue(dash.item_rapid_charge.isHidden())
-            self.assertTrue(dash.item_usb.isHidden())
             self.assertTrue(dash.item_kbd_backlight.isHidden())
-            self.assertTrue(dash.item_lcd_overdrive.isHidden())
 
             perf = PerformanceTab(backend)
-            # GPU MUX: hybrid e integrated visíveis, dedicated OCULTO!
-            self.assertFalse(perf.mux_card.isHidden())
-            self.assertFalse(perf.mux_blocks["hybrid"].isHidden())
-            self.assertFalse(perf.mux_blocks["integrated"].isHidden())
-            self.assertTrue(perf.mux_blocks["dedicated"].isHidden())
-            # Refresh rate 60Hz fixo -> card OCULTO!
-            self.assertTrue(perf.ref_card.isHidden())
             # Fan curve visível com WMI CPU temp apenas; sliders TDP RAPL ocultos
             self.assertFalse(perf.tdp_card.isHidden())
             self.assertFalse(perf.fan_ctrl_box.isHidden())
@@ -314,19 +308,31 @@ class TestFeatureGating(unittest.TestCase):
             self.assertTrue(perf.uv_core_row_widget.isHidden())
             self.assertTrue(perf.uv_cache_row_widget.isHidden())
             self.assertFalse(perf.uv_gpu_offset_widget.isHidden())
+
+            gdisp = GpuDisplayTab(backend)
+            # GPU MUX: hybrid e integrated visíveis, dedicated OCULTO!
+            self.assertFalse(gdisp.mux_card.isHidden())
+            self.assertFalse(gdisp.mux_blocks["hybrid"].isHidden())
+            self.assertFalse(gdisp.mux_blocks["integrated"].isHidden())
+            self.assertTrue(gdisp.mux_blocks["dedicated"].isHidden())
+            # Refresh rate 60Hz fixo -> card OCULTO!
+            self.assertTrue(gdisp.ref_card.isHidden())
+            self.assertTrue(gdisp.has_any_supported_feature())
+
+            auto = AutomationTab(backend)
             # App Rules combo não deve listar max-power
-            combo_ids = [perf.combo_app_profile.itemData(i) for i in range(perf.combo_app_profile.count())]
+            combo_ids = [auto.combo_app_profile.itemData(i) for i in range(auto.combo_app_profile.count())]
             self.assertNotIn("max-power", combo_ids)
             self.assertIn("performance", combo_ids)
             # Presets e opções do Auto-Switch respeitam feature-gating
-            self.assertFalse(perf.presets_card.isHidden())
-            self.assertTrue(perf.game_refresh_row_widget.isHidden())
-            self.assertFalse(perf.game_touchpad_row_widget.isHidden())
-            game_target_ids = [perf.combo_game_target_profile.itemData(i) for i in range(perf.combo_game_target_profile.count())]
+            self.assertFalse(auto.presets_card.isHidden())
+            self.assertTrue(auto.game_refresh_row_widget.isHidden())
+            self.assertFalse(auto.game_touchpad_row_widget.isHidden())
+            game_target_ids = [auto.combo_game_target_profile.itemData(i) for i in range(auto.combo_game_target_profile.count())]
             self.assertNotIn("max-power", game_target_ids)
             self.assertIn("performance", game_target_ids)
             # Key Remapper não deve listar cycle_refresh_rate
-            supported_acts = [a[0] for a in perf._get_supported_key_actions()]
+            supported_acts = [a[0] for a in auto._get_supported_key_actions()]
             self.assertNotIn("cycle_refresh_rate", supported_acts)
 
             bat = BatteryTab(backend)
@@ -339,11 +345,14 @@ class TestFeatureGating(unittest.TestCase):
             self.assertTrue(bat.eth_box.isHidden())
 
             about = AboutTab(backend)
-            self.assertFalse(about.caps_card.isHidden())
-            self.assertIn("RECURSO", about.caps_badge.label.text())
+            self.assertFalse(about.fn_lock_row_widget.isHidden())
+            self.assertTrue(about.usb_row_widget.isHidden())
+            self.assertFalse(about.ac_bat_prefs_widget.isHidden())
 
             dash.close()
             perf.close()
+            gdisp.close()
+            auto.close()
             bat.close()
             about.close()
         backend.close()
@@ -438,29 +447,35 @@ class TestFeatureGating(unittest.TestCase):
              ]):
             from ui.dashboard import VantageDashboardView
             from ui.tabs.performance_tab import PerformanceTab
+            from ui.tabs.gpu_display_tab import GpuDisplayTab
+            from ui.tabs.automation_tab import AutomationTab
 
             dash = VantageDashboardView(backend)
             self.assertFalse(dash.block_max_power.isHidden())
             self.assertFalse(dash.item_kbd_backlight.isHidden())
-            self.assertFalse(dash.item_usb.isHidden())
-            self.assertFalse(dash.item_lcd_overdrive.isHidden())
 
             perf = PerformanceTab(backend)
-            self.assertFalse(perf.od_box.isHidden())
-            self.assertFalse(perf.bios_card.isHidden())
-            self.assertIn("LCD Overdrive", perf.bios_title_lbl.text())
-            self.assertFalse(perf.ref_card.isHidden())
-            self.assertFalse(perf.mux_card.isHidden())
-            self.assertFalse(perf.mux_blocks["dedicated"].isHidden())
-            self.assertFalse(perf.cards["max-power"].isHidden())
-            self.assertFalse(perf.presets_card.isHidden())
-            self.assertFalse(perf.game_refresh_row_widget.isHidden())
-            self.assertFalse(perf.game_touchpad_row_widget.isHidden())
-            game_target_ids = [perf.combo_game_target_profile.itemData(i) for i in range(perf.combo_game_target_profile.count())]
+            self.assertFalse(perf.current_badge.isHidden())
+
+            gdisp = GpuDisplayTab(backend)
+            self.assertFalse(gdisp.od_box.isHidden())
+            self.assertFalse(gdisp.bios_card.isHidden())
+            self.assertIn("LCD Overdrive", gdisp.bios_title_lbl.text())
+            self.assertFalse(gdisp.ref_card.isHidden())
+            self.assertFalse(gdisp.mux_card.isHidden())
+            self.assertFalse(gdisp.mux_blocks["dedicated"].isHidden())
+
+            auto = AutomationTab(backend)
+            self.assertFalse(auto.presets_card.isHidden())
+            self.assertFalse(auto.game_refresh_row_widget.isHidden())
+            self.assertFalse(auto.game_touchpad_row_widget.isHidden())
+            game_target_ids = [auto.combo_game_target_profile.itemData(i) for i in range(auto.combo_game_target_profile.count())]
             self.assertIn("max-power", game_target_ids)
 
             dash.close()
             perf.close()
+            gdisp.close()
+            auto.close()
         backend.close()
 
     def test_rgb_keyboard_tab_visible_only_when_supported(self):

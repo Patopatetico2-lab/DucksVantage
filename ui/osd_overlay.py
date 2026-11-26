@@ -78,12 +78,12 @@ class VantageOSDOverlay(QWidget):
         text_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         self.title_label = QLabel("Modo Térmico")
-        self.title_label.setFont(QFont("Segoe UI", 13, QFont.Weight.Bold))
+        self.title_label.setFont(QFont(ThemeTokens.FONT_NAME, 13, QFont.Weight.Bold))
         self.title_label.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; background: transparent; border: none;")
         text_layout.addWidget(self.title_label)
 
         self.subtitle_label = QLabel("Atalho Fn + Q")
-        self.subtitle_label.setFont(QFont("Segoe UI", 10))
+        self.subtitle_label.setFont(QFont(ThemeTokens.FONT_NAME, 10))
         self.subtitle_label.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; background: transparent; border: none;")
         text_layout.addWidget(self.subtitle_label)
 
@@ -111,11 +111,11 @@ class VantageOSDOverlay(QWidget):
         painter.setOpacity(max(0.0, min(1.0, self._opacity)))
 
         rect = QRectF(self.rect()).adjusted(2.0, 2.0, -2.0, -2.0)
-        bg = QColor(20, 25, 37, 238)
+        bg = QColor(24, 26, 30, 240)
         border = QColor(self._accent_color)
 
         painter.setBrush(QBrush(bg))
-        painter.setPen(QPen(border, 2.2))
+        painter.setPen(QPen(border, 1.5))
         painter.drawRoundedRect(rect, float(ThemeTokens.RADIUS_OSD), float(ThemeTokens.RADIUS_OSD))
         painter.end()
 

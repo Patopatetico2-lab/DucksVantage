@@ -7,7 +7,7 @@ import re
 import shutil
 import subprocess
 import time
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from core.models import BiosAttribute, DisplayRefreshInfo, GpuMuxInfo
 from core.permissions import PermissionsManager
 
@@ -281,6 +281,13 @@ class DisplayMuxBiosMixin:
                             cur_hz = round(raw_cur_hz / 1000.0) if raw_cur_hz > 1000 else round(raw_cur_hz)
                             rates = sorted(list(rates_set)) if rates_set else [60]
 
+                            vrr_raw = chosen.get("vrrPolicy")
+                            vrr_supported = vrr_raw is not None
+                            vrr_map = {0: "never", 1: "always", 2: "automatic"}
+                            vrr_pol = vrr_map.get(vrr_raw, str(vrr_raw).lower() if isinstance(vrr_raw, str) else "never")
+                            if vrr_pol not in ("never", "always", "automatic"):
+                                vrr_pol = "never"
+
                             info = DisplayRefreshInfo(
                                 available=True,
                                 current_hz=cur_hz,
@@ -288,7 +295,9 @@ class DisplayMuxBiosMixin:
                                 display_name=d_name,
                                 resolution=cur_res,
                                 backend_name="kscreen-doctor",
-                                auto_switch_ac=self.get_auto_refresh_rate_transition()
+                                auto_switch_ac=self.get_auto_refresh_rate_transition(),
+                                vrr_supported=vrr_supported,
+                                vrr_policy=vrr_pol,
                             )
                             self._cached_refresh_info = info
                             self._last_refresh_scan = now
@@ -545,6 +554,170 @@ class DisplayMuxBiosMixin:
 
     def set_auto_refresh_rate_transition(self, enable: bool) -> None:
         self.settings.set("auto_refresh_rate_transition", bool(enable))
+
+    def set_vrr_policy(self, policy: str) -> Tuple[bool, str]:
+        """Define a política de VRR / Adaptive Sync no painel via kscreen-doctor."""
+        pol = str(policy or "automatic").strip().lower()
+        if pol not in ("never", "always", "automatic"):
+            return False, f"Política VRR inválida: {policy}"
+        if not shutil.which("kscreen-doctor"):
+            return False, "kscreen-doctor não disponível neste ambiente."
+        info = self.get_display_refresh_info()
+        if not info.display_name:
+            return False, "Painel de exibição ativo não identificado."
+        env = os.environ.copy()
+        if "QT_QPA_PLATFORM" not in env and not env.get("WAYLAND_DISPLAY") and not env.get("DISPLAY"):
+            env["QT_QPA_PLATFORM"] = "offscreen"
+        res = subprocess.run(
+            ["kscreen-doctor", f"output.{info.display_name}.vrrpolicy.{pol}"],
+            capture_output=True, text=True, env=env, timeout=4
+        )
+        if res.returncode == 0:
+            self._cached_refresh_info = None
+            return True, f"VRR / Adaptive Sync ajustado para '{pol}' em {info.display_name}."
+        return False, f"kscreen-doctor não aplicou VRR ({pol}): {res.stderr or res.stdout}"
+
+    # =========================================================================
+    # RECURSO 2.5: Modo Mesa / Monitor Externo Automático (HDMI / DisplayPort)
+    # =========================================================================
+    def get_external_monitors(self) -> List[str]:
+        """Detecta monitores externos conectados via /sys/class/drm/card*-*/status."""
+        monitors: List[str] = []
+        internal_prefixes = ("EDP", "LVDS", "DSI", "VIRTUAL")
+        for status_p in sorted(glob.glob("/sys/class/drm/card*-*/status")):
+            state = (self._read_file_text(status_p) or "").strip().lower()
+            if state != "connected":
+                continue
+            conn_dir = os.path.basename(os.path.dirname(status_p))
+            conn_name = re.sub(r"^card\d+-", "", conn_dir)
+            if any(conn_name.upper().startswith(p) for p in internal_prefixes):
+                continue
+            monitors.append(conn_name)
+        return monitors
+
+    def get_dock_mode_config(self) -> Dict[str, Any]:
+        return {
+            "enabled": bool(self.settings.get("dock_mode_enabled", False)),
+            "target_profile": self.normalize_profile(str(self.settings.get("dock_target_profile", "performance") or "performance")),
+            "keep_max_hz": bool(self.settings.get("dock_keep_max_hz", True)),
+            "inhibit_lid_sleep": bool(self.settings.get("dock_inhibit_lid_sleep", False)),
+        }
+
+    def set_dock_mode_config(
+        self,
+        enabled: bool,
+        target_profile: str = "performance",
+        keep_max_hz: bool = True,
+        inhibit_lid_sleep: bool = False,
+    ) -> None:
+        self.settings.set("dock_mode_enabled", bool(enabled))
+        self.settings.set("dock_target_profile", self.normalize_profile(target_profile))
+        self.settings.set("dock_keep_max_hz", bool(keep_max_hz))
+        self.settings.set("dock_inhibit_lid_sleep", bool(inhibit_lid_sleep))
+        if not enabled:
+            self._stop_dock_lid_inhibit()
+            self._dock_active = False
+
+    def _start_dock_lid_inhibit(self) -> None:
+        proc = getattr(self, "_dock_lid_proc", None)
+        if proc is not None and proc.poll() is None:
+            return
+        plat = (os.environ.get("QT_QPA_PLATFORM") or "").lower()
+        if plat in ("offscreen", "minimal"):
+            return
+        if shutil.which("systemd-inhibit"):
+            try:
+                self._dock_lid_proc = subprocess.Popen(
+                    [
+                        "systemd-inhibit",
+                        "--what=handle-lid-switch",
+                        "--who=Ducksvantage",
+                        "--why=Modo Mesa (Monitor Externo)",
+                        "sleep", "infinity",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except Exception:
+                self._dock_lid_proc = None
+
+    def _stop_dock_lid_inhibit(self) -> None:
+        proc = getattr(self, "_dock_lid_proc", None)
+        if proc is not None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=1.5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            self._dock_lid_proc = None
+
+    def check_external_monitor_dock_mode(self) -> Optional[Dict[str, Any]]:
+        """Monitora conexão/desconexão de HDMI/DP externo e aplica Modo Mesa automaticamente."""
+        cfg = self.get_dock_mode_config()
+        if not cfg["enabled"]:
+            return None
+
+        monitors = self.get_external_monitors()
+        connected = len(monitors) > 0
+        prev_state = getattr(self, "_dock_active", None)
+
+        if prev_state is None and not connected:
+            self._dock_active = False
+            return None
+
+        if connected and prev_state is not True:
+            self._dock_active = True
+            if self.get_active_game():
+                if cfg["inhibit_lid_sleep"]:
+                    self._start_dock_lid_inhibit()
+                return None
+
+            self._dock_pre_profile = self.get_platform_profile()
+            notes: List[str] = []
+            if self.features.platform_profile:
+                ok_p, _ = self.set_platform_profile(cfg["target_profile"], allow_elevation=False)
+                if ok_p:
+                    notes.append(cfg["target_profile"].upper())
+            if cfg["keep_max_hz"] and self.features.refresh_rate:
+                info = self.get_display_refresh_info()
+                if info.available and len(info.available_rates) > 1:
+                    max_hz = max(info.available_rates)
+                    self._dock_pre_hz = info.current_hz
+                    if info.current_hz < max_hz and self.set_refresh_rate(max_hz)[0]:
+                        notes.append(f"{max_hz} Hz")
+            if cfg["inhibit_lid_sleep"]:
+                self._start_dock_lid_inhibit()
+                notes.append("Tampa Liberada")
+
+            return {
+                "type": "dock_mode_entered",
+                "monitors": monitors,
+                "summary": f"{', '.join(monitors)} • {' • '.join(notes) if notes else 'Modo Mesa Ativo'}",
+            }
+
+        if not connected and prev_state is True:
+            self._dock_active = False
+            self._stop_dock_lid_inhibit()
+            if self.get_active_game():
+                return None
+            prev_p = getattr(self, "_dock_pre_profile", "balanced") or "balanced"
+            if self.features.platform_profile:
+                self.set_platform_profile(prev_p, allow_elevation=False)
+            prev_hz = getattr(self, "_dock_pre_hz", None)
+            self._dock_pre_hz = None
+            if prev_hz and self.features.refresh_rate:
+                self.set_refresh_rate(int(prev_hz))
+            return {
+                "type": "dock_mode_exited",
+                "monitors": [],
+                "summary": f"Perfil restaurado: {prev_p.upper()}",
+            }
+
+        return None
 
     # =========================================================================
     # RECURSO 3: LCD Overdrive & Ajustes de BIOS / Lenovo WMI (Zero Hardcoding)

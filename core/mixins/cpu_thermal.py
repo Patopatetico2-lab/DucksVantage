@@ -11,7 +11,8 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 from core.models import UndervoltStatus
 from core.permissions import PermissionsManager
-from core.settings import DEFAULT_FAN_CURVE_POINTS
+from core.settings import DEFAULT_FAN_CURVE_POINTS, DEFAULT_KEY_MAPPINGS
+from core.key_mapper import sanitize_key_mapping_slot
 
 UNDERVOLT_CANARY_FILE = os.path.expanduser("~/.config/ducksvantage/undervolt_canary.lock")
 UNDERVOLT_CANARY_FALLBACK = "/tmp/ducksvantage/undervolt_canary.lock"
@@ -104,18 +105,35 @@ class CpuThermalUndervoltMixin:
         return False, msg
 
     # =========================================================================
-    # ELITE 5: Mapeador de Teclas Personalizadas (Tecla Copilot F23 & Atalhos)
+    # ELITE 5: Mapeador de Teclas Personalizadas (Tecla Copilot F8/F23 & Atalhos)
     # =========================================================================
     def get_key_mappings(self) -> Dict[str, Dict[str, Any]]:
         mappings = self.settings.get("key_mappings", {})
         if not isinstance(mappings, dict):
             return {}
-        return mappings
+        sanitized: Dict[str, Dict[str, Any]] = {}
+        for slot_id, cfg in mappings.items():
+            sanitized[slot_id] = sanitize_key_mapping_slot(
+                slot_id, cfg if isinstance(cfg, dict) else {}, DEFAULT_KEY_MAPPINGS.get(slot_id)
+            )
+        return sanitized
 
     def update_key_mapping(self, slot_id: str, slot_data: Dict[str, Any]) -> None:
         mappings = self.get_key_mappings()
-        mappings[slot_id] = slot_data
+        mappings[slot_id] = sanitize_key_mapping_slot(
+            slot_id, slot_data, DEFAULT_KEY_MAPPINGS.get(slot_id)
+        )
         self.settings.set("key_mappings", mappings)
+
+    def reset_key_mappings_to_default(self) -> Dict[str, Dict[str, Any]]:
+        """Restaura todos os slots do Mapeador de Teclas para os padrões de fábrica."""
+        import json
+        defaults = json.loads(json.dumps(DEFAULT_KEY_MAPPINGS))
+        sanitized: Dict[str, Dict[str, Any]] = {}
+        for slot_id, cfg in defaults.items():
+            sanitized[slot_id] = sanitize_key_mapping_slot(slot_id, cfg, cfg)
+        self.settings.set("key_mappings", sanitized)
+        return sanitized
 
     def toggle_microphone_mute(self) -> Tuple[bool, str]:
         """Alterna o mudo do microfone via PipeWire (wpctl) ou PulseAudio (pactl)."""
@@ -160,7 +178,7 @@ class CpuThermalUndervoltMixin:
                 "title": f"Taxa de Atualização: {new_hz} Hz",
                 "subtitle": "Fn + R • Painel de Vídeo",
                 "icon": "refresh.svg",
-                "accent": "#00d2ff" if new_hz > 60 else "#2fe08c"
+                "accent": "#60a5fa" if new_hz > 60 else "#34d399"
             }
 
         if action_id == "toggle_max_power":
@@ -181,7 +199,7 @@ class CpuThermalUndervoltMixin:
                 "title": "Modo Viagem (Eco-Mode Extremo)" if new_state else "Modo Viagem Desativado",
                 "subtitle": "Conservação 80% • GPU D3cold • Turbo Off • Low Power" if new_state else "Desempenho Padrão Restaurado",
                 "icon": "eco_travel.svg",
-                "accent": "#2fe08c" if new_state else "#00d2ff"
+                "accent": "#34d399" if new_state else "#60a5fa"
             }
 
         if action_id == "toggle_conservation":
@@ -194,7 +212,7 @@ class CpuThermalUndervoltMixin:
                 "title": f"Conservação da Bateria: {'Ativado (80%)' if new_state else 'Desativado (100%)'}",
                 "subtitle": "Proteção contra degradação química",
                 "icon": "edge_conservation.svg",
-                "accent": "#2fe08c" if new_state else "#8b949e"
+                "accent": "#34d399" if new_state else "#94a3b8"
             }
 
         if action_id == "toggle_mic_mute":
@@ -206,7 +224,7 @@ class CpuThermalUndervoltMixin:
                 "title": label,
                 "subtitle": "Atalho Rápido de Áudio Ducksvantage",
                 "icon": "copilot_key.svg",
-                "accent": "#00d2ff"
+                "accent": "#60a5fa"
             }
 
         if action_id == "toggle_touchpad":
@@ -219,12 +237,48 @@ class CpuThermalUndervoltMixin:
                 "title": f"Touchpad: {'Bloqueado' if new_state else 'Desbloqueado'}",
                 "subtitle": "Controle de Dispositivo de Entrada",
                 "icon": "edge_touchpad.svg",
-                "accent": "#ff9f0a" if new_state else "#2fe08c"
+                "accent": "#fbbf24" if new_state else "#34d399"
+            }
+
+        if action_id == "toggle_cinema_mode":
+            new_state = not self.get_cinema_mode()
+            ok, msg = self.set_cinema_mode(new_state)
+            return {
+                "action": action_id,
+                "ok": ok,
+                "osd_type": "feature",
+                "title": "Modo Cinema / Apresentação: Ativo" if new_state else "Modo Cinema Desativado",
+                "subtitle": "Tela acesa • Não Perturbe KDE • Teclado Off" if new_state else msg,
+                "icon": "copilot_key.svg",
+                "accent": "#60a5fa" if new_state else "#94a3b8"
+            }
+
+        if action_id == "cycle_audio_preset":
+            ok, preset_id, msg = self.cycle_audio_preset()
+            titles = {
+                "normal": "Áudio: Modo Padrão",
+                "voice_call": "Áudio: Call / Voz (Filtro Ruído)",
+                "privacy_mute": "Áudio: Silêncio & Privacidade",
+            }
+            return {
+                "action": action_id,
+                "ok": ok,
+                "osd_type": "feature",
+                "title": titles.get(preset_id, "Áudio Alternado"),
+                "subtitle": msg,
+                "icon": "copilot_key.svg",
+                "accent": "#34d399" if preset_id == "voice_call" else ("#ef4444" if preset_id == "privacy_mute" else "#60a5fa")
             }
 
         if action_id == "custom_command" and custom_cmd.strip():
             try:
-                subprocess.Popen(custom_cmd.strip(), shell=True)
+                subprocess.Popen(
+                    custom_cmd.strip(),
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
                 return {
                     "action": action_id,
                     "ok": True,
@@ -232,7 +286,7 @@ class CpuThermalUndervoltMixin:
                     "title": "Comando Personalizado Executado",
                     "subtitle": custom_cmd.strip()[:48],
                     "icon": "copilot_key.svg",
-                    "accent": "#9e3dff"
+                    "accent": "#a78bfa"
                 }
             except Exception as e:
                 return {"action": action_id, "ok": False, "error": str(e)}

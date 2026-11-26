@@ -5,6 +5,7 @@ from core.mixins.cpu_thermal import CpuThermalUndervoltMixin
 from core.mixins.telemetry_battery import TelemetryBatteryNetworkMixin
 from core.mixins.display_mux_bios import DisplayMuxBiosMixin
 from core.mixins.extras import PresetsDiagnosticsRgbMixin
+from core.mixins.smart_features import SmartFeaturesMixin
 
 __all__ = [
     "GamingAutoSwitchMixin",
@@ -12,4 +13,5 @@ __all__ = [
     "TelemetryBatteryNetworkMixin",
     "DisplayMuxBiosMixin",
     "PresetsDiagnosticsRgbMixin",
+    "SmartFeaturesMixin",
 ]

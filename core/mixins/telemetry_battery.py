@@ -404,6 +404,7 @@ class TelemetryBatteryNetworkMixin:
             rt_path = os.path.join(self.paths.nvidia_drm_card, "device", "power", "runtime_status")
             rt_status = (self._read_file_text(rt_path) or "active").lower()
             if "suspend" in rt_status:
+                self._cached_gpu_throttle_reasons = []
                 metrics.available = False
                 metrics.vendor = "NVIDIA"
                 metrics.name = self._cached_gpu_name or "NVIDIA GeForce (Optimus)"
@@ -459,7 +460,7 @@ class TelemetryBatteryNetworkMixin:
             try:
                 cmd = [
                     "nvidia-smi",
-                    "--query-gpu=gpu_name,temperature.gpu,utilization.gpu,memory.used,memory.total,power.draw,clocks.current.graphics,pstate",
+                    "--query-gpu=gpu_name,temperature.gpu,utilization.gpu,memory.used,memory.total,power.draw,clocks.current.graphics,pstate,clocks_event_reasons.hw_thermal_slowdown,clocks_event_reasons.sw_thermal_slowdown,clocks_event_reasons.hw_power_brake_slowdown,clocks_event_reasons.sw_power_cap",
                     "--format=csv,noheader,nounits"
                 ]
                 res = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
@@ -483,6 +484,19 @@ class TelemetryBatteryNetworkMixin:
                             except ValueError:
                                 return 0
 
+                        thr_reasons: List[str] = []
+                        if len(parts) >= 12:
+                            reason_cols = (
+                                (parts[8], "thermal_hw"),
+                                (parts[9], "thermal_sw"),
+                                (parts[10], "power_brake"),
+                                (parts[11], "power_cap"),
+                            )
+                            for raw_flag, tag in reason_cols:
+                                if raw_flag.strip().lower() == "active":
+                                    thr_reasons.append(tag)
+                        self._cached_gpu_throttle_reasons = thr_reasons
+
                         nv_metrics = GPUMetrics(
                             available=True,
                             vendor="NVIDIA",
@@ -495,7 +509,8 @@ class TelemetryBatteryNetworkMixin:
                             memory_total_mb=_safe_int(parts[4]),
                             power_draw_w=_safe_float(parts[5]) if len(parts) >= 6 else 0.0,
                             clock_mhz=_safe_int(parts[6]) if len(parts) >= 7 else 0,
-                            pstate=parts[7] if len(parts) >= 8 else "P0"
+                            pstate=parts[7] if len(parts) >= 8 else "P0",
+                            throttle_reasons=thr_reasons,
                         )
                         self._cached_nvidia_metrics = nv_metrics
                         return nv_metrics
