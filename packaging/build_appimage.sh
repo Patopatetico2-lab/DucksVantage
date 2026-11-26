@@ -29,20 +29,21 @@ python3 -m PyInstaller \
     --clean \
     --onedir \
     --name ducksvantage \
+    --paths "$REPO_ROOT" \
     --distpath "$DIST_TMP" \
     --workpath "$BUILD_TMP" \
     --specpath "$SPEC_TMP" \
-    --add-data "styles.qss:." \
-    --add-data "assets:assets" \
-    --add-data "packaging:packaging" \
-    --add-data "plasmoid:plasmoid" \
+    --add-data "$REPO_ROOT/styles.qss:." \
+    --add-data "$REPO_ROOT/assets:assets" \
+    --add-data "$REPO_ROOT/packaging:packaging" \
+    --add-data "$REPO_ROOT/plasmoid:plasmoid" \
     --collect-submodules core \
     --collect-submodules ui \
     --hidden-import pynvml \
     --hidden-import test_backend \
     --hidden-import PyQt6.QtSvg \
     --hidden-import PyQt6.QtDBus \
-    main.py
+    "$REPO_ROOT/main.py"
 
 APPDIR="$WORK_DIR/AppDir"
 mkdir -p \
@@ -88,8 +89,8 @@ fi
 
 mkdir -p dist
 OUT_FILE="dist/DucksVantage-${VERSION}-x86_64.AppImage"
-ARCH=x86_64 "$APPIMAGETOOL" --appimage-extract-and-run "$APPDIR" "$OUT_FILE"
+APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 "$APPIMAGETOOL" "$APPDIR" "$OUT_FILE"
 chmod 0755 "$OUT_FILE"
 
-"$OUT_FILE" --appimage-extract-and-run --help >/dev/null
+APPIMAGE_EXTRACT_AND_RUN=1 "$OUT_FILE" --help >/dev/null
 echo "[OK] AppImage gerado em: $OUT_FILE"
