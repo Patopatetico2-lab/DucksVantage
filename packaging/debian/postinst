@@ -7,12 +7,43 @@ if [ "$1" = "configure" ]; then
         udevadm control --reload-rules || true
         udevadm trigger || true
     fi
+
     chmod 0666 /sys/firmware/acpi/platform_profile 2>/dev/null || true
+    chmod 0666 /sys/class/platform-profile/*/profile 2>/dev/null || true
     chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/conservation_mode 2>/dev/null || true
+    chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/rapid_charge 2>/dev/null || true
     chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/fn_lock 2>/dev/null || true
     chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/camera_power 2>/dev/null || true
+    chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/usb_charging 2>/dev/null || true
+    chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/touchpad 2>/dev/null || true
+    chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/fan_mode 2>/dev/null || true
+    chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/lcd_overdrive 2>/dev/null || true
+    chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/gpu_mode 2>/dev/null || true
+    chmod 0666 /sys/class/leds/*kbd_backlight*/brightness 2>/dev/null || true
+    chmod 0666 /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null || true
+    chmod 0666 /sys/devices/system/cpu/cpufreq/boost 2>/dev/null || true
+    chmod 0666 /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null || true
+    chmod 0666 /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference 2>/dev/null || true
     chmod 0666 /sys/class/powercap/intel-rapl*/constraint_*_power_limit_uw 2>/dev/null || true
+    chmod 0666 /sys/bus/pci/devices/*/power/control 2>/dev/null || true
+    chmod 0666 /sys/class/power_supply/BAT*/charge_types 2>/dev/null || true
+    chmod 0666 /sys/class/firmware-attributes/*/attributes/*/current_value 2>/dev/null || true
+    chmod 0666 /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null || true
+    chmod 0666 /sys/class/net/*/device/power/control 2>/dev/null || true
+    chmod 0666 /sys/class/backlight/*/brightness 2>/dev/null || true
+
+    for hdir in /sys/class/hidraw/hidraw*; do
+        if [ -f "$hdir/device/uevent" ] && grep -qi "048D" "$hdir/device/uevent"; then
+            chmod 0666 "/dev/$(basename "$hdir")" 2>/dev/null || true
+        fi
+    done
+
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
+    fi
 fi
 
 exit 0
-

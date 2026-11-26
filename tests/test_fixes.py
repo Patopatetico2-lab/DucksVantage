@@ -1217,11 +1217,13 @@ class TestDucksVantageFixes(unittest.TestCase):
             self.assertTrue(res["up_to_date"])
 
         # Sem .git (instalação empacotada): compara APP_VERSION contra tag de release do GitHub
+        from core.mixins.extras import APP_VERSION
+
         rel_same = MagicMock()
         rel_same.read.return_value = json.dumps({
-            "tag_name": "v2.1.0",
-            "name": "DucksVantage 2.1.0",
-            "published_at": "2026-11-21T18:00:00Z",
+            "tag_name": f"v{APP_VERSION}",
+            "name": f"DucksVantage {APP_VERSION}",
+            "published_at": "2026-11-26T10:00:00Z",
         }).encode("utf-8")
         rel_same.__enter__ = MagicMock(return_value=rel_same)
         rel_same.__exit__ = MagicMock(return_value=False)
@@ -1234,8 +1236,8 @@ class TestDucksVantageFixes(unittest.TestCase):
 
         rel_newer = MagicMock()
         rel_newer.read.return_value = json.dumps({
-            "tag_name": "v2.2.0",
-            "name": "DucksVantage 2.2.0",
+            "tag_name": "v9.9.0",
+            "name": "DucksVantage 9.9.0",
             "published_at": "2026-11-26T18:00:00Z",
         }).encode("utf-8")
         rel_newer.__enter__ = MagicMock(return_value=rel_newer)
@@ -1251,6 +1253,23 @@ class TestDucksVantageFixes(unittest.TestCase):
             res_err = self.backend.check_for_updates()
             self.assertFalse(res_err["ok"])
             self.assertIn("Não foi possível consultar", res_err["message"])
+
+    def test_autostart_uses_appimage_env_when_present(self):
+        """Quando executado como .AppImage, autostart grava o caminho do próprio .AppImage."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_appimage = os.path.join(tmpdir, "DucksVantage-2.2.0-x86_64.AppImage")
+            with open(fake_appimage, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            desktop_dst = os.path.join(tmpdir, "autostart", "ducksvantage.desktop")
+
+            with patch.dict(os.environ, {"APPIMAGE": fake_appimage}), \
+                 patch.object(self.backend, "get_autostart_desktop_path", return_value=desktop_dst):
+                ok, _ = self.backend.set_autostart_enabled(True)
+                self.assertTrue(ok)
+                with open(desktop_dst, "r", encoding="utf-8") as fh:
+                    content = fh.read()
+                self.assertIn(f'Exec="{fake_appimage}" --minimized', content)
+                self.assertIn("Icon=ducksvantage", content)
 
     # -------------------------------------------------------------------------
     # 27. Correção Completa do Mapeador de Teclas (Copilot F8/F23, evdev & Qt)

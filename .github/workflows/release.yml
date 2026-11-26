@@ -1,0 +1,225 @@
+name: Release DucksVantage Installers
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag da Release (ex: v2.2.0). Vazio usa v<APP_VERSION>."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Testes Unitários & Versão
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Extrair versão do app
+        id: ver
+        run: |
+          VER="$(sed -nE 's/^APP_VERSION = "([^"]+)"/\1/p' core/mixins/extras.py | head -n1)"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "Versão detectada: $VER"
+
+      - name: Instalar dependências de teste
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install PyQt6 psutil nvidia-ml-py
+
+      - name: Executar suíte de testes
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python3 -m unittest discover -s tests -v
+
+  build-deb:
+    name: Build .deb (Debian / Ubuntu / Mint)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Gerar pacote .deb
+        run: |
+          bash packaging/build_deb.sh "${{ needs.test.outputs.version }}"
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb | head -n 40
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+  build-rpm:
+    name: Build .rpm (Fedora / Nobara / openSUSE)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar rpmbuild
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y rpm
+
+      - name: Gerar pacote .rpm
+        run: |
+          bash packaging/build_rpm.sh "${{ needs.test.outputs.version }}"
+          rpm -qlp dist/*.rpm | head -n 40
+
+      - name: Upload .rpm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-rpm
+          path: dist/*.rpm
+          if-no-files-found: error
+
+  build-arch:
+    name: Build Arch (.pkg.tar.zst)
+    needs: test
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Gerar pacote Arch Linux
+        run: |
+          pacman -Sy --noconfirm --needed zstd
+          useradd -m -s /bin/bash builder || true
+          rm -rf /tmp/arch-build
+          cp -a "$GITHUB_WORKSPACE" /tmp/arch-build
+          chown -R builder:builder /tmp/arch-build
+          su builder -c "cd /tmp/arch-build/packaging && makepkg -f --nodeps"
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp /tmp/arch-build/packaging/*.pkg.tar.zst "$GITHUB_WORKSPACE/dist/"
+          tar --zstd -tf "$GITHUB_WORKSPACE"/dist/*.pkg.tar.zst | head -n 40
+
+      - name: Upload Arch artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-arch
+          path: dist/*.pkg.tar.zst
+          if-no-files-found: error
+
+  build-appimage:
+    name: Build AppImage (x86_64 Universal)
+    needs: test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar dependências de build do AppImage
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            python3-pip python3-venv librsvg2-bin curl \
+            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libxcb-cursor0 fuse3
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "PyQt6>=6.4.0" "psutil>=5.9.0" "nvidia-ml-py>=12.0.0" pyinstaller
+
+      - name: Gerar AppImage
+        run: |
+          bash packaging/build_appimage.sh "${{ needs.test.outputs.version }}"
+          ls -lh dist/*.AppImage
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-appimage
+          path: dist/*.AppImage
+          if-no-files-found: error
+
+  publish-release:
+    name: Publicar GitHub Release
+    needs: [test, build-deb, build-rpm, build-arch, build-appimage]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar artefatos gerados
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Gerar SHA256SUMS.txt
+        run: |
+          cd release-assets
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Definir tag e notas da Release
+        id: meta
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            REL_TAG="${{ github.ref_name }}"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            REL_TAG="${{ inputs.tag }}"
+          else
+            REL_TAG="v${{ needs.test.outputs.version }}"
+          fi
+          echo "tag=$REL_TAG" >> "$GITHUB_OUTPUT"
+
+          VER="${{ needs.test.outputs.version }}"
+          {
+            echo "## DucksVantage v${VER}"
+            echo ""
+            echo "Instaladores nativos prontos para Linux (**Lenovo Legion, LOQ, IdeaPad Gaming, IdeaPad e Yoga**)."
+            echo ""
+            echo "### Como instalar em 1 comando"
+            echo ""
+            echo "* **Ubuntu / Debian / Mint / Pop!_OS (\`.deb\`):**"
+            echo "  \`\`\`bash"
+            echo "  sudo apt install ./ducksvantage_${VER}_all.deb"
+            echo "  \`\`\`"
+            echo "* **Fedora / Nobara / openSUSE (\`.rpm\`):**"
+            echo "  \`\`\`bash"
+            echo "  sudo dnf install ./ducksvantage-${VER}-1.noarch.rpm"
+            echo "  \`\`\`"
+            echo "* **Arch Linux / CachyOS / Manjaro (\`.pkg.tar.zst\`):**"
+            echo "  \`\`\`bash"
+            echo "  sudo pacman -U ./ducksvantage-${VER}-1-any.pkg.tar.zst"
+            echo "  \`\`\`"
+            echo "* **Qualquer distribuição Linux (\`.AppImage\`):**"
+            echo "  \`\`\`bash"
+            echo "  chmod +x DucksVantage-${VER}-x86_64.AppImage"
+            echo "  ./DucksVantage-${VER}-x86_64.AppImage"
+            echo "  \`\`\`"
+            echo "  *(No primeiro uso via AppImage, clique em **\"Configurar Acesso Sem Senha\"** na aba Sobre para instalar as regras UDEV no sistema.)*"
+            echo ""
+            echo "### Principais novidades da v${VER}"
+            echo "* **Interface Estilo 3** com separação limpa entre **Modo Básico** e **Modo Avançado** + \`BasicModeHintBar\`."
+            echo "* **Modo Viagem (Economia) aprimorado:** correção da restauração de brilho no KDE Plasma 6 (\`org.kde.ScreenBrightness\`) e painel de personalização do que o modo pode alterar."
+            echo "* **8 módulos corrigidos com comportamento real:** GPU MUX sem fallback falso \`pcie-runtime\`, termistor real + alertas de bateria independentes, histórico real de bateria, Undervolt seguro (\`modprobe msr\` / Polkit), Plasmoid KDE Plasma 6 via D-Bus, Wi-Fi Baixa Latência (\`nmcli\`), Update Checker via Releases/Tags e deduplicação expandida da BIOS WMI."
+            echo "* **Empacotamento oficial automatizado** (\`.deb\`, \`.rpm\`, \`.pkg.tar.zst\` e \`.AppImage\`)."
+          } > release-notes.md
+
+      - name: Publicar Release no GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: DucksVantage ${{ steps.meta.outputs.tag }}
+          body_path: release-notes.md
+          files: release-assets/*
+          draft: false
+          prerelease: false

@@ -1137,6 +1137,24 @@ class TelemetryBatteryNetworkMixin:
             icon_path = os.path.join(project_dir, "assets", "app_icon.svg")
             python_bin = sys.executable or shutil.which("python3") or "/usr/bin/python3"
 
+            appimage_path = os.environ.get("APPIMAGE", "").strip()
+            if appimage_path and os.path.isfile(appimage_path):
+                exec_line = f'"{appimage_path}" --minimized'
+                icon_line = "ducksvantage"
+                work_dir = os.path.dirname(appimage_path)
+            elif getattr(sys, "frozen", False):
+                exec_line = f'"{sys.executable}" --minimized'
+                icon_line = "ducksvantage"
+                work_dir = os.path.dirname(sys.executable)
+            elif project_dir == "/opt/ducksvantage" and os.path.exists("/usr/bin/ducksvantage"):
+                exec_line = "/usr/bin/ducksvantage --minimized"
+                icon_line = "ducksvantage"
+                work_dir = "/opt/ducksvantage"
+            else:
+                exec_line = f"{python_bin} {main_py} --minimized"
+                icon_line = icon_path
+                work_dir = project_dir
+
             desktop_content = (
                 "[Desktop Entry]\n"
                 "Version=1.0\n"
@@ -1146,9 +1164,9 @@ class TelemetryBatteryNetworkMixin:
                 "GenericName[pt_BR]=Controle de Hardware e Energia Lenovo\n"
                 "Comment=Start Ducksvantage minimized in system tray (Fn+Q OSD & Game Auto-Switch)\n"
                 "Comment[pt_BR]=Inicia o Ducksvantage minimizado na bandeja do sistema (OSD Fn+Q e Auto-Switch)\n"
-                f"Exec={python_bin} {main_py} --minimized\n"
-                f"Icon={icon_path}\n"
-                f"Path={project_dir}\n"
+                f"Exec={exec_line}\n"
+                f"Icon={icon_line}\n"
+                f"Path={work_dir}\n"
                 "Terminal=false\n"
                 "Categories=System;Settings;HardwareSettings;Utility;Qt;\n"
                 "Keywords=Lenovo;Legion;LOQ;IdeaPad;Vantage;Battery;Thermal;Performance;Max-Power;Ducksvantage;\n"

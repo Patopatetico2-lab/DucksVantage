@@ -230,14 +230,14 @@ def main():
 
     _terminate_previous_instances()
 
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     if os.path.exists(os.path.join(base_dir, "assets", "app_icon.svg")):
         os.chdir(base_dir)
 
     app = QApplication(sys.argv)
     app.setApplicationName("Ducksvantage")
     app.setDesktopFileName("ducksvantage")
-    app.setWindowIcon(QIcon("assets/app_icon.svg"))
+    app.setWindowIcon(QIcon(os.path.join(base_dir, "assets", "app_icon.svg")))
 
     # Verifica suporte à bandeja do sistema (evita processo fantasma em GNOME puro ou Wayland sem tray)
     tray_available = QSystemTrayIcon.isSystemTrayAvailable()

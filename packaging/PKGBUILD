@@ -1,6 +1,6 @@
 # Maintainer: Patopatetico2-lab
 pkgname=ducksvantage
-pkgver=2.1.0
+pkgver=2.2.0
 pkgrel=1
 pkgdesc="Universal Lenovo Vantage replacement for Linux (Legion, LOQ, IdeaPad Gaming, IdeaPad & Yoga)"
 arch=('any')
@@ -15,7 +15,14 @@ package() {
 
     # 1. Instalar código-fonte e assets em /opt/ducksvantage
     install -dm755 "$pkgdir/opt/ducksvantage"
-    cp -r main.py ui_main.py test_backend.py setup_udev.sh uninstall.sh styles.qss core ui assets packaging plasmoid "$pkgdir/opt/ducksvantage/"
+    cp -r main.py ui_main.py test_backend.py setup_udev.sh uninstall.sh styles.qss core ui assets plasmoid "$pkgdir/opt/ducksvantage/"
+    install -dm755 "$pkgdir/opt/ducksvantage/packaging/debian"
+    install -Dm644 packaging/99-ducksvantage.rules packaging/ducksvantage.desktop packaging/ducksvantage.install packaging/ducksvantage.spec packaging/PKGBUILD "$pkgdir/opt/ducksvantage/packaging/"
+    install -Dm755 packaging/build_deb.sh packaging/build_rpm.sh packaging/build_appimage.sh "$pkgdir/opt/ducksvantage/packaging/"
+    install -Dm644 packaging/debian/control.in "$pkgdir/opt/ducksvantage/packaging/debian/"
+    install -Dm755 packaging/debian/postinst packaging/debian/postrm "$pkgdir/opt/ducksvantage/packaging/debian/"
+    find "$pkgdir/opt/ducksvantage" -name "__pycache__" -prune -exec rm -rf {} +
+    find "$pkgdir/opt/ducksvantage" -name "*.pyc" -delete
 
     # 2. Lançador global /usr/bin/ducksvantage
     install -dm755 "$pkgdir/usr/bin"

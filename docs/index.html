@@ -54,7 +54,7 @@
       <a href="#" class="brand">
         <img src="assets/icons/ducksvantage_logo.svg" alt="DucksVantage Logo" class="brand-icon">
         <span class="brand-text">DUCKS<span>VANTAGE</span></span>
-        <span class="brand-badge">v2.0</span>
+        <span class="brand-badge">v2.2</span>
       </a>
 
       <ul class="nav-links">
@@ -96,7 +96,7 @@
       
       <div class="hero-pill">
         <span class="hero-pill-dot"></span>
-        <span>DucksVantage 2.0 • 100% Nativo no Linux • Zero Telemetria</span>
+        <span>DucksVantage v2.2 • 100% Nativo no Linux • Zero Telemetria</span>
       </div>
 
       <h1 class="hero-title">
@@ -109,18 +109,19 @@
       </p>
 
       <div class="hero-actions">
-        <a href="#simulador" class="btn-hero-primary">
+        <a href="https://github.com/Patopatetico2-lab/DucksVantage/releases/latest" target="_blank" class="btn-hero-primary">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          <span>Baixar Instaladores (v2.2.0)</span>
+        </a>
+        <a href="#simulador" class="btn-hero-secondary">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <polygon points="5 3 19 12 5 21 5 3"/>
           </svg>
           <span>Testar Simulador Interativo</span>
-        </a>
-        <a href="#instalacao" class="btn-hero-secondary">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M4 17l6-6-6-6"/>
-            <path d="M12 19h8"/>
-          </svg>
-          <span>Ver Comandos de Instalação</span>
         </a>
       </div>
 
@@ -185,7 +186,7 @@
           </div>
           <div class="window-title">
             <img src="assets/icons/ducksvantage_logo.svg" width="16" height="16" alt="Duck icon">
-            <span>DucksVantage 2.0 • Lenovo Legion Pro 5 16ARX8</span>
+            <span>DucksVantage v2.2 • Lenovo Legion Pro 5 16ARX8</span>
             <span class="window-chip">Linux 6.12 (CachyOS)</span>
           </div>
           <div>
@@ -499,7 +500,7 @@
         <!-- Card 3: DucksVantage (O Vencedor) -->
         <div class="comp-card highlight">
           <span class="comp-badge badge-winner">A SOLUÇÃO DEFINITIVA</span>
-          <h3>DucksVantage 2.0</h3>
+          <h3>DucksVantage v2.2</h3>
           <p>Engenharia reversa limpa em Python + PyQt6 conversando direto com o kernel Linux.</p>
           <ul class="comp-list">
             <li class="comp-item"><span class="icon-good">✔</span> Apenas ~35 MB de consumo de memória</li>
@@ -852,7 +853,7 @@
           <div class="terminal-content" id="terminal-screen">
 <span class="t-dim">$ ducksvantage --status</span>
 <span class="t-cyan">===============================================================</span>
-<span class="t-cyan">       DUCKSVANTAGE v2.0 - DIAGNÓSTICO DO SISTEMA &amp; ACPI       </span>
+<span class="t-cyan">       DUCKSVANTAGE v2.2 - DIAGNÓSTICO DO SISTEMA &amp; ACPI       </span>
 <span class="t-cyan">===============================================================</span>
 <span class="t-green">✔ Hardware Detectado:</span> Lenovo Legion Pro 5 16ARX8
 <span class="t-green">✔ Driver ACPI Ativo:</span>  ideapad_acpi + lenovo-wmi-gamezone
@@ -907,40 +908,38 @@
         <div class="install-body">
           <!-- Pane Arch / CachyOS -->
           <div class="install-pane active" id="tab-arch">
-            <p>Instale as dependências via <code>pacman</code> e execute o script instalador:</p>
+            <p>Baixe o pacote <code>.pkg.tar.zst</code> pronto nas <a href="https://github.com/Patopatetico2-lab/DucksVantage/releases/latest" target="_blank">Releases do GitHub</a> e instale com 1 comando (ou rode o <code>install.sh</code>):</p>
             <div class="code-block-wrapper">
-              <button class="btn-copy btn-copy-code" data-clipboard="sudo pacman -S python-pyqt6 python-psutil python-pynvml
-sudo ./install.sh">Copiar</button>
-              <pre><code>sudo pacman -S python-pyqt6 python-psutil python-pynvml
-sudo ./install.sh</code></pre>
+              <button class="btn-copy btn-copy-code" data-clipboard="sudo pacman -U ./ducksvantage-2.2.0-1-any.pkg.tar.zst">Copiar</button>
+              <pre><code>sudo pacman -U ./ducksvantage-2.2.0-1-any.pkg.tar.zst</code></pre>
             </div>
             <p style="margin-top: 15px; font-size: 0.85rem; color: #8b949e;">
-              Dica: Você também pode empacotar como pacote nativo do Arch via <code>cd packaging &amp;&amp; makepkg -si</code>.
+              Ou pelo código-fonte: <code>sudo pacman -S python-pyqt6 python-psutil python-pynvml &amp;&amp; sudo ./install.sh</code> (ou <code>cd packaging &amp;&amp; makepkg -si</code>).
             </p>
           </div>
 
           <!-- Pane Ubuntu / Debian -->
           <div class="install-pane" id="tab-ubuntu">
-            <p>Para Ubuntu 22.04+, Debian 12+, Linux Mint ou Pop!_OS:</p>
+            <p>Para Ubuntu 22.04+, Debian 12+, Linux Mint ou Pop!_OS — baixe o <code>.deb</code> (ou <code>.AppImage</code>) nas <a href="https://github.com/Patopatetico2-lab/DucksVantage/releases/latest" target="_blank">Releases do GitHub</a>:</p>
             <div class="code-block-wrapper">
-              <button class="btn-copy btn-copy-code" data-clipboard="sudo apt update
-sudo apt install python3-pyqt6 python3-psutil python3-pynvml policykit-1
-sudo ./install.sh">Copiar</button>
-              <pre><code>sudo apt update
-sudo apt install python3-pyqt6 python3-psutil python3-pynvml policykit-1
-sudo ./install.sh</code></pre>
+              <button class="btn-copy btn-copy-code" data-clipboard="sudo apt install ./ducksvantage_2.2.0_all.deb">Copiar</button>
+              <pre><code>sudo apt install ./ducksvantage_2.2.0_all.deb</code></pre>
             </div>
+            <p style="margin-top: 15px; font-size: 0.85rem; color: #8b949e;">
+              Ou portátil sem instalar (AppImage): <code>chmod +x DucksVantage-2.2.0-x86_64.AppImage &amp;&amp; ./DucksVantage-2.2.0-x86_64.AppImage</code>
+            </p>
           </div>
 
           <!-- Pane Fedora -->
           <div class="install-pane" id="tab-fedora">
-            <p>Para Fedora 39/40, Nobara ou RHEL 9:</p>
+            <p>Para Fedora, Nobara ou openSUSE — baixe o pacote <code>.rpm</code> nas <a href="https://github.com/Patopatetico2-lab/DucksVantage/releases/latest" target="_blank">Releases do GitHub</a>:</p>
             <div class="code-block-wrapper">
-              <button class="btn-copy btn-copy-code" data-clipboard="sudo dnf install python3-pyqt6 python3-psutil python3-pynvml polkit
-sudo ./install.sh">Copiar</button>
-              <pre><code>sudo dnf install python3-pyqt6 python3-psutil python3-pynvml polkit
-sudo ./install.sh</code></pre>
+              <button class="btn-copy btn-copy-code" data-clipboard="sudo dnf install ./ducksvantage-2.2.0-1.noarch.rpm">Copiar</button>
+              <pre><code>sudo dnf install ./ducksvantage-2.2.0-1.noarch.rpm</code></pre>
             </div>
+            <p style="margin-top: 15px; font-size: 0.85rem; color: #8b949e;">
+              Ou pelo código-fonte: <code>sudo dnf install python3-pyqt6 python3-psutil python3-pynvml polkit &amp;&amp; sudo ./install.sh</code>
+            </p>
           </div>
 
           <!-- Pane Manual -->

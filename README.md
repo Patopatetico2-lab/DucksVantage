@@ -51,7 +51,22 @@ Na aba *Sobre* (ou clicando com o botão direito no ícone da bandeja) tem a cha
 
 ## Como instalar
 
-O script `install.sh` copia os arquivos pro sistema, cria o atalho com o ícone no menu de aplicativos e já aplica as regras UDEV pra você não precisar digitar senha de root ao mexer nas configurações.
+### Baixar instaladores prontos (`v2.2.0`)
+
+Você pode baixar o pacote pronto para a sua distribuição diretamente na página de [**Releases do GitHub**](https://github.com/Patopatetico2-lab/DucksVantage/releases/latest):
+
+| Distribuição | Pacote | Comando de instalação |
+| :--- | :--- | :--- |
+| **Ubuntu / Debian / Pop!_OS / Mint** | `ducksvantage_2.2.0_all.deb` | `sudo apt install ./ducksvantage_2.2.0_all.deb` |
+| **Fedora / Nobara / openSUSE** | `ducksvantage-2.2.0-1.noarch.rpm` | `sudo dnf install ./ducksvantage-2.2.0-1.noarch.rpm` |
+| **Arch Linux / CachyOS / Manjaro** | `ducksvantage-2.2.0-1-any.pkg.tar.zst` | `sudo pacman -U ./ducksvantage-2.2.0-1-any.pkg.tar.zst` |
+| **Qualquer Linux (Portátil)** | `DucksVantage-2.2.0-x86_64.AppImage` | `chmod +x DucksVantage-2.2.0-x86_64.AppImage && ./DucksVantage-2.2.0-x86_64.AppImage` |
+
+> **Nota sobre o `.AppImage`:** os pacotes `.deb`, `.rpm` e `.pkg.tar.zst` já instalam automaticamente as regras UDEV em `/etc/udev/rules.d/`. Ao usar o `.AppImage`, clique em **"Configurar Acesso Sem Senha"** na aba *Sobre* na primeira abertura para gravar as permissões no sistema.
+
+### Instalar pelo código-fonte (`install.sh`)
+
+Se preferir clonar o repositório e instalar manualmente, o script `install.sh` copia os arquivos pro sistema, cria o atalho com o ícone no menu de aplicativos e já aplica as regras UDEV pra você não precisar digitar senha de root ao mexer nas configurações:
 
 **Arch Linux / CachyOS / Manjaro:**
 ```bash
