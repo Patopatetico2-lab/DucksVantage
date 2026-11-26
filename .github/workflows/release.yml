@@ -36,6 +36,11 @@ jobs:
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "Versão detectada: $VER"
 
+      - name: Instalar bibliotecas de sistema para PyQt6
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1 libxcb-cursor0
+
       - name: Instalar dependências de teste
         run: |
           python3 -m pip install --upgrade pip
@@ -105,7 +110,7 @@ jobs:
 
       - name: Gerar pacote Arch Linux
         run: |
-          pacman -Sy --noconfirm --needed zstd
+          command -v zstd >/dev/null 2>&1 || pacman -Sy --noconfirm zstd
           useradd -m -s /bin/bash builder || true
           rm -rf /tmp/arch-build
           cp -a "$GITHUB_WORKSPACE" /tmp/arch-build
@@ -130,12 +135,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Instalar dependências de build do AppImage
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y \
-            python3-pip python3-venv librsvg2-bin curl \
-            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libxcb-cursor0 fuse3
+            librsvg2-bin curl \
+            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1
           python3 -m pip install --upgrade pip
           python3 -m pip install "PyQt6>=6.4.0" "psutil>=5.9.0" "nvidia-ml-py>=12.0.0" pyinstaller
 
