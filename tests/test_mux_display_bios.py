@@ -9,6 +9,7 @@ Testes Automatizados para Ducksvantage: Recursos 1, 2 e 3
 import os
 import sys
 import json
+import tempfile
 import unittest
 from unittest.mock import patch, MagicMock, mock_open
 
@@ -30,10 +31,26 @@ class TestMuxDisplayBios(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication(["ducksvantage", "-platform", "offscreen"])
 
     def setUp(self):
+        self._cfg_tmpdir = tempfile.TemporaryDirectory()
+        cfg_dir = self._cfg_tmpdir.name
+        cfg_file = os.path.join(cfg_dir, "settings.json")
+        legacy_file = os.path.join(cfg_dir, "legacy_settings.json")
+        self._cfg_patchers = [
+            patch("core.settings.CONFIG_DIR", cfg_dir),
+            patch("core.settings.CONFIG_FILE", cfg_file),
+            patch("core.settings.LEGACY_CONFIG_FILE", legacy_file),
+        ]
+        for p in self._cfg_patchers:
+            p.start()
         self.backend = HardwareBackend()
 
     def tearDown(self):
-        self.backend.close()
+        try:
+            self.backend.close()
+        finally:
+            for p in reversed(self._cfg_patchers):
+                p.stop()
+            self._cfg_tmpdir.cleanup()
 
     # =========================================================================
     # RECURSO 1: GPU MUX Switch Tests

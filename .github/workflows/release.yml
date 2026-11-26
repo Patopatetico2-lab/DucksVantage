@@ -39,7 +39,7 @@ jobs:
       - name: Instalar bibliotecas de sistema para PyQt6
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1 libxcb-cursor0
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1 libxcb-cursor0 fonts-dejavu-core fonts-liberation
 
       - name: Instalar dependências de teste
         run: |
@@ -50,7 +50,19 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python3 -m unittest discover -s tests -v
+          set +e
+          python3 -m unittest discover -s tests -v 2>&1 | tee test_output.txt
+          STATUS=${PIPESTATUS[0]}
+          if [ "$STATUS" -ne 0 ]; then
+            python3 -c '
+          txt = open("test_output.txt", errors="replace").read()
+          marker = "======================================================================"
+          tail = txt[txt.find(marker):] if marker in txt else txt[-2000:]
+          for line in [l for l in tail.splitlines() if l.strip()][:15]:
+              print(f"::error::{line}")
+          '
+          fi
+          exit "$STATUS"
 
   build-deb:
     name: Build .deb (Debian / Ubuntu / Mint)
