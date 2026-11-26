@@ -27,8 +27,8 @@ class SystemTrayManager(QObject):
     game_auto_toggled = Signal(bool)
     touchpad_toggled = Signal(bool)
     conservation_toggled = Signal(bool)
+    one_time_full_charge_toggled = Signal(bool)
     eco_travel_toggled = Signal(bool)
-    cinema_mode_toggled = Signal(bool)
     autostart_toggled = Signal(bool)
     show_window_requested = Signal()
     quit_requested = Signal()
@@ -163,14 +163,6 @@ class SystemTrayManager(QObject):
         self.action_eco_travel.setVisible(feat.eco_travel)
         self.menu.addAction(self.action_eco_travel)
 
-        # Modo Cinema / Apresentação
-        self.action_cinema_mode = QAction("Modo Cinema / Apresentação", self.menu)
-        self.action_cinema_mode.setIcon(self._get_icon("power.svg"))
-        self.action_cinema_mode.setCheckable(True)
-        self.action_cinema_mode.triggered.connect(self.cinema_mode_toggled.emit)
-        self.action_cinema_mode.setVisible(feat.cinema_mode)
-        self.menu.addAction(self.action_cinema_mode)
-
         # Modo de Conservação de Bateria
         self.action_conservation = QAction("Modo de Conservação (~80%)", self.menu)
         self.action_conservation.setIcon(self._get_icon("edge_conservation.svg"))
@@ -179,6 +171,15 @@ class SystemTrayManager(QObject):
         self.action_conservation.setVisible(feat.conservation_mode)
         self.action_conservation.triggered.connect(self._on_conservation_click)
         self.menu.addAction(self.action_conservation)
+
+        # Carregar até 100% Só Hoje
+        self.action_one_time_full = QAction("Carregar até 100% Só Hoje", self.menu)
+        self.action_one_time_full.setIcon(self._get_icon("power.svg"))
+        self.action_one_time_full.setCheckable(True)
+        self.action_one_time_full.setEnabled(feat.conservation_mode)
+        self.action_one_time_full.setVisible(feat.conservation_mode)
+        self.action_one_time_full.triggered.connect(self.one_time_full_charge_toggled.emit)
+        self.menu.addAction(self.action_one_time_full)
 
         # Inicialização Automática com o Sistema (XDG Autostart)
         self.action_autostart = QAction("Iniciar com o sistema", self.menu)
@@ -305,10 +306,11 @@ class SystemTrayManager(QObject):
             self.action_touchpad.setChecked(self.backend.get_touchpad_status())
         if self.backend.features.eco_travel:
             self.action_eco_travel.setChecked(self.backend.get_eco_travel_mode())
-        if self.backend.features.cinema_mode and hasattr(self, "action_cinema_mode"):
-            self.action_cinema_mode.setChecked(self.backend.get_cinema_mode())
         if self.backend.features.conservation_mode:
             self.action_conservation.setChecked(self.backend.get_conservation_mode())
+            if hasattr(self, "action_one_time_full"):
+                ot_st = self.backend.get_one_time_full_charge_status()
+                self.action_one_time_full.setChecked(bool(ot_st["active"]))
         self.action_autostart.setChecked(self.backend.get_autostart_enabled())
 
         if self.backend.features.refresh_rate and getattr(self, "_refresh_actions", None):
@@ -331,7 +333,8 @@ class SystemTrayManager(QObject):
             if ref.available:
                 lines.append(f"• Tela: {ref.current_hz} Hz")
         if bat.available:
-            bat_str = f"{bat.capacity_percent}% ({'AC' if bat.ac_connected else 'Bateria'}) • {bat.temperature_c:.0f}°C"
+            temp_part = f" • {bat.temperature_c:.0f}°C" if getattr(bat, "temperature_available", False) and bat.temperature_c > 0 else ""
+            bat_str = f"{bat.capacity_percent}% ({'AC' if bat.ac_connected else 'Bateria'}){temp_part}"
             lines.append(f"• Bateria: {bat_str}")
         if gpu.available:
             gpu_str = f"{gpu.temperature_c:.0f}°C"

@@ -242,7 +242,7 @@ class TestDucksVantageFixes(unittest.TestCase):
         fake_iw_output = "Power save: on\n"
         mock_subproc.return_value = MagicMock(returncode=0, stdout=fake_iw_output)
 
-        with patch.object(self.backend, "_discover_network_interfaces", return_value=("wlan0", None)):
+        with patch.object(self.backend, "_discover_wifi_interface", return_value="wlan0"):
             with patch("shutil.which", return_value="/usr/bin/iw"):
                 s1 = self.backend.get_network_power_status(force=True)
                 call_count_1 = mock_subproc.call_count
@@ -510,7 +510,7 @@ class TestDucksVantageFixes(unittest.TestCase):
     # -------------------------------------------------------------------------
     def test_wifi_power_saving_requires_iw_success(self):
         """Quando iw existe e falha por permissão (mesmo com PCI PM gravável), retorna False."""
-        with patch.object(self.backend, "_discover_network_interfaces", return_value=("wlan0", None)), \
+        with patch.object(self.backend, "_discover_wifi_interface", return_value="wlan0"), \
              patch("shutil.which", side_effect=lambda c: f"/usr/bin/{c}" if c in ("iw", "pkexec") else None), \
              patch("os.path.exists", return_value=True), \
              patch("os.access", return_value=True), \
@@ -540,26 +540,22 @@ class TestDucksVantageFixes(unittest.TestCase):
             self.assertEqual(mock_sub.call_args[0][0][0], "pkexec")
 
     # -------------------------------------------------------------------------
-    # 16. GPU MUX pcie-runtime reflete estado real de power/control (auto vs on)
+    # 16. GPU MUX nunca usa falso fallback pcie-runtime (protege D3cold)
     # -------------------------------------------------------------------------
-    def test_gpu_mux_pcie_runtime_reflects_control_file(self):
-        """Em pcie-runtime, power/control='auto' -> integrated; 'on' -> hybrid."""
+    def test_gpu_mux_disabled_without_real_backend_even_with_pcie_pm(self):
+        """Sem supergfxctl/envycontrol/prime-select/gpu_mode, GPU MUX deve permanecer desativado."""
         self.backend.paths.gpu_mode = None
         self.backend.paths.nvidia_pci_power_control = "/fake/pci/power/control"
         self.backend.paths.igpu_drm_card = "/fake/drm/card1"
         self.backend._cached_gpu_mux_info = None
 
         with patch("shutil.which", return_value=None):
-            with patch.object(self.backend, "_read_file_text", side_effect=lambda p: "auto" if p.endswith("control") else "active"):
-                self.backend._cached_gpu_mux_info = None
-                info_auto = self.backend.get_gpu_mux_info()
-                self.assertEqual(info_auto.backend_name, "pcie-runtime")
-                self.assertEqual(info_auto.current_mode, "integrated")
-
-            with patch.object(self.backend, "_read_file_text", side_effect=lambda p: "on" if p.endswith("control") else "active"):
-                self.backend._cached_gpu_mux_info = None
-                info_on = self.backend.get_gpu_mux_info()
-                self.assertEqual(info_on.current_mode, "hybrid")
+            self.backend._scan_gpu_mux()
+            info = self.backend.get_gpu_mux_info()
+            self.assertFalse(self.backend.features.gpu_mux)
+            self.assertFalse(info.available)
+            self.assertEqual(info.backend_name, "none")
+            self.assertEqual(info.available_modes, [])
 
     # -------------------------------------------------------------------------
     # 17. Auditoria de Ícones SVG, Desktop File Portátil & EPP Max-Power
@@ -850,7 +846,7 @@ class TestDucksVantageFixes(unittest.TestCase):
              patch.object(self.backend, "get_platform_profile_choices", return_value=["low-power", "balanced", "performance", "max-power"]), \
              patch.object(self.backend, "get_fan_metrics", return_value=FanMetrics(available=False, status_label="Automático via EC")), \
              patch.object(self.backend, "get_gpu_metrics", return_value=GPUMetrics(available=False, name="NVIDIA RTX 3050", runtime_state="D3cold")), \
-             patch.object(self.backend, "get_gpu_mux_info", return_value=GpuMuxInfo(available=True, current_mode="hybrid", available_modes=["hybrid", "integrated"], backend_name="pcie-runtime")), \
+             patch.object(self.backend, "get_gpu_mux_info", return_value=GpuMuxInfo(available=True, current_mode="hybrid", available_modes=["hybrid", "integrated"], backend_name="lenovo-wmi")), \
              patch.object(self.backend, "get_display_refresh_info", return_value=DisplayRefreshInfo(available=True, current_hz=144, available_rates=[60, 144], display_name="eDP-1", resolution="1920x1080", backend_name="kscreen-doctor")), \
              patch.object(self.backend, "get_battery_info", return_value=BatteryInfo(available=True, capacity_percent=80, health_percent=97.0, cycle_count=42)), \
              patch.object(self.backend, "get_bios_attributes", return_value=[]), \
@@ -953,15 +949,15 @@ class TestDucksVantageFixes(unittest.TestCase):
                 self.assertNotIn("unknown_malicious_key", self.backend.settings._data)
 
     # -------------------------------------------------------------------------
-    # 23. Autonomia Estimada de Bateria e Pontos Estimados vs Reais
+    # 23. Autonomia Estimada de Bateria, Termistor Real, Alertas Separados e Histórico Real
     # -------------------------------------------------------------------------
-    def test_battery_eta_and_history_estimated_flag(self):
-        """get_battery_info calcula tempo restante/carga e histórico marca pontos semeados."""
+    def test_battery_eta_real_history_and_alerts(self):
+        """get_battery_info calcula tempo restante, não inventa histórico/temp e separa alertas 80% vs térmico."""
         with tempfile.TemporaryDirectory() as td:
             bat_dir = os.path.join(td, "BAT0")
             os.makedirs(bat_dir)
             files = {
-                "capacity": "50",
+                "capacity": "80",
                 "status": "Discharging",
                 "cycle_count": "40",
                 "voltage_now": "15400000",
@@ -976,27 +972,50 @@ class TestDucksVantageFixes(unittest.TestCase):
 
             self.backend.paths.battery_dir = bat_dir
             self.backend.features.battery = True
-            self.backend.features.conservation_mode = False
+            self.backend.features.conservation_mode = True
             self.backend.features.rapid_charge = False
 
+            # Sem arquivo 'temp' na bateria -> não inventa temperatura e não dispara alerta térmico
             info = self.backend.get_battery_info()
+            self.assertFalse(info.temperature_available)
+            self.assertEqual(info.temperature_c, 0.0)
             self.assertEqual(info.estimated_minutes, 120)
             self.assertIn("2h 00min restantes", info.estimated_label)
 
-            # Em carregamento com conservação (~80% -> 44.8Wh alvo, falta 4.8Wh @ 20W ~ 14 min)
+            self.backend.set_battery_alert_settings(True, True, 36.0, temp_alert_enabled=True)
+            self.assertEqual(self.backend.check_battery_smart_alerts(), [])
+
+            # Com arquivo 'temp' real (43.5°C = 435 décimos) -> lê 43.5 e respeita switch térmico independente
+            with open(os.path.join(bat_dir, "temp"), "w", encoding="utf-8") as fh:
+                fh.write("435\n")
             with open(os.path.join(bat_dir, "status"), "w", encoding="utf-8") as fh:
                 fh.write("Charging")
-            self.backend.features.conservation_mode = True
-            with patch.object(self.backend, "get_conservation_mode", return_value=True):
+            with patch.object(self.backend, "get_conservation_mode", return_value=True), \
+                 patch.object(self.backend, "_get_ac_online", return_value=1):
                 info_chg = self.backend.get_battery_info()
-            self.assertIn("~80%", info_chg.estimated_label)
+                self.assertTrue(info_chg.temperature_available)
+                self.assertEqual(info_chg.temperature_c, 43.5)
+                self.assertIn("~80%", info_chg.estimated_label)
 
+                # Alerta 80% OFF, Alerta Térmico ON -> só dispara alerta térmico!
+                self.backend.set_battery_alert_settings(True, False, 42.0, temp_alert_enabled=True)
+                self.backend._alerted_80_this_session = False
+                self.backend._last_temp_alert_ts = 0.0
+                alerts = self.backend.check_battery_smart_alerts()
+                self.assertEqual(len(alerts), 1)
+                self.assertIn("Alerta Térmico", alerts[0]["title"])
+
+            # Histórico: purga entradas antigas 'estimated: True', preserva reais e não cria passado falso
             with patch.object(self.backend.settings, "save", return_value=None):
-                self.backend.settings._data["battery_history"] = []
+                self.backend.settings._data["battery_history"] = [
+                    {"timestamp": "2026-01-01", "energy_full_wh": 57.0, "energy_design_wh": 57.5, "health_percent": 99.1, "cycle_count": 5, "estimated": True},
+                    {"timestamp": "2026-11-20", "energy_full_wh": 56.2, "energy_design_wh": 57.5, "health_percent": 97.7, "cycle_count": 38, "estimated": False},
+                ]
                 hist = self.backend.record_battery_snapshot()
-                self.assertGreaterEqual(len(hist), 2)
-                self.assertTrue(hist[0].is_estimated)
-                self.assertFalse(hist[-1].is_estimated)
+                self.assertEqual(len(hist), 2)
+                self.assertEqual(hist[0].timestamp, "2026-11-20")
+                self.assertFalse(any(e.is_estimated for e in hist))
+                self.assertEqual(hist[-1].energy_full_wh, 56.0)
 
     # -------------------------------------------------------------------------
     # 24. Gráfico Térmico ao Vivo + Resumo Pós-Jogo + Preset & Ignore List
@@ -1196,6 +1215,37 @@ class TestDucksVantageFixes(unittest.TestCase):
             res = self.backend.check_for_updates()
             self.assertTrue(res["ok"])
             self.assertTrue(res["up_to_date"])
+
+        # Sem .git (instalação empacotada): compara APP_VERSION contra tag de release do GitHub
+        rel_same = MagicMock()
+        rel_same.read.return_value = json.dumps({
+            "tag_name": "v2.1.0",
+            "name": "DucksVantage 2.1.0",
+            "published_at": "2026-11-21T18:00:00Z",
+        }).encode("utf-8")
+        rel_same.__enter__ = MagicMock(return_value=rel_same)
+        rel_same.__exit__ = MagicMock(return_value=False)
+
+        with patch("core.mixins.extras.os.path.isdir", return_value=False), \
+             patch("core.backend.urllib.request.urlopen", return_value=rel_same):
+            res_pkg = self.backend.check_for_updates()
+            self.assertTrue(res_pkg["ok"])
+            self.assertTrue(res_pkg["up_to_date"])
+
+        rel_newer = MagicMock()
+        rel_newer.read.return_value = json.dumps({
+            "tag_name": "v2.2.0",
+            "name": "DucksVantage 2.2.0",
+            "published_at": "2026-11-26T18:00:00Z",
+        }).encode("utf-8")
+        rel_newer.__enter__ = MagicMock(return_value=rel_newer)
+        rel_newer.__exit__ = MagicMock(return_value=False)
+
+        with patch("core.mixins.extras.os.path.isdir", return_value=False), \
+             patch("core.backend.urllib.request.urlopen", return_value=rel_newer):
+            res_new = self.backend.check_for_updates()
+            self.assertTrue(res_new["ok"])
+            self.assertFalse(res_new["up_to_date"])
 
         with patch("core.backend.urllib.request.urlopen", side_effect=OSError("Network unreachable")):
             res_err = self.backend.check_for_updates()

@@ -15,13 +15,13 @@ import os
 from typing import List
 from core.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
-    QFrame, QScrollArea, QStackedWidget, QPushButton, QSlider, QComboBox, QLineEdit,
+    QFrame, QScrollArea, QStackedWidget, QPushButton, QSlider, QComboBox,
     Qt, Signal, QFont, QMessageBox, QPixmap, QPainter, QColor,
     QPen, QBrush, QLinearGradient, QPointF, QPainterPath
 )
 from core.models import BatteryHistoryEntry
 from ui.theme_tokens import ThemeTokens
-from ui.components import ToggleSwitch, StatusBadge, SubTabSelector
+from ui.components import ToggleSwitch, StatusBadge, SubTabSelector, BasicModeHintBar
 from ui.gauges import CircularGauge
 
 ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "assets", "icons")
@@ -180,10 +180,11 @@ class BatteryHealthChart(QWidget):
         # Legenda discreta no canto superior direito
         painter.setFont(QFont(ThemeTokens.FONT_NAME, 8))
         painter.setPen(QColor("#94a3b8"))
+        legend_txt = "● Medição Real" if len(self.entries) > 1 else "● 1ª Leitura Real (histórico cresce por dia)"
         painter.drawText(
-            int(w - 230), 6, 214, 16,
+            int(w - 290), 6, 274, 16,
             int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
-            "● Medição Real   ○ Estimativa Inicial"
+            legend_txt
         )
 
         painter.end()
@@ -193,7 +194,9 @@ class BatteryTab(QWidget):
     """Controle de energia, conservação, diagnóstico elétrico, economia de rede e alertas inteligentes da bateria."""
     conservation_changed = Signal(bool)
     rapid_charge_changed = Signal(bool)
+    one_time_full_charge_changed = Signal(bool)
     test_alert_requested = Signal()
+    switch_advanced_requested = Signal()
 
     def __init__(self, backend, parent=None):
         super().__init__(parent)
@@ -266,6 +269,54 @@ class BatteryTab(QWidget):
         top_row.addWidget(self.toggle_switch)
         self.cons_row_widget.setVisible(feat.conservation_mode)
         cons_layout.addWidget(self.cons_row_widget)
+
+        # Carga 100% Única ("Carregar até 100% Só Hoje")
+        self.one_time_row_widget = QFrame()
+        self.one_time_row_widget.setProperty("class", "subBox")
+        ot_row = QHBoxLayout(self.one_time_row_widget)
+        ot_row.setContentsMargins(14, 10, 14, 10)
+        ot_row.setSpacing(10)
+
+        ot_info = QVBoxLayout()
+        ot_info.setSpacing(2)
+        ot_title = QLabel("Carregar até 100% Só Hoje (Carga Única)")
+        ot_title.setWordWrap(True)
+        ot_title.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.Bold))
+        ot_title.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        ot_info.addWidget(ot_title)
+
+        self.lbl_one_time_status = QLabel("Libera 100% temporariamente e reativa a Conservação 80% automaticamente depois.")
+        self.lbl_one_time_status.setWordWrap(True)
+        self.lbl_one_time_status.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px;")
+        ot_info.addWidget(self.lbl_one_time_status)
+        ot_row.addLayout(ot_info, stretch=1)
+
+        self.combo_one_time_mode = QComboBox()
+        self.combo_one_time_mode.setFixedHeight(28)
+        for mid, mlabel in [
+            ("until_full", "Ao atingir 100%"),
+            ("2h", "Por 2 horas"),
+            ("4h", "Por 4 horas"),
+            ("8h", "Por 8 horas"),
+        ]:
+            self.combo_one_time_mode.addItem(mlabel, mid)
+        ot_st = self.backend.get_one_time_full_charge_status()
+        ot_idx = self.combo_one_time_mode.findData(ot_st["mode"])
+        if ot_idx >= 0:
+            self.combo_one_time_mode.setCurrentIndex(ot_idx)
+        self.combo_one_time_mode.currentIndexChanged.connect(self._on_one_time_mode_changed)
+        self.combo_one_time_mode.setVisible(bool(self._advanced_mode))
+        ot_row.addWidget(self.combo_one_time_mode)
+
+        self.btn_one_time_full = QPushButton("Carga 100% Única")
+        self.btn_one_time_full.setProperty("class", "secondaryButton")
+        self.btn_one_time_full.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_one_time_full.setFixedHeight(28)
+        self.btn_one_time_full.clicked.connect(self._on_one_time_full_clicked)
+        ot_row.addWidget(self.btn_one_time_full)
+
+        self.one_time_row_widget.setVisible(bool(feat.conservation_mode))
+        cons_layout.addWidget(self.one_time_row_widget)
 
         # Divisor (apenas quando ambos os controles estão disponíveis)
         self.cons_div = QFrame()
@@ -345,16 +396,17 @@ class BatteryTab(QWidget):
         self.bat_gauge.setFixedSize(200, 200)
         body_row.addWidget(self.bat_gauge)
 
-        # Grade dos 6 Cards Elétricos Detalhados
+        # Grade dos 6 Cards Elétricos Detalhados (3 essenciais no Básico + 3 técnicos no Avançado)
         details_grid = QGridLayout()
         details_grid.setSpacing(12)
+        self.elec_adv_boxes: List[QFrame] = []
 
-        self.val_health = self._create_info_item(details_grid, 0, 0, "1. Saúde da Bateria (Full vs Design)", "--%")
-        self.val_cycles = self._create_info_item(details_grid, 0, 1, "2. Ciclos de Carga & Química", "--")
-        self.val_power = self._create_info_item(details_grid, 0, 2, "3. Taxa / Potência Elétrica", "-- W")
-        self.val_voltage = self._create_info_item(details_grid, 1, 0, "4. Tensão Atual (Voltage)", "-- V")
-        self.val_full_wh = self._create_info_item(details_grid, 1, 1, "5. Energia Atual / Capacidade Cheia", "-- / -- Wh")
-        self.val_design_wh = self._create_info_item(details_grid, 1, 2, "6. Capacidade de Fábrica (Design)", "-- Wh")
+        self.val_health = self._create_info_item(details_grid, 0, 0, "Saúde da Bateria (Full vs Design)", "--%")
+        self.val_cycles = self._create_info_item(details_grid, 0, 1, "Ciclos de Carga & Química", "--")
+        self.val_power = self._create_info_item(details_grid, 0, 2, "Taxa / Autonomia Estimada", "-- W")
+        self.val_voltage = self._create_info_item(details_grid, 1, 0, "Tensão Atual (Voltage)", "-- V", adv_only=True)
+        self.val_full_wh = self._create_info_item(details_grid, 1, 1, "Energia Atual / Capacidade Cheia", "-- / -- Wh", adv_only=True)
+        self.val_design_wh = self._create_info_item(details_grid, 1, 2, "Capacidade de Fábrica (Design)", "-- Wh", adv_only=True)
 
         body_row.addLayout(details_grid, stretch=1)
         health_layout.addLayout(body_row)
@@ -395,26 +447,6 @@ class BatteryTab(QWidget):
         hist_title_col.addWidget(self.hist_sub_lbl)
         hist_header.addLayout(hist_title_col, stretch=1)
 
-        self.btn_snapshot = QPushButton("Registrar Leitura Agora")
-        self.btn_snapshot.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_snapshot.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {ThemeTokens.BG_CARD_HOVER};
-                color: {ThemeTokens.ACCENT_STEEL};
-                border: 1px solid {ThemeTokens.ACCENT_STEEL};
-                border-radius: 6px;
-                padding: 6px 12px;
-                font-weight: 600;
-                font-size: 11px;
-            }}
-            QPushButton:hover {{
-                background-color: {ThemeTokens.ACCENT_STEEL};
-                color: {ThemeTokens.BG_APP};
-            }}
-        """)
-        self.btn_snapshot.clicked.connect(self._on_record_snapshot)
-        hist_header.addWidget(self.btn_snapshot)
-
         hist_layout.addLayout(hist_header)
 
         self.health_chart = BatteryHealthChart()
@@ -440,9 +472,7 @@ class BatteryTab(QWidget):
 
         net_status = self.backend.get_network_power_status()
         has_wifi = bool(net_status.wifi_available and feat.wifi_power_save)
-        has_eth = bool(net_status.eth_available and feat.eth_power_save)
         self._has_wifi = has_wifi
-        self._has_eth = has_eth
 
         self.net_card = QFrame()
         self.net_card.setProperty("class", "card")
@@ -458,12 +488,7 @@ class BatteryTab(QWidget):
         net_header.addWidget(ic_net)
 
         net_titles = QVBoxLayout()
-        net_iface_parts = []
-        if has_wifi:
-            net_iface_parts.append(f"Wi-Fi ({net_status.wifi_iface} / {net_status.wifi_driver})")
-        if has_eth:
-            net_iface_parts.append(f"Ethernet ({net_status.eth_iface})")
-        net_title_suffix = " & ".join(net_iface_parts) if net_iface_parts else "Interfaces de Rede"
+        net_title_suffix = f"Wi-Fi ({net_status.wifi_iface} / {net_status.wifi_driver})" if has_wifi else "Interface Wi-Fi"
         nt_lbl = QLabel("Rede & Economia de Energia")
         nt_lbl.setToolTip(f"Interfaces detectadas: {net_title_suffix}")
         nt_lbl.setWordWrap(True)
@@ -512,96 +537,7 @@ class BatteryTab(QWidget):
         self.wifi_box.setVisible(has_wifi)
         net_layout.addWidget(self.wifi_box)
 
-        # Toggle 2: Economia de Energia PCIe Ethernet Gigabit
-        self.eth_box = QFrame()
-        self.eth_box.setProperty("class", "subBox")
-        eth_row = QHBoxLayout(self.eth_box)
-        eth_row.setContentsMargins(14, 10, 14, 10)
-
-        e_info = QVBoxLayout()
-        e_title = QLabel("Economia de Energia na Porta Cabo (RJ-45)")
-        e_title.setToolTip(f"{net_status.eth_iface} / {net_status.eth_driver}: PCIe Runtime PM = auto")
-        e_title.setWordWrap(True)
-        e_title.setFont(QFont(ThemeTokens.FONT_NAME, 11, QFont.Weight.Bold))
-        e_title.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
-        e_info.addWidget(e_title)
-
-        self.lbl_eth_ps_desc = QLabel(
-            "Desliga o controlador de rede cabeada automaticamente quando nenhum cabo estiver conectado."
-        )
-        self.lbl_eth_ps_desc.setWordWrap(True)
-        self.lbl_eth_ps_desc.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px;")
-        e_info.addWidget(self.lbl_eth_ps_desc)
-        eth_row.addLayout(e_info, stretch=1)
-
-        self.sw_eth_power_save = ToggleSwitch()
-        self.sw_eth_power_save.setChecked(net_status.eth_power_save_on)
-        self.sw_eth_power_save.toggled.connect(self._on_eth_power_save_toggled)
-        eth_row.addWidget(self.sw_eth_power_save)
-        self.eth_box.setVisible(has_eth)
-        net_layout.addWidget(self.eth_box)
-
-        # Regras Automáticas por Rede Wi-Fi (SSID)
-        self.wifi_rules_box = QFrame()
-        self.wifi_rules_box.setProperty("class", "subBox")
-        wr_v = QVBoxLayout(self.wifi_rules_box)
-        wr_v.setContentsMargins(14, 10, 14, 10)
-        wr_v.setSpacing(8)
-
-        wr_top = QHBoxLayout()
-        wr_t = QLabel("Regras Automáticas por Rede Wi-Fi (SSID)")
-        wr_t.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.DemiBold))
-        wr_t.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
-        wr_top.addWidget(wr_t)
-        wr_top.addStretch()
-        self.lbl_cur_ssid = QLabel("Wi-Fi: --")
-        self.lbl_cur_ssid.setStyleSheet(f"color: {ThemeTokens.ACCENT_STEEL}; font-size: 11px;")
-        wr_top.addWidget(self.lbl_cur_ssid)
-        wr_v.addLayout(wr_top)
-
-        wr_add = QHBoxLayout()
-        wr_add.setSpacing(8)
-        self.edit_wifi_ssid = QLineEdit()
-        self.edit_wifi_ssid.setPlaceholderText("Nome da rede (SSID ex: Trabalho, AndroidAP)")
-        self.edit_wifi_ssid.setFixedHeight(28)
-        wr_add.addWidget(self.edit_wifi_ssid, stretch=1)
-
-        btn_use_cur_ssid = QPushButton("Usar Atual")
-        btn_use_cur_ssid.setProperty("class", "secondaryButton")
-        btn_use_cur_ssid.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_use_cur_ssid.setFixedHeight(28)
-        btn_use_cur_ssid.clicked.connect(self._on_fill_current_ssid)
-        wr_add.addWidget(btn_use_cur_ssid)
-
-        self.combo_wifi_action = QComboBox()
-        self.combo_wifi_action.setFixedHeight(28)
-        self.combo_wifi_action.setMinimumWidth(185)
-        self.combo_wifi_action.addItem("Modo Equilibrado", ("balanced", False, 0))
-        self.combo_wifi_action.addItem("Modo Desempenho", ("performance", False, 0))
-        self.combo_wifi_action.addItem("Modo Silencioso", ("low-power", False, 0))
-        self.combo_wifi_action.addItem("Eco-Mode Extremo", ("low-power", True, 0))
-        if feat.refresh_rate:
-            self.combo_wifi_action.addItem("Eco-Mode + 60 Hz", ("low-power", True, 60))
-        wr_add.addWidget(self.combo_wifi_action)
-
-        btn_add_ssid = QPushButton("Adicionar Regra")
-        btn_add_ssid.setProperty("class", "primaryButton")
-        btn_add_ssid.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_add_ssid.setFixedHeight(28)
-        btn_add_ssid.clicked.connect(self._on_add_wifi_rule)
-        wr_add.addWidget(btn_add_ssid)
-        wr_v.addLayout(wr_add)
-
-        self.wifi_rules_list_container = QWidget()
-        self.wifi_rules_list_layout = QVBoxLayout(self.wifi_rules_list_container)
-        self.wifi_rules_list_layout.setContentsMargins(0, 0, 0, 0)
-        self.wifi_rules_list_layout.setSpacing(6)
-        wr_v.addWidget(self.wifi_rules_list_container)
-
-        self.wifi_rules_box.setVisible(has_wifi)
-        net_layout.addWidget(self.wifi_rules_box)
-
-        self.net_card.setVisible(bool(has_wifi or (self._advanced_mode and has_eth)))
+        self.net_card.setVisible(has_wifi)
         net_page_layout.addWidget(self.net_card)
 
         # =====================================================================
@@ -637,45 +573,6 @@ class BatteryTab(QWidget):
 
         self.usb_wake_card.setVisible(bool(feat.usb_wakeup))
         net_page_layout.addWidget(self.usb_wake_card)
-
-        # =====================================================================
-        # 4.8 Top 5 Processos Drenando Bateria / CPU
-        # =====================================================================
-        self.top_procs_card = QFrame()
-        self.top_procs_card.setProperty("class", "card")
-        tp_layout = QVBoxLayout(self.top_procs_card)
-        tp_layout.setContentsMargins(20, 16, 20, 16)
-        tp_layout.setSpacing(10)
-
-        tp_header = QHBoxLayout()
-        tp_titles = QVBoxLayout()
-        tp_titles.setSpacing(2)
-        tpt_lbl = QLabel("Top 5 Processos Consumindo Bateria / CPU")
-        tpt_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.DemiBold))
-        tpt_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
-        tp_titles.addWidget(tpt_lbl)
-        tps_lbl = QLabel("Identifica rapidamente aplicativos ativos drenando bateria ou elevando o uso da CPU.")
-        tps_lbl.setWordWrap(True)
-        tps_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
-        tp_titles.addWidget(tps_lbl)
-        tp_header.addLayout(tp_titles, stretch=1)
-
-        btn_refresh_tp = QPushButton("Atualizar")
-        btn_refresh_tp.setProperty("class", "secondaryButton")
-        btn_refresh_tp.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_refresh_tp.setFixedHeight(28)
-        btn_refresh_tp.clicked.connect(lambda _c=False: self._rebuild_top_processes_list(force=True))
-        tp_header.addWidget(btn_refresh_tp)
-        tp_layout.addLayout(tp_header)
-
-        self.top_procs_container = QWidget()
-        self.top_procs_list_layout = QVBoxLayout(self.top_procs_container)
-        self.top_procs_list_layout.setContentsMargins(0, 0, 0, 0)
-        self.top_procs_list_layout.setSpacing(6)
-        tp_layout.addWidget(self.top_procs_container)
-
-        self.top_procs_card.setVisible(bool(self._advanced_mode and feat.battery))
-        net_page_layout.addWidget(self.top_procs_card)
         net_page_layout.addStretch()
 
         # =====================================================================
@@ -716,9 +613,30 @@ class BatteryTab(QWidget):
             text_color=life_status["color"]
         )
         alert_header.addWidget(self.lifecycle_badge)
+
+        self.btn_test_bat_alert = QPushButton("Testar Notificação")
+        self.btn_test_bat_alert.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_test_bat_alert.setFixedHeight(28)
+        self.btn_test_bat_alert.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {ThemeTokens.BG_CARD_HOVER};
+                color: {ThemeTokens.ACCENT_STEEL};
+                border: 1px solid {ThemeTokens.ACCENT_STEEL};
+                border-radius: 6px;
+                padding: 4px 12px;
+                font-weight: 600;
+                font-size: 10px;
+            }}
+            QPushButton:hover {{
+                background-color: {ThemeTokens.ACCENT_STEEL};
+                color: {ThemeTokens.BG_APP};
+            }}
+        """)
+        self.btn_test_bat_alert.clicked.connect(lambda _c: self.test_alert_requested.emit())
+        alert_header.addWidget(self.btn_test_bat_alert)
         alert_layout.addLayout(alert_header)
 
-        # Linha 1: Notificações Inteligentes na Bandeja + Alerta de 80%
+        # Linha 1: Alerta independente ao atingir 80% de carga (Modo de Conservação)
         self.al_box1 = QFrame()
         self.al_box1.setProperty("class", "subBox")
         al_row1 = QHBoxLayout(self.al_box1)
@@ -732,7 +650,7 @@ class BatteryTab(QWidget):
         a1_info.addWidget(a1_title)
 
         a1_sub = QLabel(
-            "Envia alerta nativo quando a carga estaciona em 80% na tomada ou quando há eventos críticos de ciclo de vida."
+            "Envia alerta nativo quando a carga estaciona em 80% na tomada."
         )
         a1_sub.setWordWrap(True)
         a1_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px;")
@@ -740,16 +658,16 @@ class BatteryTab(QWidget):
         al_row1.addLayout(a1_info, stretch=1)
 
         self.sw_bat_alerts = ToggleSwitch()
-        self.sw_bat_alerts.setChecked(bool(alert_cfg["alerts_enabled"] and alert_cfg["alert_80_enabled"]))
+        self.sw_bat_alerts.setChecked(bool(alert_cfg.get("alert_80_enabled", True)))
         self.sw_bat_alerts.toggled.connect(self._on_battery_alert_settings_changed)
         al_row1.addWidget(self.sw_bat_alerts)
         self.al_box1.setVisible(feat.conservation_mode)
         alert_layout.addWidget(self.al_box1)
 
-        # Linha 2: Limite de Alerta Térmico da Bateria (°C) + Botão Testar Alerta
-        al_box2 = QFrame()
-        al_box2.setProperty("class", "subBox")
-        al_row2 = QHBoxLayout(al_box2)
+        # Linha 2: Alerta Térmico Real da Bateria (°C) com switch independente
+        self.al_box2 = QFrame()
+        self.al_box2.setProperty("class", "subBox")
+        al_row2 = QHBoxLayout(self.al_box2)
         al_row2.setContentsMargins(14, 10, 14, 10)
         al_row2.setSpacing(14)
 
@@ -767,30 +685,66 @@ class BatteryTab(QWidget):
         self.slider_bat_temp_thr.valueChanged.connect(self._on_battery_alert_settings_changed)
         al_row2.addWidget(self.slider_bat_temp_thr, stretch=1)
 
-        self.btn_test_bat_alert = QPushButton("Testar Alerta no KDE Plasma")
-        self.btn_test_bat_alert.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_test_bat_alert.setFixedHeight(30)
-        self.btn_test_bat_alert.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {ThemeTokens.BG_CARD_HOVER};
-                color: {ThemeTokens.ACCENT_STEEL};
-                border: 1px solid {ThemeTokens.ACCENT_STEEL};
-                border-radius: 6px;
-                padding: 4px 14px;
-                font-weight: 600;
-                font-size: 10px;
-            }}
-            QPushButton:hover {{
-                background-color: {ThemeTokens.ACCENT_STEEL};
-                color: {ThemeTokens.BG_APP};
-            }}
-        """)
-        self.btn_test_bat_alert.clicked.connect(lambda _c: self.test_alert_requested.emit())
-        al_row2.addWidget(self.btn_test_bat_alert)
+        self.sw_bat_temp_alert = ToggleSwitch()
+        self.sw_bat_temp_alert.setChecked(bool(alert_cfg.get("temp_alert_enabled", True)))
+        self.sw_bat_temp_alert.toggled.connect(self._on_battery_alert_settings_changed)
+        al_row2.addWidget(self.sw_bat_temp_alert)
 
-        alert_layout.addWidget(al_box2)
+        self.al_box2.setVisible(bool(life_status.get("temperature_available", False)))
+        alert_layout.addWidget(self.al_box2)
         self.alert_card.setVisible(feat.battery)
         layout.addWidget(self.alert_card)
+
+        # =====================================================================
+        # 5.5 Detector NVIDIA ("Quem Está Acordando a GPU NVIDIA?")
+        # =====================================================================
+        self.nv_drain_card = QFrame()
+        self.nv_drain_card.setProperty("class", "card")
+        nv_l = QVBoxLayout(self.nv_drain_card)
+        nv_l.setContentsMargins(20, 16, 20, 16)
+        nv_l.setSpacing(10)
+
+        nv_hdr = QHBoxLayout()
+        nv_titles = QVBoxLayout()
+        nv_titles.setSpacing(2)
+        nv_t = QLabel("Quem Está Acordando a GPU NVIDIA?")
+        nv_t.setWordWrap(True)
+        nv_t.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.Bold))
+        nv_t.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        nv_titles.addWidget(nv_t)
+        self.lbl_nv_drain_sub = QLabel(
+            "Apps segurando a placa dedicada fora do modo econômico D3cold consomem bateria extra."
+        )
+        self.lbl_nv_drain_sub.setWordWrap(True)
+        self.lbl_nv_drain_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        nv_titles.addWidget(self.lbl_nv_drain_sub)
+        nv_hdr.addLayout(nv_titles, stretch=1)
+
+        self.nv_drain_badge = StatusBadge("GPU ATIVA", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.COLOR_WARNING)
+        nv_hdr.addWidget(self.nv_drain_badge)
+
+        self.btn_release_nv = QPushButton("Liberar GPU p/ Economia")
+        self.btn_release_nv.setProperty("class", "primaryButton")
+        self.btn_release_nv.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_release_nv.setFixedHeight(28)
+        self.btn_release_nv.clicked.connect(self._on_release_nvidia_clicked)
+        nv_hdr.addWidget(self.btn_release_nv)
+        nv_l.addLayout(nv_hdr)
+
+        self.nv_procs_container = QWidget()
+        self.nv_procs_layout = QVBoxLayout(self.nv_procs_container)
+        self.nv_procs_layout.setContentsMargins(0, 0, 0, 0)
+        self.nv_procs_layout.setSpacing(6)
+        nv_l.addWidget(self.nv_procs_container)
+
+        self.nv_drain_card.setVisible(False)
+        layout.addWidget(self.nv_drain_card)
+
+        self.basic_hint_card = BasicModeHintBar(
+            "Modo Básico ativo • Métricas elétricas em Volts/Wh, desgaste detalhado por ciclo e seletor de prazo da Carga 100% Única disponíveis no Modo Avançado."
+        )
+        self.basic_hint_card.switch_advanced_requested.connect(self.switch_advanced_requested.emit)
+        layout.addWidget(self.basic_hint_card)
         layout.addStretch()
 
         self.sub_stack.addWidget(page_charge)
@@ -808,25 +762,29 @@ class BatteryTab(QWidget):
         """Alterna visibilidade dos blocos avançados de Bateria & Rede conforme o modo da interface."""
         self._advanced_mode = bool(advanced)
         feat = self.backend.features
-        self.hist_card.setVisible(bool(self._advanced_mode and feat.battery))
-        self.eth_box.setVisible(bool(self._advanced_mode and self._has_eth))
-        self.wifi_rules_box.setVisible(bool(self._advanced_mode and self._has_wifi))
-        self.net_card.setVisible(bool(self._has_wifi or (self._advanced_mode and self._has_eth)))
-        self.top_procs_card.setVisible(bool(self._advanced_mode and feat.battery))
+        self.hist_card.setVisible(bool(feat.battery))
+        self.wear_summary_lbl.setVisible(bool(self._advanced_mode))
+        for box in getattr(self, "elec_adv_boxes", []):
+            box.setVisible(bool(self._advanced_mode))
+        self.net_card.setVisible(bool(self._has_wifi))
+        if hasattr(self, "combo_one_time_mode"):
+            self.combo_one_time_mode.setVisible(bool(self._advanced_mode and feat.conservation_mode))
+        self._refresh_one_time_full_charge_ui()
+        if hasattr(self, "basic_hint_card"):
+            self.basic_hint_card.setVisible(bool((not self._advanced_mode) and feat.battery))
 
         has_net_page_items = not (
             self.usb_wake_card.isHidden()
             and self.net_card.isHidden()
-            and self.top_procs_card.isHidden()
         )
+        self.sub_tabs.set_tab_visible(1, has_net_page_items)
         self.sub_tabs.setVisible(has_net_page_items)
         if not has_net_page_items and self.sub_stack.currentIndex() != 0:
             self.sub_tabs.set_current_index(0)
             self.sub_stack.setCurrentIndex(0)
-        if self._advanced_mode and feat.battery:
-            self._rebuild_top_processes_list(force=False)
+        self._refresh_nvidia_drain_card()
 
-    def _create_info_item(self, grid: QGridLayout, row: int, col: int, label: str, default: str) -> QLabel:
+    def _create_info_item(self, grid: QGridLayout, row: int, col: int, label: str, default: str, adv_only: bool = False) -> QLabel:
         box = QFrame()
         box.setProperty("class", "subBox")
         box_layout = QVBoxLayout(box)
@@ -845,12 +803,9 @@ class BatteryTab(QWidget):
         box_layout.addWidget(val_lbl)
 
         grid.addWidget(box, row, col)
+        if adv_only and hasattr(self, "elec_adv_boxes"):
+            self.elec_adv_boxes.append(box)
         return val_lbl
-
-    def _on_record_snapshot(self):
-        entries = self.backend.record_battery_snapshot()
-        self.health_chart.set_history(entries)
-        self.refresh_display()
 
     def _on_conservation_toggled(self, checked: bool):
         success, msg = self.backend.set_conservation_mode(checked)
@@ -899,19 +854,21 @@ class BatteryTab(QWidget):
         self.lbl_wifi_ps_desc.setText(msg)
         self.refresh_display()
 
-    def _on_eth_power_save_toggled(self, enable_saving: bool):
-        ok, msg = self.backend.set_ethernet_power_saving(enable_saving=enable_saving)
-        self.lbl_eth_ps_desc.setText(msg)
-        self.refresh_display()
-
     def _on_battery_alert_settings_changed(self, _val=None):
-        alerts_on = self.sw_bat_alerts.isChecked()
+        alert_80_on = self.sw_bat_alerts.isChecked()
+        temp_alert_on = self.sw_bat_temp_alert.isChecked() if hasattr(self, "sw_bat_temp_alert") else alert_80_on
         thr_c = float(self.slider_bat_temp_thr.value())
-        self.backend.set_battery_alert_settings(alerts_on, alerts_on, thr_c)
-        bat = self.backend.get_battery_info()
-        self.lbl_bat_temp_thr.setText(
-            f"Alerta Térmico da Bateria em Jogos: {int(thr_c)}°C (Atual: {bat.temperature_c:.1f}°C)"
+        self.backend.set_battery_alert_settings(
+            alert_80_on or temp_alert_on,
+            alert_80_on,
+            thr_c,
+            temp_alert_enabled=temp_alert_on,
         )
+        bat = self.backend.get_battery_info()
+        if getattr(bat, "temperature_available", False):
+            self.lbl_bat_temp_thr.setText(
+                f"Alerta Térmico da Bateria em Jogos: {int(thr_c)}°C (Atual: {bat.temperature_c:.1f}°C)"
+            )
 
     def refresh_display(self):
         """Atualiza os controles, os 6 cards elétricos e o gráfico Battery Health Historian."""
@@ -933,6 +890,8 @@ class BatteryTab(QWidget):
         else:
             self.toggle_switch.setEnabled(False)
             self.cons_status_lbl.setText("Recurso não disponível neste modelo Lenovo.")
+
+        self._refresh_one_time_full_charge_ui()
 
         # 2. Rapid Charge
         rapid_active = self.backend.get_rapid_charge()
@@ -990,23 +949,25 @@ class BatteryTab(QWidget):
 
             life = self.backend.get_battery_lifecycle_status()
             if hasattr(self, "lifecycle_badge"):
-                self.lifecycle_badge.setText(f"CICLO DE VIDA: {life['badge']} ({bat.temperature_c:.1f}°C)")
+                temp_avail = bool(getattr(bat, "temperature_available", False))
+                temp_suffix = f" ({bat.temperature_c:.1f}°C)" if temp_avail else ""
+                self.lifecycle_badge.setText(f"CICLO DE VIDA: {life['badge']}{temp_suffix}")
                 self.lifecycle_badge.setColor(ThemeTokens.BG_CARD_HOVER, life["color"])
                 self.lbl_lifecycle_rec.setText(life["recommendation"])
-                thr_val = self.slider_bat_temp_thr.value()
-                self.lbl_bat_temp_thr.setText(
-                    f"Alerta Térmico da Bateria em Jogos: {thr_val}°C (Atual: {bat.temperature_c:.1f}°C)"
-                )
+                if hasattr(self, "al_box2"):
+                    self.al_box2.setVisible(temp_avail)
+                if temp_avail:
+                    thr_val = self.slider_bat_temp_thr.value()
+                    self.lbl_bat_temp_thr.setText(
+                        f"Alerta Térmico da Bateria em Jogos: {thr_val}°C (Atual: {bat.temperature_c:.1f}°C)"
+                    )
 
         # 5. Atualizar Estado de Economia de Rede (independente de bateria)
         net_st = self.backend.get_network_power_status()
         has_wifi = bool(net_st.wifi_available and self.backend.features.wifi_power_save)
-        has_eth = bool(net_st.eth_available and self.backend.features.eth_power_save)
         self._has_wifi = has_wifi
-        self._has_eth = has_eth
         self.wifi_box.setVisible(has_wifi)
-        self.eth_box.setVisible(bool(self._advanced_mode and has_eth))
-        self.net_card.setVisible(bool(has_wifi or (self._advanced_mode and has_eth)))
+        self.net_card.setVisible(has_wifi)
 
         if has_wifi and hasattr(self, "sw_wifi_low_latency"):
             self.sw_wifi_low_latency.blockSignals(True)
@@ -1018,30 +979,134 @@ class BatteryTab(QWidget):
             else:
                 self.net_badge.setText(f"ECONOMIA WI-FI ({net_st.wifi_iface.upper()})")
                 self.net_badge.setColor(ThemeTokens.BG_CARD_HOVER, ThemeTokens.STATUS_GREEN)
-        elif has_eth:
-            if net_st.eth_power_save_on:
-                self.net_badge.setText(f"ECO ETHERNET ({net_st.eth_iface.upper()})")
-                self.net_badge.setColor(ThemeTokens.BG_CARD_HOVER, ThemeTokens.STATUS_GREEN)
-            else:
-                self.net_badge.setText(f"ETHERNET ATIVA ({net_st.eth_iface.upper()})")
-                self.net_badge.setColor(ThemeTokens.BG_CARD_HOVER, ThemeTokens.ACCENT_STEEL)
-
-        if has_eth and hasattr(self, "sw_eth_power_save"):
-            self.sw_eth_power_save.blockSignals(True)
-            self.sw_eth_power_save.setChecked(net_st.eth_power_save_on)
-            self.sw_eth_power_save.blockSignals(False)
-
-        if has_wifi and self._advanced_mode and hasattr(self, "wifi_rules_box"):
-            self.wifi_rules_box.setVisible(True)
-            self._refresh_wifi_rules_ui()
-        elif hasattr(self, "wifi_rules_box"):
-            self.wifi_rules_box.setVisible(False)
 
         if hasattr(self, "usb_wake_card"):
             self._refresh_usb_wakeup_ui()
 
-        if self._advanced_mode and self.backend.features.battery and hasattr(self, "top_procs_card"):
-            self._rebuild_top_processes_list(force=False)
+        has_net_page_items = not (
+            self.usb_wake_card.isHidden()
+            and self.net_card.isHidden()
+        )
+        self.sub_tabs.set_tab_visible(1, has_net_page_items)
+        self.sub_tabs.setVisible(has_net_page_items)
+        self._refresh_nvidia_drain_card()
+
+    def _on_one_time_mode_changed(self, _idx=None):
+        mode = str(self.combo_one_time_mode.currentData() or "until_full")
+        self.backend.set_one_time_full_charge_mode(mode)
+        self._refresh_one_time_full_charge_ui()
+
+    def _on_one_time_full_clicked(self):
+        st = self.backend.get_one_time_full_charge_status()
+        if st["active"]:
+            ok, msg = self.backend.cancel_one_time_full_charge(restore_conservation=True)
+            new_st = False
+        else:
+            mode = str(self.combo_one_time_mode.currentData() or st["mode"]) if hasattr(self, "combo_one_time_mode") else st["mode"]
+            ok, msg = self.backend.start_one_time_full_charge(mode=mode)
+            new_st = True
+        if not ok:
+            QMessageBox.warning(self, "Carga 100% Única", msg)
+            return
+        self.one_time_full_charge_changed.emit(new_st)
+        self.refresh_display()
+
+    def _refresh_one_time_full_charge_ui(self):
+        if not hasattr(self, "one_time_row_widget"):
+            return
+        st = self.backend.get_one_time_full_charge_status()
+        self.one_time_row_widget.setVisible(bool(st["supported"]))
+        if not st["supported"]:
+            return
+        if st["active"]:
+            self.btn_one_time_full.setText("Cancelar Carga 100%")
+            self.lbl_one_time_status.setText(st["label"])
+            self.lbl_one_time_status.setStyleSheet(f"color: {ThemeTokens.COLOR_WARNING}; font-weight: bold; font-size: 10px;")
+        else:
+            self.btn_one_time_full.setText("Carregar até 100% Só Hoje")
+            if self._advanced_mode:
+                self.lbl_one_time_status.setText(
+                    "Libera 100% temporariamente e reativa a Conservação 80% automaticamente depois."
+                )
+            else:
+                mode_desc_map = {
+                    "until_full": "Ao atingir 100%",
+                    "2h": "Por 2 horas",
+                    "4h": "Por 4 horas",
+                    "8h": "Por 8 horas",
+                }
+                crit_lbl = mode_desc_map.get(st["mode"], "Ao atingir 100%")
+                self.lbl_one_time_status.setText(
+                    f"Critério atual: {crit_lbl} • Libera 100% hoje e reativa a Conservação 80% automaticamente."
+                )
+            self.lbl_one_time_status.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px;")
+
+    def _on_release_nvidia_clicked(self):
+        ok, msg = self.backend.release_nvidia_wakelocks(terminate_offenders=True)
+        self._refresh_nvidia_drain_card(force=True)
+        QMessageBox.information(self, "Economia GPU NVIDIA", msg)
+
+    def _refresh_nvidia_drain_card(self, force: bool = False):
+        if not hasattr(self, "nv_drain_card"):
+            return
+        if not self.backend.features.nvidia_wakelock_detect:
+            self.nv_drain_card.setVisible(False)
+            return
+        info = self.backend.get_nvidia_wakelock_processes(force=force)
+        if not info.get("gpu_awake"):
+            self.nv_drain_card.setVisible(False)
+            return
+
+        bat = self.backend.get_battery_info()
+        offenders = info.get("offenders") or []
+        all_procs = info.get("processes") or []
+        in_game = bool(self.backend.get_active_game())
+
+        if self._advanced_mode:
+            visible = True
+        else:
+            visible = (not in_game) and ((bat.available and not bat.ac_connected) or len(offenders) > 0)
+
+        self.nv_drain_card.setVisible(visible)
+        if not visible:
+            return
+
+        if offenders:
+            names = ", ".join(o["name"][:22] for o in offenders[:3])
+            self.lbl_nv_drain_sub.setText(f"Aplicativos acordando a dGPU: {names}")
+            self.nv_drain_badge.setText(f"{len(offenders)} APP(S) ACORDANDO")
+            self.nv_drain_badge.setColor(ThemeTokens.BG_CARD_HOVER, ThemeTokens.COLOR_WARNING)
+        else:
+            self.lbl_nv_drain_sub.setText("GPU dedicada ativa sem apps de usuário bloqueando (compositor/PCIe).")
+            self.nv_drain_badge.setText("GPU ATIVA")
+            self.nv_drain_badge.setColor(ThemeTokens.BG_CARD_HOVER, ThemeTokens.ACCENT_STEEL)
+
+        while self.nv_procs_layout.count():
+            item = self.nv_procs_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        show_list = self._advanced_mode and bool(all_procs)
+        self.nv_procs_container.setVisible(show_list)
+        if show_list:
+            for p in all_procs[:6]:
+                rf = QFrame()
+                rf.setProperty("class", "subBox")
+                rl = QHBoxLayout(rf)
+                rl.setContentsMargins(12, 6, 12, 6)
+                rl.setSpacing(8)
+                role_tag = "Sistema/Display" if p["is_system"] else "App"
+                nl = QLabel(f"{p['name'][:26]} ({role_tag})")
+                nl.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.DemiBold))
+                nl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+                rl.addWidget(nl, stretch=1)
+                pl = QLabel(f"PID {p['pid']}")
+                pl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px;")
+                rl.addWidget(pl)
+                vl = QLabel(f"{p['vram_mb']} MB")
+                vl.setStyleSheet(f"color: {ThemeTokens.ACCENT_STEEL}; font-size: 10px; font-weight: 600;")
+                rl.addWidget(vl)
+                self.nv_procs_layout.addWidget(rf)
 
     def _on_usb_wakeup_toggled(self, blocked: bool):
         ok, msg = self.backend.set_usb_wakeup_blocked(blocked, allow_elevation=True)
@@ -1070,99 +1135,3 @@ class BatteryTab(QWidget):
         if devs:
             names = ", ".join(f"{d['name'][:26]} ({'ON' if d['enabled'] else 'OFF'})" for d in devs[:4])
             self.lbl_usb_wake_devices.setText(f"Dispositivos: {names}")
-
-    def _on_fill_current_ssid(self):
-        ssid = self.backend.get_current_wifi_ssid(force=True)
-        if ssid:
-            self.edit_wifi_ssid.setText(ssid)
-        else:
-            QMessageBox.information(self, "Wi-Fi SSID", "Nenhuma conexão Wi-Fi ativa foi detectada neste momento.")
-
-    def _on_add_wifi_rule(self):
-        ssid = self.edit_wifi_ssid.text().strip()
-        prof, eco_mode, req_hz = self.combo_wifi_action.currentData() or ("balanced", False, 0)
-        ok, msg = self.backend.add_wifi_power_rule(ssid, profile=prof, eco_mode=eco_mode, refresh_hz=req_hz)
-        if not ok:
-            QMessageBox.warning(self, "Regras Wi-Fi", msg)
-            return
-        self.edit_wifi_ssid.clear()
-        self._refresh_wifi_rules_ui()
-
-    def _refresh_wifi_rules_ui(self):
-        cur_ssid = self.backend.get_current_wifi_ssid(force=False)
-        self.lbl_cur_ssid.setText(f"Conectado: {cur_ssid}" if cur_ssid else "Wi-Fi desconectado")
-        while self.wifi_rules_list_layout.count():
-            item = self.wifi_rules_list_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        rules = self.backend.get_wifi_power_rules()
-        if not rules:
-            lbl = QLabel("Nenhuma regra por Wi-Fi adicionada.")
-            lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_40}; font-size: 10px;")
-            self.wifi_rules_list_layout.addWidget(lbl)
-            return
-        for r in rules:
-            ssid = str(r.get("ssid", ""))
-            desc = "Eco-Mode" if r.get("eco_mode") else str(r.get("profile", "balanced")).upper()
-            if int(r.get("refresh_hz", 0) or 0) > 0:
-                desc += f" + {r['refresh_hz']}Hz"
-            row_f = QFrame()
-            row_f.setProperty("class", "subBox")
-            rl = QHBoxLayout(row_f)
-            rl.setContentsMargins(10, 6, 10, 6)
-            rl.setSpacing(8)
-            s_lbl = QLabel(ssid)
-            s_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.DemiBold))
-            s_lbl.setStyleSheet(f"color: {ThemeTokens.ACCENT_STEEL}; min-width: 120px;")
-            rl.addWidget(s_lbl)
-            d_lbl = QLabel(desc)
-            d_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; font-size: 11px;")
-            rl.addWidget(d_lbl, stretch=1)
-            sw = ToggleSwitch(checked=bool(r.get("enabled", True)))
-            sw.toggled.connect(lambda chk, sid=ssid: self.backend.toggle_wifi_power_rule(sid, chk))
-            rl.addWidget(sw)
-            btn_rem = QPushButton("Remover")
-            btn_rem.setProperty("class", "secondaryButton")
-            btn_rem.setFixedHeight(24)
-            btn_rem.clicked.connect(lambda _c=False, sid=ssid: self._on_remove_wifi_rule(sid))
-            rl.addWidget(btn_rem)
-            self.wifi_rules_list_layout.addWidget(row_f)
-
-    def _on_remove_wifi_rule(self, ssid: str):
-        self.backend.remove_wifi_power_rule(ssid)
-        self._refresh_wifi_rules_ui()
-
-    def _rebuild_top_processes_list(self, force: bool = False):
-        if not hasattr(self, "top_procs_list_layout"):
-            return
-        while self.top_procs_list_layout.count():
-            item = self.top_procs_list_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        procs = self.backend.get_top_power_processes(limit=5, force=force)
-        if not procs:
-            lbl = QLabel("Coletando amostra inicial de CPU dos processos...")
-            lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
-            self.top_procs_list_layout.addWidget(lbl)
-            return
-        for p in procs:
-            row_f = QFrame()
-            row_f.setProperty("class", "subBox")
-            rl = QHBoxLayout(row_f)
-            rl.setContentsMargins(12, 6, 12, 6)
-            rl.setSpacing(10)
-            n_lbl = QLabel(f"{p['name'][:26]}")
-            n_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.DemiBold))
-            n_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; min-width: 155px;")
-            rl.addWidget(n_lbl)
-            pid_lbl = QLabel(f"PID {p['pid']}")
-            pid_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px;")
-            rl.addWidget(pid_lbl, stretch=1)
-            ram_lbl = QLabel(f"{p['ram_mb']} MB")
-            ram_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
-            rl.addWidget(ram_lbl)
-            cpu_lbl = QLabel(f"{p['cpu_percent']:.1f}% CPU  •  ~{p['est_watts']:.1f}W")
-            cpu_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.DemiBold))
-            cpu_lbl.setStyleSheet(f"color: {ThemeTokens.ACCENT_STEEL};")
-            rl.addWidget(cpu_lbl)
-            self.top_procs_list_layout.addWidget(row_f)

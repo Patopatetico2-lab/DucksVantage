@@ -41,12 +41,6 @@ class GPUMetrics:
     pstate: str = "P0"
     throttle_reasons: List[str] = field(default_factory=list)
 
-    @property
-    def memory_percent(self) -> float:
-        if self.memory_total_mb > 0:
-            return (self.memory_used_mb / self.memory_total_mb) * 100.0
-        return 0.0
-
 
 @dataclass
 class RAMMetrics:
@@ -86,6 +80,7 @@ class BatteryInfo:
     power_draw_w: float = 0.0
     voltage_v: float = 0.0
     temperature_c: float = 0.0
+    temperature_available: bool = False
     energy_now_wh: float = 0.0
     energy_full_wh: float = 0.0
     energy_design_wh: float = 0.0
@@ -110,12 +105,7 @@ class BatteryHistoryEntry:
     energy_design_wh: float = 0.0
     health_percent: float = 100.0
     cycle_count: int = 0
-    conservation_active: bool = True
     is_estimated: bool = False
-
-    @property
-    def date(self) -> str:
-        return self.timestamp
 
 
 @dataclass
@@ -166,14 +156,15 @@ class HardwareFeatures:
     bios_attributes: bool = False
     battery: bool = False
     wifi_power_save: bool = False
-    eth_power_save: bool = False
     eco_travel: bool = False
     rgb_keyboard: bool = False
-    cinema_mode: bool = False
-    audio_control: bool = False
     usb_wakeup: bool = False
     external_monitor_dock: bool = False
     thermal_throttling: bool = False
+    screen_brightness: bool = False
+    wmi_custom_power: bool = False
+    nvme_health: bool = False
+    nvidia_wakelock_detect: bool = False
 
 
 @dataclass
@@ -216,6 +207,9 @@ class HardwarePaths:
     gpu_mode: Optional[str] = None
     rgb_hidraw: Optional[str] = None
     rgb_sysfs_dir: Optional[str] = None
+    backlight_dir: Optional[str] = None
+    backlight_brightness: Optional[str] = None
+    backlight_max_brightness: Optional[str] = None
 
 
 @dataclass
@@ -238,18 +232,6 @@ class NetworkPowerStatus:
     wifi_iface: str = "wlan0"
     wifi_driver: str = "iwlwifi"
     wifi_power_save_on: bool = True
-    eth_available: bool = False
-    eth_iface: str = "enp7s0"
-    eth_driver: str = "r8169"
-    eth_power_save_on: bool = True
-
-
-@dataclass
-class AppProfileRule:
-    executable: str = ""
-    label: str = ""
-    profile: str = "performance"
-    enabled: bool = True
 
 
 @dataclass
@@ -259,7 +241,6 @@ class GpuMuxInfo:
     available_modes: List[str] = field(default_factory=lambda: ["hybrid", "dedicated", "integrated"])
     backend_name: str = "none"    # "supergfxctl", "envycontrol", "prime-select", "lenovo-wmi", "sysfs", "none"
     requires_reboot: bool = False
-    pending_mode: Optional[str] = None
     message: str = ""
 
 

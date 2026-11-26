@@ -73,7 +73,7 @@ fi
 # 2. Instalar Arquivos da Aplicação em /opt/ducksvantage
 echo "[2/5] Instalando arquivos do Ducksvantage em ${INSTALL_DIR}..."
 mkdir -p "${INSTALL_DIR}"
-cp -r main.py ui_main.py test_backend.py setup_udev.sh uninstall.sh styles.qss core ui assets packaging "${INSTALL_DIR}/"
+cp -r main.py ui_main.py test_backend.py setup_udev.sh uninstall.sh styles.qss core ui assets packaging plasmoid "${INSTALL_DIR}/"
 chmod -R a+rX "${INSTALL_DIR}"
 chmod +x "${INSTALL_DIR}/main.py" "${INSTALL_DIR}/setup_udev.sh" "${INSTALL_DIR}/uninstall.sh"
 
@@ -163,6 +163,7 @@ chmod 0666 /sys/class/power_supply/BAT*/charge_types 2>/dev/null || true
 chmod 0666 /sys/class/firmware-attributes/*/attributes/*/current_value 2>/dev/null || true
 chmod 0666 /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null || true
 chmod 0666 /sys/class/net/*/device/power/control 2>/dev/null || true
+chmod 0666 /sys/class/backlight/*/brightness 2>/dev/null || true
 chmod 0644 /dev/input/by-path/*kbd* /dev/input/by-path/*VPC* 2>/dev/null || true
 for hdir in /sys/class/hidraw/hidraw*; do
     [ -f "$hdir/device/uevent" ] && grep -qi "048D" "$hdir/device/uevent" && chmod 0666 "/dev/$(basename "$hdir")" 2>/dev/null || true

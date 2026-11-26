@@ -51,11 +51,15 @@ class DucksvantageCommandRouter:
             "profile": self.backend.get_platform_profile(),
             "active_game": self.backend.get_active_game(),
             "eco_mode": self.backend.get_eco_travel_mode(),
-            "cinema_mode": self.backend.get_cinema_mode(),
-            "audio_preset": self.backend.get_audio_preset(),
             "cpu": {"temp_c": cpu.temperature_c, "freq_mhz": cpu.frequency_mhz, "governor": cpu.governor},
             "gpu": {"available": gpu.available, "temp_c": gpu.temperature_c, "power_w": gpu.power_draw_w, "state": gpu.runtime_state},
-            "battery": {"available": bat.available, "percent": bat.capacity_percent, "status": bat.status, "ac": bat.ac_connected},
+            "battery": {
+                "available": bat.available,
+                "percent": bat.capacity_percent,
+                "status": bat.status,
+                "ac": bat.ac_connected,
+                "one_time_full_charge": self.backend.get_one_time_full_charge_status()["active"],
+            },
             "display": {"available": ref.available, "hz": ref.current_hz, "vrr": ref.vrr_policy},
         }
 
@@ -100,17 +104,16 @@ class DucksvantageCommandRouter:
                 self._notify_ui("eco", {"enabled": new_st})
             return ok, msg
 
-        if low == "cinema_toggle":
-            new_st = not self.backend.get_cinema_mode()
-            ok, msg = self.backend.set_cinema_mode(new_st)
+        if low == "full_charge_once":
+            st = self.backend.get_one_time_full_charge_status()
+            if st["active"]:
+                ok, msg = self.backend.cancel_one_time_full_charge(restore_conservation=True)
+                if ok:
+                    self._notify_ui("full_charge_once", {"active": False, "message": msg})
+                return ok, msg
+            ok, msg = self.backend.start_one_time_full_charge()
             if ok:
-                self._notify_ui("cinema", {"enabled": new_st})
-            return ok, msg
-
-        if low == "audio_cycle":
-            ok, preset_id, msg = self.backend.cycle_audio_preset()
-            if ok:
-                self._notify_ui("audio", {"preset": preset_id, "message": msg})
+                self._notify_ui("full_charge_once", {"active": True, "message": msg})
             return ok, msg
 
         if low == "show_window":
@@ -118,10 +121,6 @@ class DucksvantageCommandRouter:
             return True, "Janela aberta."
 
         return False, f"Comando desconhecido: {cmd_id}"
-
-    @staticmethod
-    def krunner_actions() -> List[Tuple[str, str, str]]:
-        return []
 
     def krunner_match(self, query: str) -> List[Tuple[str, str, str, int, float, Dict[str, Any]]]:
         """Gera correspondências para o KRunner (`Alt+Espaço` no KDE Plasma 6)."""
@@ -187,14 +186,6 @@ class DucksvantageCommandRouter:
                 0.84,
             ),
             (
-                "cinema_toggle",
-                f"Ducksvantage: Alternar Modo Cinema ({'Ativo' if status['cinema_mode'] else 'Desativado'})",
-                "Mantém tela acesa, ativa Não Perturbe e apaga teclado",
-                "ducksvantage",
-                ["dv", "cinema", "apresentacao", "filme", "dnd"],
-                0.84,
-            ),
-            (
                 "cycle_hz",
                 f"Ducksvantage: Alternar Taxa de Tela (Atual: {status['display']['hz']} Hz)",
                 "Alterna frequência do painel (60 Hz ↔ 144 Hz)",
@@ -202,15 +193,18 @@ class DucksvantageCommandRouter:
                 ["dv", "hz", "refresh", "tela", "60", "144", "display"],
                 0.80,
             ),
-            (
-                "audio_cycle",
-                f"Ducksvantage: Alternar Preset de Áudio ({status['audio_preset']})",
-                "Padrão ↔ Call / Voz (Filtro Ruído) ↔ Privacidade Total",
-                "ducksvantage",
-                ["dv", "audio", "voz", "mic", "call", "mudo"],
-                0.78,
-            ),
         ]
+
+        if self.backend.features.conservation_mode:
+            ot_active = self.backend.get_one_time_full_charge_status()["active"]
+            catalog.append((
+                "full_charge_once",
+                f"Ducksvantage: {'Cancelar Carga 100% Única' if ot_active else 'Carregar até 100% Só Hoje'}",
+                "Desativa Conservação 80% temporariamente e reativa ao completar",
+                "ducksvantage",
+                ["dv", "100", "carga", "bateria", "full", "hoje"],
+                0.83,
+            ))
 
         for preset in self.backend.get_user_presets():
             pid = str(preset.get("id", ""))

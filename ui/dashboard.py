@@ -10,22 +10,13 @@ Layout assimétrico 65% Esquerda / 35% Direita em paleta grafite/obsidiana fosca
 import os
 from core.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QFrame, QScrollArea, QPushButton, Qt, QFont, QIcon,
+    QFrame, QScrollArea, QPushButton, Qt, QFont,
     Signal, QSizePolicy
 )
 from ui.theme_tokens import ThemeTokens
 from ui.gauges import HardwareGaugesCard
 from ui.components import ToggleSwitch, StatusBadge
 from ui.widgets import LiveThermalChart
-
-ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "icons")
-
-
-def get_asset_icon(name: str) -> QIcon:
-    path = os.path.join(ICON_DIR, name)
-    if os.path.exists(path):
-        return QIcon(path)
-    return QIcon()
 
 
 class ThermalBlock(QFrame):
@@ -461,15 +452,8 @@ class VantageDashboardView(QWidget):
         self.lbl_gpu_state = self._add_inline_stat(footer_row, "GPU", "--")
         footer_row.addStretch()
 
-        # Rótulos preservados ocultos para compatibilidade de leitura/atributos
-        self.lbl_ssd_usage = QLabel("-- / -- GB")
-        self.lbl_ssd_usage.setVisible(False)
-        self.lbl_cpu_gov = QLabel("--")
-        self.lbl_cpu_gov.setVisible(False)
-        self.storage_badge = StatusBadge("NVMe ATIVO", bg_color="transparent", text_color=ThemeTokens.STATUS_GREEN)
-        self.storage_badge.setVisible(False)
-
         lc_layout.addLayout(footer_row)
+
         left_col.addWidget(self.live_chart_card)
         left_col.addStretch()
 
@@ -661,18 +645,13 @@ class VantageDashboardView(QWidget):
             else:
                 self.block_perf.set_active(prof in ("performance", "max-power"))
 
-        # 3. Rodapé Inline Limpo (SSD, Fans, GPU, CPU)
+        # 3. Rodapé Inline Limpo (SSD, Fans, GPU)
         if disks:
             d0 = disks[0]
             short_ssd = d0.model.split()[0][:16] if d0.model else "NVMe"
             self.lbl_ssd_model.setText(short_ssd)
-            self.lbl_ssd_usage.setText(f"{d0.used_gb:.1f} / {d0.total_gb:.0f} GB ({d0.usage_percent:.0f}%)")
             if d0.temperature_c > 0:
                 self.lbl_ssd_temp.setText(f"{d0.temperature_c:.0f}°C")
-                if d0.temperature_c >= 65:
-                    self.storage_badge.setText(f"SSD: {d0.temperature_c:.0f}°C (QUENTE)")
-                else:
-                    self.storage_badge.setText(f"SSD SAUDÁVEL ({d0.temperature_c:.0f}°C)")
             else:
                 self.lbl_ssd_temp.setText("N/A")
 
@@ -680,16 +659,6 @@ class VantageDashboardView(QWidget):
         if "EC" in fan_txt and "RPM" in fan_txt:
             fan_txt = "Auto (EC)"
         self.lbl_fan_rpm.setText(fan_txt)
-
-        cpu_parts = []
-        if self.backend.features.cpu_governor:
-            cpu_parts.append(cpu.governor)
-        if cpu.turbo_supported:
-            cpu_parts.append("Boost ON" if cpu.turbo_enabled else "Boost OFF")
-        cpu_line = " • ".join(cpu_parts) if cpu_parts else f"{cpu.frequency_mhz:.0f} MHz"
-        if cpu.pl_supported:
-            cpu_line += f" ({cpu.pl1_w}/{cpu.pl2_w}W)"
-        self.lbl_cpu_gov.setText(cpu_line)
 
         if gpu.available:
             self.lbl_gpu_state.setText(f"{gpu.runtime_state} {gpu.pstate}")
@@ -700,7 +669,11 @@ class VantageDashboardView(QWidget):
 
         # 4. Controles do Painel EDGE
         if self.backend.features.eco_travel:
-            self.item_eco_travel.set_checked(self.backend.get_eco_travel_mode())
+            eco_on = self.backend.get_eco_travel_mode()
+            eco_sum = self.backend.get_eco_travel_summary()
+            self.item_eco_travel.set_checked(eco_on)
+            self.item_eco_travel.setToolTip(eco_sum)
+            self.item_eco_travel.set_subtitle(eco_sum, ThemeTokens.STATUS_GREEN if eco_on else "")
         if self.backend.features.platform_profile:
             self.item_game_auto.set_checked(self.backend.get_game_auto_switch())
             active_game = self.backend.get_active_game()

@@ -44,6 +44,8 @@ class PresetsDiagnosticsRgbMixin:
             parts.append(f"TDP {preset['pl1_w']}/{preset['pl2_w']}W")
         if preset.get("fan_curve_enabled"):
             parts.append("Curva EC")
+        if isinstance(preset.get("wmi_custom_power"), dict) and "gpu_nv_ctgp" in preset["wmi_custom_power"]:
+            parts.append(f"cTGP {preset['wmi_custom_power']['gpu_nv_ctgp']}W")
         if "refresh_hz" in preset and preset["refresh_hz"]:
             parts.append(f"{preset['refresh_hz']} Hz")
         return " • ".join(parts) if parts else "Preset vazio"
@@ -87,6 +89,14 @@ class PresetsDiagnosticsRgbMixin:
             if "gpu_temp_limit" in fan_cfg:
                 preset["gpu_temp_limit"] = int(fan_cfg["gpu_temp_limit"])
             captured_any = True
+        if self.features.wmi_custom_power and preset.get("profile") == "custom":
+            try:
+                ctrls = self.get_lenovo_custom_power_controls()
+                if ctrls:
+                    preset["wmi_custom_power"] = {c["attr_id"]: int(c["current"]) for c in ctrls}
+                    captured_any = True
+            except Exception:
+                pass
         if self.features.refresh_rate:
             try:
                 ref_info = self.get_display_refresh_info()
@@ -167,6 +177,15 @@ class PresetsDiagnosticsRgbMixin:
                 applied_parts.append("Curva EC")
             elif not ok_fc:
                 errors.append(f"Fan EC: {msg_fc}")
+
+        if isinstance(target.get("wmi_custom_power"), dict) and self.features.wmi_custom_power:
+            ok_wmi, msg_wmi = self.set_lenovo_custom_power_values(
+                target["wmi_custom_power"], allow_elevation=allow_elevation
+            )
+            if ok_wmi:
+                applied_parts.append("WMI Custom")
+            else:
+                errors.append(f"WMI Custom: {msg_wmi}")
 
         if "refresh_hz" in target and self.features.refresh_rate:
             hz = int(target["refresh_hz"])
@@ -324,6 +343,22 @@ class PresetsDiagnosticsRgbMixin:
                 lines.append("- Bateria não detectada.")
         except Exception as e:
             lines.append(f"- *Falha ao coletar bateria:* {e}")
+
+        # Armazenamento NVMe SMART
+        if self.features.nvme_health:
+            lines.append("")
+            lines.append("## Armazenamento NVMe SMART")
+            try:
+                nv_list = self.get_nvme_health_info()
+                for d in nv_list:
+                    h_txt = f"{d['health_percent']}%" if d.get("health_percent") is not None else "N/A"
+                    lines.append(
+                        f"- `{d['device']}` ({d['model']} / FW `{d['firmware']}`): "
+                        f"Saúde `{h_txt}` ({d['badge']}) | Temp `{d['temp_c']}°C` | "
+                        f"TBW `{d['tbw_tb']} TB` | `{d['power_on_hours']}h`"
+                    )
+            except Exception as e:
+                lines.append(f"- *Falha ao coletar SMART NVMe:* {e}")
 
         # Módulos do Kernel Relevantes
         lines.append("")
@@ -590,8 +625,32 @@ class PresetsDiagnosticsRgbMixin:
     # =========================================================================
     # Verificador Manual de Atualizações no GitHub (Zero Telemetria)
     # =========================================================================
+    @staticmethod
+    def _parse_semver_tuple(ver_str: str) -> Optional[Tuple[int, ...]]:
+        """Extrai tupla numérica de versão (ex: 'v2.1.0' -> (2, 1, 0))."""
+        m = re.search(r"(\d+(?:\.\d+)*)", str(ver_str or "").strip())
+        if not m:
+            return None
+        return tuple(int(p) for p in m.group(1).split("."))
+
+    def _fetch_github_json(self, api_url: str, timeout: float = 5.0) -> Any:
+        req = urllib.request.Request(
+            api_url,
+            headers={
+                "User-Agent": f"Ducksvantage/{APP_VERSION}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="ignore"))
+
     def check_for_updates(self, timeout: float = 5.0) -> Dict[str, Any]:
-        """Consulta manualmente o último commit em GITHUB_REPO e compara com o commit local."""
+        """
+        Consulta manualmente atualizações em GITHUB_REPO:
+        - Em clone Git (.git presente): compara commit SHA local com commits/main remoto.
+        - Em instalação empacotada (/opt/ducksvantage sem .git): compara APP_VERSION com
+          releases/latest ou tags do repositório para evitar falsos positivos.
+        """
         repo_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         local_sha = ""
         if shutil.which("git") and os.path.isdir(os.path.join(repo_dir, ".git")):
@@ -605,48 +664,124 @@ class PresetsDiagnosticsRgbMixin:
             except Exception:
                 pass
 
-        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
         repo_web_url = f"https://github.com/{GITHUB_REPO}"
-        req = urllib.request.Request(
-            api_url,
-            headers={
-                "User-Agent": f"Ducksvantage/{APP_VERSION}",
-                "Accept": "application/vnd.github+json",
-            },
-        )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
-            remote_full = str(data.get("sha", "")).strip()
-            remote_sha = remote_full[:7] if remote_full else ""
-            commit_obj = data.get("commit", {}) or {}
+            # 1. Modo Git Clone: comparar SHA do commit local com main
+            if local_sha:
+                data = self._fetch_github_json(
+                    f"https://api.github.com/repos/{GITHUB_REPO}/commits/main",
+                    timeout=timeout,
+                )
+                remote_full = str((data or {}).get("sha", "")).strip()
+                remote_sha = remote_full[:7] if remote_full else ""
+                commit_obj = (data or {}).get("commit", {}) or {}
+                remote_msg = str(commit_obj.get("message", "")).splitlines()[0][:90] if commit_obj.get("message") else ""
+                remote_date = str((commit_obj.get("committer") or {}).get("date", ""))[:10]
+
+                up_to_date = bool(remote_full and remote_full.lower().startswith(local_sha.lower()))
+                if up_to_date:
+                    status_msg = f"Você já está na versão mais recente (commit {local_sha})."
+                elif remote_sha:
+                    status_msg = f"Nova atualização disponível no GitHub! Local: {local_sha} → Remoto: {remote_sha}."
+                else:
+                    status_msg = "Consulta concluída sem hash de commit remoto."
+
+                return {
+                    "ok": True,
+                    "up_to_date": up_to_date,
+                    "local_version": APP_VERSION,
+                    "local_sha": local_sha,
+                    "remote_version": APP_VERSION,
+                    "remote_sha": remote_sha or "N/A",
+                    "remote_message": remote_msg,
+                    "remote_date": remote_date,
+                    "url": repo_web_url,
+                    "message": status_msg,
+                }
+
+            # 2. Modo Instalação Empacotada (sem .git): comparar versão semântica contra Releases/Tags
+            remote_tag = ""
+            remote_date = ""
+            remote_msg = ""
+            try:
+                rel = self._fetch_github_json(
+                    f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+                    timeout=timeout,
+                )
+                if isinstance(rel, dict) and rel.get("tag_name"):
+                    remote_tag = str(rel.get("tag_name", "")).strip()
+                    remote_date = str(rel.get("published_at", ""))[:10]
+                    rel_name = str(rel.get("name", "") or "").strip()
+                    remote_msg = rel_name or f"Release {remote_tag}"
+            except urllib.error.HTTPError as http_err:
+                if http_err.code != 404:
+                    raise
+
+            if not remote_tag:
+                try:
+                    tags = self._fetch_github_json(
+                        f"https://api.github.com/repos/{GITHUB_REPO}/tags?per_page=5",
+                        timeout=timeout,
+                    )
+                    if isinstance(tags, list) and tags:
+                        best_ver: Optional[Tuple[int, ...]] = None
+                        for t in tags:
+                            t_name = str((t or {}).get("name", "")).strip()
+                            t_ver = self._parse_semver_tuple(t_name)
+                            if t_ver is not None and (best_ver is None or t_ver > best_ver):
+                                best_ver = t_ver
+                                remote_tag = t_name
+                        if not remote_tag and tags[0].get("name"):
+                            remote_tag = str(tags[0]["name"]).strip()
+                        remote_msg = f"Tag {remote_tag}" if remote_tag else ""
+                except urllib.error.HTTPError as http_err:
+                    if http_err.code != 404:
+                        raise
+
+            local_ver = self._parse_semver_tuple(APP_VERSION) or (0,)
+            remote_ver = self._parse_semver_tuple(remote_tag)
+
+            if remote_tag and remote_ver is not None:
+                if remote_ver <= local_ver:
+                    up_to_date = True
+                    status_msg = f"Você já está na versão mais recente (v{APP_VERSION})."
+                else:
+                    up_to_date = False
+                    status_msg = f"Nova versão disponível no GitHub: v{APP_VERSION} → {remote_tag}!"
+                return {
+                    "ok": True,
+                    "up_to_date": up_to_date,
+                    "local_version": APP_VERSION,
+                    "local_sha": "N/A",
+                    "remote_version": remote_tag,
+                    "remote_sha": remote_tag,
+                    "remote_message": remote_msg,
+                    "remote_date": remote_date,
+                    "url": repo_web_url,
+                    "message": status_msg,
+                }
+
+            # Fallback informativo caso o repositório ainda não tenha releases/tags publicados
+            data = self._fetch_github_json(
+                f"https://api.github.com/repos/{GITHUB_REPO}/commits/main",
+                timeout=timeout,
+            )
+            remote_full = str((data or {}).get("sha", "")).strip()
+            remote_sha = remote_full[:7] if remote_full else "N/A"
+            commit_obj = (data or {}).get("commit", {}) or {}
             remote_msg = str(commit_obj.get("message", "")).splitlines()[0][:90] if commit_obj.get("message") else ""
             remote_date = str((commit_obj.get("committer") or {}).get("date", ""))[:10]
-
-            if local_sha and remote_full:
-                up_to_date = remote_full.lower().startswith(local_sha.lower())
-            else:
-                up_to_date = False
-
-            if up_to_date:
-                status_msg = f"Você já está na versão mais recente (commit {local_sha})."
-            elif local_sha and remote_sha:
-                status_msg = f"Nova atualização disponível no GitHub! Local: {local_sha} → Remoto: {remote_sha}."
-            elif remote_sha:
-                status_msg = f"Última versão no GitHub: commit {remote_sha} ({remote_date})."
-            else:
-                status_msg = "Consulta concluída sem hash de commit remoto."
-
             return {
                 "ok": True,
-                "up_to_date": up_to_date,
+                "up_to_date": True,
                 "local_version": APP_VERSION,
-                "local_sha": local_sha or "N/A",
-                "remote_sha": remote_sha or "N/A",
+                "local_sha": "N/A",
+                "remote_version": f"v{APP_VERSION}",
+                "remote_sha": remote_sha,
                 "remote_message": remote_msg,
                 "remote_date": remote_date,
                 "url": repo_web_url,
-                "message": status_msg,
+                "message": f"Versão instalada: v{APP_VERSION} (último commit em main: {remote_sha} em {remote_date or 'N/A'}).",
             }
         except Exception as e:
             return {
@@ -654,6 +789,7 @@ class PresetsDiagnosticsRgbMixin:
                 "up_to_date": None,
                 "local_version": APP_VERSION,
                 "local_sha": local_sha or "N/A",
+                "remote_version": "N/A",
                 "remote_sha": "N/A",
                 "remote_message": "",
                 "remote_date": "",

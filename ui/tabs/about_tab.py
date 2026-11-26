@@ -13,7 +13,7 @@ from core.qt_compat import (
 )
 from core.backend import APP_VERSION
 from ui.theme_tokens import ThemeTokens
-from ui.components import StatusBadge, ToggleSwitch, SubTabSelector
+from ui.components import StatusBadge, ToggleSwitch, SubTabSelector, BasicModeHintBar
 from core.permissions import PermissionsManager
 
 ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "assets", "icons")
@@ -48,6 +48,7 @@ class AboutTab(QWidget):
     fn_lock_toggled = Signal(bool)
     usb_charging_toggled = Signal(bool)
     auto_power_toggled = Signal(bool)
+    switch_advanced_requested = Signal()
 
     def __init__(self, backend, parent=None):
         super().__init__(parent)
@@ -127,13 +128,16 @@ class AboutTab(QWidget):
 
         self._add_spec_item(grid, 0, 0, "Fabricante & Linha", f"{sys.sys_vendor} ({sys.laptop_line})")
         self._add_spec_item(grid, 0, 1, "Modelo / Produto DMI", f"{sys.display_model_name} ({sys.product_name})")
-        self._add_spec_item(grid, 0, 2, "Versão & Data da BIOS", f"{sys.bios_version} ({sys.bios_date})")
+        self._add_spec_item(grid, 0, 2, "Sistema Operacional", sys.os_name)
         self._add_spec_item(grid, 1, 0, "Processador (CPU)", sys.cpu_model)
         self._add_spec_item(grid, 1, 1, "Placa Gráfica (GPU)", sys.gpu_model)
         self._add_spec_item(grid, 1, 2, "Armazenamento (SSDs)", sys.ssd_summary)
-        self._add_spec_item(grid, 2, 0, "Sistema Operacional", sys.os_name)
-        self._add_spec_item(grid, 2, 1, "Versão do Kernel", sys.kernel_version)
-        self._add_spec_item(grid, 2, 2, "Placa-Mãe (Board)", sys.board_name)
+
+        self.dmi_adv_boxes = [
+            self._add_spec_item(grid, 2, 0, "Versão & Data da BIOS", f"{sys.bios_version} ({sys.bios_date})"),
+            self._add_spec_item(grid, 2, 1, "Versão do Kernel", sys.kernel_version),
+            self._add_spec_item(grid, 2, 2, "Placa-Mãe (Board)", sys.board_name),
+        ]
 
         info_layout.addLayout(grid)
 
@@ -162,6 +166,42 @@ class AboutTab(QWidget):
         info_layout.addLayout(diag_row)
 
         sys_page_layout.addWidget(info_card)
+
+        # =====================================================================
+        # 1.5 Saúde e Vida Útil do SSD NVMe (Desgaste %, TBW e Temp)
+        # =====================================================================
+        self.nvme_card = QFrame()
+        self.nvme_card.setProperty("class", "card")
+        nvme_l = QVBoxLayout(self.nvme_card)
+        nvme_l.setContentsMargins(20, 16, 20, 16)
+        nvme_l.setSpacing(10)
+
+        nvme_hdr = QHBoxLayout()
+        nvme_titles = QVBoxLayout()
+        nvme_titles.setSpacing(2)
+        nvme_t = QLabel("Saúde e Vida Útil do SSD NVMe (SMART)")
+        nvme_t.setWordWrap(True)
+        nvme_t.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.Bold))
+        nvme_t.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        nvme_titles.addWidget(nvme_t)
+        self.lbl_nvme_basic_summary = QLabel("Lendo telemetria NVMe SMART...")
+        self.lbl_nvme_basic_summary.setWordWrap(True)
+        self.lbl_nvme_basic_summary.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        nvme_titles.addWidget(self.lbl_nvme_basic_summary)
+        nvme_hdr.addLayout(nvme_titles, stretch=1)
+
+        self.nvme_health_badge = StatusBadge("NVME", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.STATUS_GREEN)
+        nvme_hdr.addWidget(self.nvme_health_badge)
+        nvme_l.addLayout(nvme_hdr)
+
+        self.nvme_adv_container = QWidget()
+        self.nvme_adv_layout = QVBoxLayout(self.nvme_adv_container)
+        self.nvme_adv_layout.setContentsMargins(0, 0, 0, 0)
+        self.nvme_adv_layout.setSpacing(8)
+        nvme_l.addWidget(self.nvme_adv_container)
+
+        self.nvme_card.setVisible(bool(self.backend.features.nvme_health))
+        sys_page_layout.addWidget(self.nvme_card)
 
         # =====================================================================
         # 2. Card de Inicialização Automática Universal (XDG Autostart)
@@ -223,10 +263,10 @@ class AboutTab(QWidget):
         prefs_header.addWidget(ic_pref)
 
         pref_titles = QVBoxLayout()
-        pt_t = QLabel("Preferências do Aplicativo, Pop-up OSD & Backup")
-        pt_t.setFont(QFont(ThemeTokens.FONT_NAME, 13, QFont.Weight.Bold))
-        pt_t.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
-        pref_titles.addWidget(pt_t)
+        self.prefs_title_lbl = QLabel("Preferências do Aplicativo, Pop-up OSD & Backup")
+        self.prefs_title_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 13, QFont.Weight.Bold))
+        self.prefs_title_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        pref_titles.addWidget(self.prefs_title_lbl)
 
         pt_s = QLabel("Personalize o overlay OSD no Wayland/X11, perfis de tomada/bateria e exporte suas configurações.")
         pt_s.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
@@ -368,6 +408,115 @@ class AboutTab(QWidget):
         self.ac_bat_prefs_widget.setVisible(bool(feat.platform_profile and feat.battery and supported_profiles))
         prefs_layout.addWidget(self.ac_bat_prefs_widget)
 
+        # Linha 3.2: Personalização do Modo Viagem / Economia (o que pode alterar e restaurar)
+        eco_cfg = self.backend.get_eco_travel_config()
+        self.brightness_prefs_box = QFrame()
+        self.brightness_prefs_box.setProperty("class", "subBox")
+        bp_v = QVBoxLayout(self.brightness_prefs_box)
+        bp_v.setContentsMargins(14, 12, 14, 12)
+        bp_v.setSpacing(10)
+
+        eco_hdr = QVBoxLayout()
+        eco_hdr.setSpacing(2)
+        eco_t = QLabel("Personalizar Modo Viagem (Economia)")
+        eco_t.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.Bold))
+        eco_t.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; border: none;")
+        eco_hdr.addWidget(eco_t)
+        eco_s = QLabel("Escolha o que o Modo Viagem pode alterar ao ativar (e restaurar ao desativar):")
+        eco_s.setWordWrap(True)
+        eco_s.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px; border: none;")
+        eco_hdr.addWidget(eco_s)
+        bp_v.addLayout(eco_hdr)
+
+        self.eco_dim_row = QWidget()
+        bp_row1 = QHBoxLayout(self.eco_dim_row)
+        bp_row1.setContentsMargins(0, 0, 0, 0)
+        bp_row1.setSpacing(10)
+        bp_lbl1 = QLabel("Reduzir brilho da tela ao ativar Modo Viagem (restaura o normal ao desligar)")
+        bp_lbl1.setWordWrap(True)
+        bp_lbl1.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; font-size: 11px;")
+        bp_row1.addWidget(bp_lbl1, stretch=1)
+
+        self.combo_eco_brightness = QComboBox()
+        self.combo_eco_brightness.setFixedHeight(28)
+        for pct in (25, 35, 40, 50, 60, 70):
+            self.combo_eco_brightness.addItem(f"{pct}%", pct)
+        eb_i = self.combo_eco_brightness.findData(eco_cfg["brightness_pct"])
+        if eb_i >= 0:
+            self.combo_eco_brightness.setCurrentIndex(eb_i)
+        self.combo_eco_brightness.currentIndexChanged.connect(self._on_brightness_pref_changed)
+        bp_row1.addWidget(self.combo_eco_brightness)
+
+        self.sw_eco_dim_brightness = ToggleSwitch(checked=eco_cfg["dim_brightness"])
+        self.sw_eco_dim_brightness.toggled.connect(self._on_brightness_pref_changed)
+        bp_row1.addWidget(self.sw_eco_dim_brightness)
+        self.eco_dim_row.setVisible(bool(feat.screen_brightness))
+        bp_v.addWidget(self.eco_dim_row)
+
+        eco_grid = QGridLayout()
+        eco_grid.setContentsMargins(0, 2, 0, 0)
+        eco_grid.setHorizontalSpacing(18)
+        eco_grid.setVerticalSpacing(8)
+        eco_grid.setColumnStretch(0, 1)
+        eco_grid.setColumnStretch(1, 1)
+
+        def _add_eco_toggle(attr_name: str, text: str, checked: bool, visible: bool, idx_pos: int) -> int:
+            if not visible:
+                return idx_pos
+            row_w = QWidget()
+            rl = QHBoxLayout(row_w)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(8)
+            lbl = QLabel(text)
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; font-size: 11px;")
+            rl.addWidget(lbl, stretch=1)
+            sw = ToggleSwitch(checked=checked)
+            sw.toggled.connect(self._on_brightness_pref_changed)
+            rl.addWidget(sw)
+            setattr(self, attr_name, sw)
+            eco_grid.addWidget(row_w, idx_pos // 2, idx_pos % 2)
+            return idx_pos + 1
+
+        e_idx = 0
+        e_idx = _add_eco_toggle(
+            "sw_eco_profile", "Perfil Silencioso (Low Power)",
+            eco_cfg["profile"], bool(feat.platform_profile or feat.cpu_governor), e_idx
+        )
+        e_idx = _add_eco_toggle(
+            "sw_eco_conservation", "Ativar Conservação (~80%)",
+            eco_cfg["conservation"], bool(feat.conservation_mode), e_idx
+        )
+        e_idx = _add_eco_toggle(
+            "sw_eco_turbo", "Desativar CPU Turbo Boost",
+            eco_cfg["turbo_off"], bool(feat.turbo_boost), e_idx
+        )
+        e_idx = _add_eco_toggle(
+            "sw_eco_tdp", "Limitar TDP da CPU (15W/25W)",
+            eco_cfg["tdp_limit"], bool(feat.custom_tdp), e_idx
+        )
+        e_idx = _add_eco_toggle(
+            "sw_eco_gpu_d3cold", "Forçar GPU em repouso (D3cold)",
+            eco_cfg["gpu_d3cold"], bool(self.backend.paths.nvidia_pci_power_control), e_idx
+        )
+        e_idx = _add_eco_toggle(
+            "sw_eco_kbd", "Desligar luz do teclado",
+            eco_cfg["kbd_off"], bool(feat.kbd_backlight), e_idx
+        )
+        e_idx = _add_eco_toggle(
+            "sw_eco_refresh", "Reduzir tela para menor Hz",
+            eco_cfg["refresh_min"], bool(feat.refresh_rate), e_idx
+        )
+        e_idx = _add_eco_toggle(
+            "sw_eco_wifi", "Economia de energia no Wi-Fi",
+            eco_cfg["wifi_save"], bool(feat.wifi_power_save), e_idx
+        )
+        if e_idx > 0:
+            bp_v.addLayout(eco_grid)
+
+        self.brightness_prefs_box.setVisible(bool(feat.eco_travel))
+        prefs_layout.addWidget(self.brightness_prefs_box)
+
         # Linha 3.5: Controles de Hardware de Configuração Eventual (Trava Fn & Energia USB)
         self.hw_toggles_box = QFrame()
         self.hw_toggles_box.setProperty("class", "subBox")
@@ -404,8 +553,10 @@ class AboutTab(QWidget):
         self.hw_toggles_box.setVisible(bool(feat.fn_lock or feat.usb_charging))
         prefs_layout.addWidget(self.hw_toggles_box)
 
-        # Linha 4: Backup & Restauração JSON
-        backup_row = QHBoxLayout()
+        # Linha 4: Backup & Restauração JSON (Avançado)
+        self.backup_widget = QWidget()
+        backup_row = QHBoxLayout(self.backup_widget)
+        backup_row.setContentsMargins(0, 0, 0, 0)
         backup_row.setSpacing(10)
         self.btn_export_cfg = QPushButton("Exportar Backup (JSON)")
         self.btn_export_cfg.setIcon(QIcon(os.path.join(ICON_DIR, "copy.svg")))
@@ -421,7 +572,7 @@ class AboutTab(QWidget):
         self.btn_import_cfg.clicked.connect(self._import_settings_action)
         backup_row.addWidget(self.btn_import_cfg)
         backup_row.addStretch()
-        prefs_layout.addLayout(backup_row)
+        prefs_layout.addWidget(self.backup_widget)
 
         prefs_page_layout.addWidget(self.prefs_card)
 
@@ -474,12 +625,12 @@ class AboutTab(QWidget):
         self.btn_install_udev.clicked.connect(self._install_udev_action)
         btn_layout.addWidget(self.btn_install_udev)
 
-        btn_copy = QPushButton("Copiar Regra UDEV")
-        btn_copy.setIcon(QIcon(os.path.join(ICON_DIR, "copy.svg")))
-        btn_copy.setProperty("class", "secondaryButton")
-        btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_copy.clicked.connect(self._copy_rules_action)
-        btn_layout.addWidget(btn_copy)
+        self.btn_copy_udev = QPushButton("Copiar Regra UDEV")
+        self.btn_copy_udev.setIcon(QIcon(os.path.join(ICON_DIR, "copy.svg")))
+        self.btn_copy_udev.setProperty("class", "secondaryButton")
+        self.btn_copy_udev.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_copy_udev.clicked.connect(self._copy_rules_action)
+        btn_layout.addWidget(self.btn_copy_udev)
 
         btn_layout.addStretch()
         udev_layout.addLayout(btn_layout)
@@ -531,11 +682,18 @@ class AboutTab(QWidget):
         kde_btns.addStretch()
         kde_layout.addLayout(kde_btns)
 
+        self.kde_card.setVisible(self.backend.is_kde_plasma_session())
         prefs_page_layout.addWidget(self.kde_card)
         prefs_page_layout.addStretch()
 
         self.sub_stack.addWidget(page_prefs)
         self.sub_stack.addWidget(page_sys)
+
+        self.basic_hint_card = BasicModeHintBar(
+            "Modo Básico ativo • Backup JSON, detalhes técnicos DMI (BIOS/Kernel/Board), diagnóstico Markdown, SMART NVMe detalhado e cópia UDEV disponíveis no Modo Avançado."
+        )
+        self.basic_hint_card.switch_advanced_requested.connect(self.switch_advanced_requested.emit)
+        root_layout.addWidget(self.basic_hint_card)
 
         scroll.setWidget(container)
         main_layout = QVBoxLayout(self)
@@ -548,8 +706,79 @@ class AboutTab(QWidget):
         self.refresh_hardware_toggles()
         self.set_advanced_mode(self._advanced_mode)
 
+    def refresh_nvme_health(self, force: bool = False):
+        """Atualiza resumo de saúde NVMe SMART e detalhes TBW/horas em Modo Avançado."""
+        if not hasattr(self, "nvme_card"):
+            return
+        if not self.backend.features.nvme_health:
+            self.nvme_card.setVisible(False)
+            return
+        drives = self.backend.get_nvme_health_info(force=force)
+        self.nvme_card.setVisible(bool(drives))
+        if not drives:
+            return
+
+        d0 = drives[0]
+        h_pct = d0.get("health_percent")
+        h_str = f"Saúde: {h_pct}%" if h_pct is not None else "Monitorado"
+        t_str = f" • {d0['temp_c']:.0f}°C" if d0.get("temp_c", 0) > 0 else ""
+        self.lbl_nvme_basic_summary.setText(f"{d0['model']} ({d0['device']}) • {h_str} ({d0['badge']}){t_str}")
+        self.nvme_health_badge.setText(f"{h_pct}% • {d0['badge']}" if h_pct is not None else d0["badge"])
+        self.nvme_health_badge.setColor(ThemeTokens.BG_CARD_HOVER, d0["color"])
+
+        self.nvme_adv_container.setVisible(bool(self._advanced_mode))
+        if not self._advanced_mode:
+            return
+
+        while self.nvme_adv_layout.count():
+            item = self.nvme_adv_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        for d in drives:
+            grid_wrap = QWidget()
+            g = QGridLayout(grid_wrap)
+            g.setContentsMargins(0, 0, 0, 0)
+            g.setSpacing(8)
+            tbw_txt = f"{d.get('tbw_tb', 0.0):.2f} TB" if d.get("smart_available") else "--"
+            tbr_txt = f"{d.get('tbr_tb', 0.0):.2f} TB" if d.get("smart_available") else "--"
+            hrs_txt = f"{int(d.get('power_on_hours', 0))} h" if d.get("smart_available") else "--"
+            cyc_txt = f"{int(d.get('power_cycles', 0))}" if d.get("smart_available") else "--"
+            sp_val = d.get("avail_spare_percent")
+            sp_txt = f"{sp_val}%" if sp_val is not None else "--"
+            err_txt = f"{int(d.get('media_errors', 0))} erros • FW {d.get('firmware', '--')}"
+            self._add_spec_item(g, 0, 0, "Total Gravado (TBW)", tbw_txt)
+            self._add_spec_item(g, 0, 1, "Horas Ligado", hrs_txt)
+            self._add_spec_item(g, 0, 2, "Ciclos de Energia", cyc_txt)
+            self._add_spec_item(g, 1, 0, "Blocos Reserva (Spare)", sp_txt)
+            self._add_spec_item(g, 1, 1, "Total Lido", tbr_txt)
+            self._add_spec_item(g, 1, 2, "Integridade & Firmware", err_txt)
+            self.nvme_adv_layout.addWidget(grid_wrap)
+
+    def _on_brightness_pref_changed(self, _val=None):
+        if not hasattr(self, "sw_eco_dim_brightness"):
+            return
+        kwargs = {
+            "dim_brightness": self.sw_eco_dim_brightness.isChecked(),
+            "brightness_pct": int(self.combo_eco_brightness.currentData() or 40),
+        }
+        for attr_name, key_name in (
+            ("sw_eco_profile", "profile"),
+            ("sw_eco_conservation", "conservation"),
+            ("sw_eco_turbo", "turbo_off"),
+            ("sw_eco_tdp", "tdp_limit"),
+            ("sw_eco_gpu_d3cold", "gpu_d3cold"),
+            ("sw_eco_kbd", "kbd_off"),
+            ("sw_eco_refresh", "refresh_min"),
+            ("sw_eco_wifi", "wifi_save"),
+        ):
+            if hasattr(self, attr_name):
+                kwargs[key_name] = getattr(self, attr_name).isChecked()
+        self.backend.set_eco_travel_config(**kwargs)
+        self.preferences_changed.emit()
+
     def refresh_hardware_toggles(self):
-        """Sincroniza os switches de Fn-Lock, USB Always-On e Transição AC."""
+        """Sincroniza os switches de Fn-Lock, USB Always-On, Transição AC e Modo Economia."""
         feat = self.backend.features
         if hasattr(self, "sw_auto_power"):
             self.sw_auto_power.blockSignals(True)
@@ -563,10 +792,54 @@ class AboutTab(QWidget):
             self.sw_usb_charging.blockSignals(True)
             self.sw_usb_charging.setChecked(self.backend.get_usb_charging())
             self.sw_usb_charging.blockSignals(False)
+        if hasattr(self, "sw_eco_dim_brightness"):
+            eco_cfg = self.backend.get_eco_travel_config()
+            self.sw_eco_dim_brightness.blockSignals(True)
+            self.sw_eco_dim_brightness.setChecked(eco_cfg["dim_brightness"])
+            self.sw_eco_dim_brightness.blockSignals(False)
+            self.combo_eco_brightness.blockSignals(True)
+            eb_i = self.combo_eco_brightness.findData(eco_cfg["brightness_pct"])
+            if eb_i >= 0:
+                self.combo_eco_brightness.setCurrentIndex(eb_i)
+            self.combo_eco_brightness.blockSignals(False)
+            for attr_name, key_name in (
+                ("sw_eco_profile", "profile"),
+                ("sw_eco_conservation", "conservation"),
+                ("sw_eco_turbo", "turbo_off"),
+                ("sw_eco_tdp", "tdp_limit"),
+                ("sw_eco_gpu_d3cold", "gpu_d3cold"),
+                ("sw_eco_kbd", "kbd_off"),
+                ("sw_eco_refresh", "refresh_min"),
+                ("sw_eco_wifi", "wifi_save"),
+            ):
+                if hasattr(self, attr_name):
+                    sw = getattr(self, attr_name)
+                    sw.blockSignals(True)
+                    sw.setChecked(eco_cfg[key_name])
+                    sw.blockSignals(False)
 
     def set_advanced_mode(self, advanced: bool):
-        """Armazena estado do modo de interface para ajustes futuros."""
+        """Alterna controles avançados (Backup JSON, Diagnóstico/UDEV, DMI técnico e SMART NVMe detalhado)."""
         self._advanced_mode = bool(advanced)
+        if hasattr(self, "brightness_prefs_box"):
+            self.brightness_prefs_box.setVisible(bool(self.backend.features.eco_travel))
+        if hasattr(self, "backup_widget"):
+            self.backup_widget.setVisible(self._advanced_mode)
+        if hasattr(self, "prefs_title_lbl"):
+            self.prefs_title_lbl.setText(
+                "Preferências do Aplicativo, Pop-up OSD & Backup"
+                if self._advanced_mode
+                else "Preferências do Aplicativo & Pop-up OSD"
+            )
+        if hasattr(self, "btn_copy_diag"):
+            self.btn_copy_diag.setVisible(self._advanced_mode)
+        if hasattr(self, "btn_copy_udev"):
+            self.btn_copy_udev.setVisible(self._advanced_mode)
+        for box in getattr(self, "dmi_adv_boxes", []):
+            box.setVisible(self._advanced_mode)
+        if hasattr(self, "basic_hint_card"):
+            self.basic_hint_card.setVisible(not self._advanced_mode)
+        self.refresh_nvme_health(force=False)
 
     def update_autostart_status(self):
         """Sincroniza o estado visual do switch e badge com ~/.config/autostart/ducksvantage.desktop."""
@@ -608,6 +881,7 @@ class AboutTab(QWidget):
         b_layout.addWidget(val_lbl)
 
         grid.addWidget(box, row, col)
+        return box
 
     def update_permission_status(self):
         """Verifica o status atual de escrita nos diretórios do kernel."""
@@ -740,7 +1014,7 @@ class AboutTab(QWidget):
         if self._update_worker and self._update_worker.isRunning():
             return
         self.btn_check_updates.setEnabled(False)
-        self.update_status_lbl.setText("Consultando último commit no GitHub...")
+        self.update_status_lbl.setText("Consultando atualizações no GitHub...")
         self._update_worker = UpdateCheckWorker(self.backend, self)
         self._update_worker.finished_check.connect(self._on_check_updates_done)
         self._update_worker.start()
@@ -754,7 +1028,11 @@ class AboutTab(QWidget):
         elif res.get("up_to_date"):
             QMessageBox.information(self, "Ducksvantage Atualizado", msg)
         else:
-            extra = f"\n\nÚltimo commit ({res.get('remote_sha')} em {res.get('remote_date')}):\n{res.get('remote_message')}\n\nRepositório: {res.get('url')}"
+            ref = res.get("remote_sha") or res.get("remote_version") or "N/A"
+            dt = res.get("remote_date") or ""
+            hdr = f"{ref} em {dt}" if dt else str(ref)
+            det = res.get("remote_message") or "Nova versão publicada."
+            extra = f"\n\nDetalhes ({hdr}):\n{det}\n\nRepositório: {res.get('url')}"
             QMessageBox.information(self, "Atualização Disponível", msg + extra)
 
     def _copy_diagnostic_action(self):

@@ -1,8 +1,7 @@
 """
-UI Package para LenovoLOQ-Control.
+UI Package para Ducksvantage.
 """
 
 from ui.theme_tokens import ThemeTokens
-from ui.theme import Theme
 
-__all__ = ["Theme", "ThemeTokens"]
+__all__ = ["ThemeTokens"]

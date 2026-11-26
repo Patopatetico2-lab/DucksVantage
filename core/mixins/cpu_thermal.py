@@ -240,36 +240,6 @@ class CpuThermalUndervoltMixin:
                 "accent": "#fbbf24" if new_state else "#34d399"
             }
 
-        if action_id == "toggle_cinema_mode":
-            new_state = not self.get_cinema_mode()
-            ok, msg = self.set_cinema_mode(new_state)
-            return {
-                "action": action_id,
-                "ok": ok,
-                "osd_type": "feature",
-                "title": "Modo Cinema / Apresentação: Ativo" if new_state else "Modo Cinema Desativado",
-                "subtitle": "Tela acesa • Não Perturbe KDE • Teclado Off" if new_state else msg,
-                "icon": "copilot_key.svg",
-                "accent": "#60a5fa" if new_state else "#94a3b8"
-            }
-
-        if action_id == "cycle_audio_preset":
-            ok, preset_id, msg = self.cycle_audio_preset()
-            titles = {
-                "normal": "Áudio: Modo Padrão",
-                "voice_call": "Áudio: Call / Voz (Filtro Ruído)",
-                "privacy_mute": "Áudio: Silêncio & Privacidade",
-            }
-            return {
-                "action": action_id,
-                "ok": ok,
-                "osd_type": "feature",
-                "title": titles.get(preset_id, "Áudio Alternado"),
-                "subtitle": msg,
-                "icon": "copilot_key.svg",
-                "accent": "#34d399" if preset_id == "voice_call" else ("#ef4444" if preset_id == "privacy_mute" else "#60a5fa")
-            }
-
         if action_id == "custom_command" and custom_cmd.strip():
             try:
                 subprocess.Popen(
@@ -295,97 +265,239 @@ class CpuThermalUndervoltMixin:
         return {"action": "toggle_window", "ok": True, "osd_type": "window"}
 
     # =========================================================================
-    # ELITE 6: Modo Viagem / Eco-Mode Extremo (1-Clique)
+    # ELITE 6: Modo Viagem / Eco-Mode Extremo (1-Clique & Configurável)
     # =========================================================================
     def get_eco_travel_mode(self) -> bool:
         return bool(self.settings.get("eco_travel_mode", False))
 
-    def set_eco_travel_mode(self, enable: bool) -> Tuple[bool, str]:
-        """
-        Ativa/desativa o 'Modo Viagem (Eco-Mode Extremo)' com 1 clique:
-        - Ativa o Modo de Conservação da Bateria (80%)
-        - Força a GPU dedicada NVIDIA para suspensão profunda D3cold (PCI power/control = auto)
-        - Desliga a iluminação do teclado (0)
-        - Desativa o CPU Turbo Boost
-        - Muda o perfil ACPI para 'low-power' e Governor para 'powersave'
-        - Reduz o envelope térmico PL1/PL2 para 15W/25W
-        """
-        pairs: List[Tuple[str, str]] = []
+    def get_eco_travel_config(self) -> Dict[str, Any]:
+        """Retorna todas as ações configuráveis do Modo Viagem/Economia e o brilho alvo."""
+        return {
+            "profile": bool(self.settings.get("eco_action_profile", True)),
+            "conservation": bool(self.settings.get("eco_action_conservation", True)),
+            "turbo_off": bool(self.settings.get("eco_action_turbo_off", True)),
+            "tdp_limit": bool(self.settings.get("eco_action_tdp_limit", True)),
+            "gpu_d3cold": bool(self.settings.get("eco_action_gpu_d3cold", True)),
+            "kbd_off": bool(self.settings.get("eco_action_kbd_off", True)),
+            "refresh_min": bool(self.settings.get("eco_action_refresh_min", False)),
+            "wifi_save": bool(self.settings.get("eco_action_wifi_save", False)),
+            "dim_brightness": bool(self.settings.get("eco_dim_brightness_enabled", True)),
+            "brightness_pct": max(5, min(100, int(self.settings.get("eco_brightness_pct", 40) or 40))),
+        }
 
-        if enable:
-            # Salvar estado anterior para restauração limpa
-            self.settings.set("pre_eco_profile", self.get_platform_profile())
-            self.settings.set("pre_eco_kbd", self.get_kbd_backlight())
-            self.settings.set("pre_eco_turbo", self.get_cpu_turbo())
+    def set_eco_travel_config(self, **kwargs: Any) -> None:
+        """Persiste quais ações o Modo Viagem/Economia está autorizado a alterar."""
+        key_map = {
+            "profile": "eco_action_profile",
+            "conservation": "eco_action_conservation",
+            "turbo_off": "eco_action_turbo_off",
+            "tdp_limit": "eco_action_tdp_limit",
+            "gpu_d3cold": "eco_action_gpu_d3cold",
+            "kbd_off": "eco_action_kbd_off",
+            "refresh_min": "eco_action_refresh_min",
+            "wifi_save": "eco_action_wifi_save",
+            "dim_brightness": "eco_dim_brightness_enabled",
+        }
+        for arg_name, setting_key in key_map.items():
+            if arg_name in kwargs:
+                self.settings.set(setting_key, bool(kwargs[arg_name]))
+        if "brightness_pct" in kwargs:
+            self.settings.set("eco_brightness_pct", max(5, min(100, int(kwargs["brightness_pct"]))))
 
-            if self.paths.conservation_mode:
-                pairs.append((self.paths.conservation_mode, "1"))
-                self.settings.set("rapid_charge", False)
+    def _restore_eco_side_effects(self, restore_profile: bool = True) -> Tuple[bool, str]:
+        """Restaura exatamente o estado salvo antes da ativação do Modo Viagem."""
+        if getattr(self, "_restoring_eco_mode", False):
+            return True, ""
+        self._restoring_eco_mode = True
+        try:
+            raw_applied = self.settings.get("eco_applied_actions", [])
+            if isinstance(raw_applied, list) and raw_applied:
+                applied = {str(x) for x in raw_applied}
+            else:
+                # Fallback seguro caso eco_travel_mode estivesse ativo de versão anterior
+                cfg = self.get_eco_travel_config()
+                applied = {
+                    k for k in ("profile", "conservation", "turbo_off", "tdp_limit", "kbd_off", "dim_brightness")
+                    if cfg.get(k, False)
+                }
 
-            if self.paths.platform_profile:
-                choices = self.get_platform_profile_choices()
-                if choices:
-                    low_p = "low-power" if "low-power" in choices else ("quiet" if "quiet" in choices else choices[0])
-                    pairs.append((self.paths.platform_profile, low_p))
-
-            if self.paths.cpu_turbo_intel:
-                pairs.append((self.paths.cpu_turbo_intel, "1"))  # 1 = no_turbo (Turbo OFF)
-            elif self.paths.cpu_turbo_amd:
-                pairs.append((self.paths.cpu_turbo_amd, "0"))    # 0 = boost OFF
-
-            if self.paths.kbd_backlight:
-                pairs.append((self.paths.kbd_backlight, "0"))
-
-            if self.paths.nvidia_pci_power_control:
-                pairs.append((self.paths.nvidia_pci_power_control, "auto"))
-
-            if self.paths.rapl_pl1 and self.paths.rapl_pl2:
-                pairs.append((self.paths.rapl_pl1, str(15 * 1_000_000)))
-                pairs.append((self.paths.rapl_pl2, str(25 * 1_000_000)))
-
-            ok, msg = PermissionsManager.write_multiple_sysfs_values(pairs) if pairs else (True, "")
-            if self.features.cpu_governor:
-                gov_ok, gov_msg = self.set_cpu_governor("powersave")
-                if not pairs:
-                    ok, msg = gov_ok, gov_msg
-
-            self.settings.set("eco_travel_mode", True)
-            self._max_power_active = False
-            self._last_raw_profile = self._read_raw_platform_profile()
-            self._last_profile = "low-power"
-            self._last_conservation = True
-            self._last_kbd_bright = 0
-            return ok, "Modo Viagem (Eco-Mode Extremo) ativado." if ok else msg
-        else:
+            pairs: List[Tuple[str, str]] = []
             prev_prof = self.normalize_profile(str(self.settings.get("pre_eco_profile", "balanced")))
             if prev_prof == "low-power":
                 prev_prof = "balanced"
             prev_kbd = int(self.settings.get("pre_eco_kbd", 1))
             prev_turbo = bool(self.settings.get("pre_eco_turbo", True))
+            prev_cons = bool(self.settings.get("pre_eco_conservation", False))
 
-            if self.paths.platform_profile:
+            if restore_profile and "profile" in applied and self.paths.platform_profile:
                 pairs.append((self.paths.platform_profile, prev_prof))
 
-            if self.paths.cpu_turbo_intel:
-                pairs.append((self.paths.cpu_turbo_intel, "0" if prev_turbo else "1"))
-            elif self.paths.cpu_turbo_amd:
-                pairs.append((self.paths.cpu_turbo_amd, "1" if prev_turbo else "0"))
+            if "conservation" in applied and self.paths.conservation_mode:
+                pairs.append((self.paths.conservation_mode, "1" if prev_cons else "0"))
 
-            if self.paths.kbd_backlight:
+            if "turbo_off" in applied:
+                if self.paths.cpu_turbo_intel:
+                    pairs.append((self.paths.cpu_turbo_intel, "0" if prev_turbo else "1"))
+                elif self.paths.cpu_turbo_amd:
+                    pairs.append((self.paths.cpu_turbo_amd, "1" if prev_turbo else "0"))
+
+            if "kbd_off" in applied and self.paths.kbd_backlight:
                 pairs.append((self.paths.kbd_backlight, str(prev_kbd)))
 
-            if self.paths.rapl_pl1 and self.paths.rapl_pl2:
-                pl1_def = int(self.settings.get("custom_pl1_w", 45))
-                pl2_def = int(self.settings.get("custom_pl2_w", 70))
+            if "tdp_limit" in applied and self.paths.rapl_pl1 and self.paths.rapl_pl2:
+                saved_tdp = self.settings.get("pre_eco_tdp", [])
+                if isinstance(saved_tdp, list) and len(saved_tdp) >= 2:
+                    pl1_def, pl2_def = int(saved_tdp[0]), int(saved_tdp[1])
+                else:
+                    pl1_def = int(self.settings.get("custom_pl1_w", 45))
+                    pl2_def = int(self.settings.get("custom_pl2_w", 70))
                 pairs.append((self.paths.rapl_pl1, str(pl1_def * 1_000_000)))
                 pairs.append((self.paths.rapl_pl2, str(pl2_def * 1_000_000)))
 
-            ok, msg = PermissionsManager.write_multiple_sysfs_values(pairs)
+            ok, msg = PermissionsManager.write_multiple_sysfs_values(pairs) if pairs else (True, "")
+
+            if "refresh_min" in applied and self.features.refresh_rate:
+                prev_hz = int(self.settings.get("pre_eco_refresh_hz", 0) or 0)
+                if prev_hz > 0:
+                    try:
+                        self.set_refresh_rate(prev_hz)
+                    except Exception:
+                        pass
+
+            if "wifi_save" in applied and self.features.wifi_power_save:
+                prev_wf = bool(self.settings.get("pre_eco_wifi_power_save", False))
+                try:
+                    self.set_wifi_power_saving(prev_wf, allow_elevation=False)
+                except Exception:
+                    pass
+
+            if "dim_brightness" in applied and self.features.screen_brightness:
+                prev_br = int(self.settings.get("pre_eco_brightness_pct", 75) or 75)
+                ok_br, msg_br = self.set_screen_brightness_pct(prev_br, allow_elevation=False)
+                if not ok_br and not pairs:
+                    ok, msg = False, msg_br
+
+            self.settings.set("eco_applied_actions", [])
             self.settings.set("eco_travel_mode", False)
-            if ok:
+            if restore_profile and ok and "profile" in applied:
                 self._max_power_active = (prev_prof == "max-power")
                 self._last_raw_profile = self._read_raw_platform_profile()
                 self._last_profile = prev_prof
+            if "conservation" in applied and ok:
+                self._last_conservation = prev_cons
+            if "kbd_off" in applied and ok:
+                self._last_kbd_bright = prev_kbd
+            return ok, msg
+        finally:
+            self._restoring_eco_mode = False
+
+    def set_eco_travel_mode(self, enable: bool) -> Tuple[bool, str]:
+        """
+        Ativa/desativa o 'Modo Viagem (Eco-Mode Extremo)' aplicando apenas as opções
+        habilitadas pelo usuário em get_eco_travel_config() e restaurando exatamente
+        o estado original ao desativar.
+        """
+        if enable:
+            if self.get_eco_travel_mode():
+                return True, "Modo Viagem (Eco-Mode Extremo) já está ativo."
+
+            cfg = self.get_eco_travel_config()
+            pairs: List[Tuple[str, str]] = []
+            applied: List[str] = []
+
+            if cfg["conservation"] and self.paths.conservation_mode:
+                self.settings.set("pre_eco_conservation", bool(self.get_conservation_mode()))
+                pairs.append((self.paths.conservation_mode, "1"))
+                self.settings.set("rapid_charge", False)
+                applied.append("conservation")
+
+            if cfg["profile"] and (self.paths.platform_profile or self.features.cpu_governor):
+                self.settings.set("pre_eco_profile", self.get_platform_profile())
+                if self.paths.platform_profile:
+                    choices = self.get_platform_profile_choices()
+                    if choices:
+                        low_p = "low-power" if "low-power" in choices else ("quiet" if "quiet" in choices else choices[0])
+                        pairs.append((self.paths.platform_profile, low_p))
+                applied.append("profile")
+
+            if cfg["turbo_off"] and (self.paths.cpu_turbo_intel or self.paths.cpu_turbo_amd):
+                self.settings.set("pre_eco_turbo", self.get_cpu_turbo())
+                if self.paths.cpu_turbo_intel:
+                    pairs.append((self.paths.cpu_turbo_intel, "1"))  # 1 = no_turbo (Turbo OFF)
+                elif self.paths.cpu_turbo_amd:
+                    pairs.append((self.paths.cpu_turbo_amd, "0"))    # 0 = boost OFF
+                applied.append("turbo_off")
+
+            if cfg["kbd_off"] and self.paths.kbd_backlight:
+                self.settings.set("pre_eco_kbd", self.get_kbd_backlight())
+                pairs.append((self.paths.kbd_backlight, "0"))
+                applied.append("kbd_off")
+
+            if cfg["gpu_d3cold"] and self.paths.nvidia_pci_power_control:
+                pairs.append((self.paths.nvidia_pci_power_control, "auto"))
+                applied.append("gpu_d3cold")
+
+            if cfg["tdp_limit"] and self.paths.rapl_pl1 and self.paths.rapl_pl2:
+                cur_pl1, cur_pl2 = self.get_cpu_tdp_limits()
+                self.settings.set("pre_eco_tdp", [int(cur_pl1), int(cur_pl2)])
+                pairs.append((self.paths.rapl_pl1, str(15 * 1_000_000)))
+                pairs.append((self.paths.rapl_pl2, str(25 * 1_000_000)))
+                applied.append("tdp_limit")
+
+            ok, msg = PermissionsManager.write_multiple_sysfs_values(pairs) if pairs else (True, "")
+            if cfg["profile"] and self.features.cpu_governor:
+                gov_ok, gov_msg = self.set_cpu_governor("powersave")
+                if not pairs:
+                    ok, msg = gov_ok, gov_msg
+
+            if cfg["refresh_min"] and self.features.refresh_rate:
+                try:
+                    ref_info = self.get_display_refresh_info()
+                    if ref_info.available and len(ref_info.available_rates) > 1:
+                        min_hz = min(ref_info.available_rates)
+                        self.settings.set("pre_eco_refresh_hz", int(ref_info.current_hz))
+                        if ref_info.current_hz != min_hz:
+                            ok_hz, _ = self.set_refresh_rate(min_hz)
+                            if ok_hz:
+                                applied.append("refresh_min")
+                except Exception:
+                    pass
+
+            if cfg["wifi_save"] and self.features.wifi_power_save:
+                try:
+                    net_st = self.get_network_power_status(force=True)
+                    if net_st.wifi_available:
+                        self.settings.set("pre_eco_wifi_power_save", bool(net_st.wifi_power_save_on))
+                        if not net_st.wifi_power_save_on:
+                            ok_wf, _ = self.set_wifi_power_saving(True, allow_elevation=False)
+                            if ok_wf:
+                                applied.append("wifi_save")
+                except Exception:
+                    pass
+
+            if cfg["dim_brightness"] and self.features.screen_brightness:
+                cur_br = self.get_screen_brightness_pct()
+                if cur_br is not None and cur_br > 0:
+                    self.settings.set("pre_eco_brightness_pct", int(cur_br))
+                ok_br, msg_br = self.set_screen_brightness_pct(cfg["brightness_pct"], allow_elevation=False)
+                if ok_br:
+                    applied.append("dim_brightness")
+                elif not applied:
+                    ok, msg = False, msg_br
+
+            self.settings.set("eco_applied_actions", applied)
+            self.settings.set("eco_travel_mode", True)
+            if "profile" in applied:
+                self._max_power_active = False
+                self._last_raw_profile = self._read_raw_platform_profile()
+                self._last_profile = "low-power"
+            if "conservation" in applied:
+                self._last_conservation = True
+            if "kbd_off" in applied:
+                self._last_kbd_bright = 0
+            return ok, "Modo Viagem (Eco-Mode Extremo) ativado." if ok else msg
+        else:
+            ok, msg = self._restore_eco_side_effects(restore_profile=True)
             return ok, "Modo Viagem desativado. Configurações restauradas." if ok else msg
 
 
@@ -711,6 +823,15 @@ class CpuThermalUndervoltMixin:
         """
         core_mv = max(-150, min(0, int(core_mv)))
         cache_mv = max(-150, min(0, int(cache_mv)))
+        prev_core = int(self.settings.get("undervolt_core_mv", 0) or 0)
+        prev_cache = int(self.settings.get("undervolt_cache_mv", 0) or 0)
+        needs_hw_write = bool(
+            core_mv != 0
+            or cache_mv != 0
+            or prev_core != 0
+            or prev_cache != 0
+            or getattr(self, "_undervolt_active_in_hw", False)
+        )
         if gpu_ac_offset_w is not None:
             gpu_ac_offset_w = max(10, min(30, int(gpu_ac_offset_w)))
         else:
@@ -775,11 +896,11 @@ class CpuThermalUndervoltMixin:
                     msr_written = False
                     applied_details.append(f"MSR Exception ({e})")
 
-            # Fallback para Intel via wrmsr, intel-undervolt ou escrita direta MSR via pkexec + python3
-            if not msr_written and (core_mv != 0 or cache_mv != 0):
+            # Fallback para Intel via wrmsr, escrita direta MSR via pkexec + modprobe msr, ou intel-undervolt com atualização real do conf
+            if not msr_written and needs_hw_write:
                 if shutil.which("wrmsr") and shutil.which("pkexec"):
                     try:
-                        cmd = f"wrmsr -a 0x150 {msr_core_hex} && wrmsr -a 0x150 {msr_cache_hex}"
+                        cmd = f"modprobe msr 2>/dev/null || true; wrmsr -a 0x150 {msr_core_hex} && wrmsr -a 0x150 {msr_cache_hex}"
                         res = subprocess.run(["pkexec", "sh", "-c", cmd], capture_output=True, text=True, timeout=10)
                         if res.returncode == 0:
                             msr_written = True
@@ -788,20 +909,17 @@ class CpuThermalUndervoltMixin:
                             applied_details.append("MSR 0x150 bloqueado (OC Lock ativo na BIOS)")
                     except Exception:
                         pass
-                elif shutil.which("intel-undervolt") and shutil.which("pkexec"):
-                    try:
-                        res = subprocess.run(["pkexec", "intel-undervolt", "apply"], capture_output=True, text=True, timeout=10)
-                        if res.returncode == 0:
-                            msr_written = True
-                            applied_details.append("intel-undervolt service")
-                    except Exception:
-                        pass
-                elif not direct_msr_attempted and msr_nodes and shutil.which("pkexec"):
+                elif not direct_msr_attempted and shutil.which("pkexec"):
                     py_script = (
-                        "import glob, os, struct, sys\n"
+                        "import glob, os, struct, subprocess, sys\n"
                         "vc, vca = int(sys.argv[1]), int(sys.argv[2])\n"
+                        "subprocess.run(['modprobe', 'msr'], check=False)\n"
+                        "nodes = sorted(glob.glob('/dev/cpu/[0-9]*/msr'))\n"
+                        "if not nodes:\n"
+                        "    sys.stderr.write('No /dev/cpu/*/msr nodes found\\n')\n"
+                        "    sys.exit(2)\n"
                         "pc, pca = struct.pack('<Q', vc), struct.pack('<Q', vca)\n"
-                        "for p in sorted(glob.glob('/dev/cpu/[0-9]*/msr')):\n"
+                        "for p in nodes:\n"
                         "    fd = os.open(p, os.O_WRONLY)\n"
                         "    try:\n"
                         "        os.pwrite(fd, pc, 0x150)\n"
@@ -823,6 +941,27 @@ class CpuThermalUndervoltMixin:
                                 applied_details.append("MSR 0x150 bloqueado (OC Lock / Undervolt Protection ativo na BIOS)")
                             elif res.returncode in (126, 127) or "dismissed" in err_txt or "cancel" in err_txt or "not authorized" in err_txt:
                                 applied_details.append("Elevação Polkit cancelada pelo usuário")
+                            elif shutil.which("intel-undervolt"):
+                                # Atualiza /etc/intel-undervolt.conf antes de aplicar para evitar no-op
+                                iu_script = (
+                                    "import re, subprocess, sys\n"
+                                    "core, cache = int(sys.argv[1]), int(sys.argv[2])\n"
+                                    "conf = '/etc/intel-undervolt.conf'\n"
+                                    "with open(conf, 'r', encoding='utf-8') as f: txt = f.read()\n"
+                                    "txt = re.sub(r\"(?m)^undervolt\\s+0\\s+'CPU'\\s+[-\\d.]+\", f\"undervolt 0 'CPU' {core}\", txt)\n"
+                                    "txt = re.sub(r\"(?m)^undervolt\\s+2\\s+'CPU Cache'\\s+[-\\d.]+\", f\"undervolt 2 'CPU Cache' {cache}\", txt)\n"
+                                    "with open(conf, 'w', encoding='utf-8') as f: f.write(txt)\n"
+                                    "sys.exit(subprocess.run(['intel-undervolt', 'apply']).returncode)\n"
+                                )
+                                res_iu = subprocess.run(
+                                    ["pkexec", sys.executable or "/usr/bin/python3", "-c", iu_script, str(core_mv), str(cache_mv)],
+                                    capture_output=True, text=True, timeout=15
+                                )
+                                if res_iu.returncode == 0:
+                                    msr_written = True
+                                    applied_details.append(f"intel-undervolt ({core_mv}/{cache_mv} mV)")
+                                else:
+                                    applied_details.append(f"MSR 0x150 falhou via Polkit (código {res.returncode})")
                             else:
                                 applied_details.append(f"MSR 0x150 falhou via Polkit (código {res.returncode})")
                     except Exception as e:
@@ -830,8 +969,8 @@ class CpuThermalUndervoltMixin:
 
         elif vendor == "AMD":
             # CPUs AMD: JAMAIS escrever no MSR 0x150! Usar ryzenadj Curve Optimizer
-            if core_mv != 0:
-                co_counts = max(-30, min(0, core_mv // 5))
+            if needs_hw_write:
+                co_counts = 0 if core_mv == 0 else max(-30, min(0, core_mv // 5))
                 if shutil.which("ryzenadj"):
                     try:
                         res = subprocess.run(
@@ -851,8 +990,10 @@ class CpuThermalUndervoltMixin:
                                 applied_details.append(f"Ryzen CO ({co_counts})")
                     except Exception:
                         pass
-                if not msr_written:
+                if not msr_written and core_mv != 0:
                     applied_details.append("AMD ryzenadj necessário para Curve Optimizer")
+                elif not msr_written and core_mv == 0:
+                    msr_written = True
             else:
                 msr_written = True
         else:
@@ -863,6 +1004,7 @@ class CpuThermalUndervoltMixin:
         if undervolt_requested and not msr_written:
             # Reverte canário e settings para 0 para não disparar falso watchdog de crash no próximo boot
             self._clear_undervolt_canary()
+            self._undervolt_active_in_hw = False
             self.settings.set("undervolt_core_mv", 0)
             self.settings.set("undervolt_cache_mv", 0)
             summary = (
@@ -870,7 +1012,15 @@ class CpuThermalUndervoltMixin:
             )
             return False, summary
 
+        if needs_hw_write and not undervolt_requested and not msr_written:
+            self._undervolt_active_in_hw = False
+            summary = (
+                f"Não foi possível restaurar 0 mV no hardware: {', '.join(applied_details) if applied_details else 'Sem permissão root/Polkit'}."
+            )
+            return False, summary
+
         # Sucesso
+        self._undervolt_active_in_hw = bool(msr_written and undervolt_requested)
         self.settings.set("undervolt_core_mv", core_mv)
         self.settings.set("undervolt_cache_mv", cache_mv)
 
@@ -888,27 +1038,42 @@ class CpuThermalUndervoltMixin:
         self._last_emergency_reset = ""
         return True, "Estabilidade confirmada! Offsets mantidos com segurança."
 
-    def emergency_reset_undervolt(self, reason: str = "Reset de Emergência acionado") -> Tuple[bool, str]:
+    def emergency_reset_undervolt(
+        self,
+        reason: str = "Reset de Emergência acionado",
+        allow_elevation: bool = True,
+    ) -> Tuple[bool, str]:
         """
         Mecanismo de Segurança / Reset de Emergência Imediato:
         Zera todos os offsets de tensão (Core = 0 mV, Cache = 0 mV), restaura o offset WMI padrão (20W)
         e remove o arquivo canário para prevenir travamentos ou Kernel Panic.
-        Garante que MSR 0x150 seja manipulado exclusivamente em CPUs Intel.
+        Garante que MSR 0x150 seja manipulado exclusivamente em CPUs Intel e usa Polkit se necessário.
         """
+        was_hw_active = bool(getattr(self, "_undervolt_active_in_hw", False))
         self._clear_undervolt_canary()
 
         self.settings.set("undervolt_core_mv", 0)
         self.settings.set("undervolt_cache_mv", 0)
         self.settings.set("gpu_ac_offset_w", 20)
 
+        qt_plat = os.environ.get("QT_QPA_PLATFORM", "").lower()
+        can_elevate = bool(
+            allow_elevation
+            and shutil.which("pkexec")
+            and (qt_plat not in ("offscreen", "minimal") or os.environ.get("DUCKSVANTAGE_ALLOW_TEST_PKEXEC") == "1")
+        )
+
+        hw_reset_ok = False
         vendor = self.get_cpu_vendor()
         if vendor == "Intel":
-            # Restaurar MSR 0x150 para 0 mV SOMENTE em Intel se acessível diretamente sem bloquear
+            # Restaurar MSR 0x150 para 0 mV SOMENTE em Intel
             msr_nodes = sorted(glob.glob("/dev/cpu/[0-9]*/msr"))
+            val_zero_core = self._encode_intel_msr_undervolt_offset(0, 0)
+            val_zero_cache = self._encode_intel_msr_undervolt_offset(2, 0)
             if msr_nodes and os.access(msr_nodes[0], os.W_OK):
                 try:
-                    packed_zero_core = struct.pack("<Q", self._encode_intel_msr_undervolt_offset(0, 0))
-                    packed_zero_cache = struct.pack("<Q", self._encode_intel_msr_undervolt_offset(2, 0))
+                    packed_zero_core = struct.pack("<Q", val_zero_core)
+                    packed_zero_cache = struct.pack("<Q", val_zero_cache)
                     for mpath in msr_nodes:
                         fd = os.open(mpath, os.O_WRONLY)
                         try:
@@ -916,12 +1081,39 @@ class CpuThermalUndervoltMixin:
                             os.pwrite(fd, packed_zero_cache, 0x150)
                         finally:
                             os.close(fd)
+                    hw_reset_ok = True
                 except Exception:
                     pass
+            elif can_elevate and (was_hw_active or msr_nodes):
+                py_zero = (
+                    "import glob, os, struct, subprocess, sys\n"
+                    "vc, vca = int(sys.argv[1]), int(sys.argv[2])\n"
+                    "subprocess.run(['modprobe', 'msr'], check=False)\n"
+                    "pc, pca = struct.pack('<Q', vc), struct.pack('<Q', vca)\n"
+                    "for p in sorted(glob.glob('/dev/cpu/[0-9]*/msr')):\n"
+                    "    fd = os.open(p, os.O_WRONLY)\n"
+                    "    try:\n"
+                    "        os.pwrite(fd, pc, 0x150)\n"
+                    "        os.pwrite(fd, pca, 0x150)\n"
+                    "    finally:\n"
+                    "        os.close(fd)\n"
+                )
+                try:
+                    res = subprocess.run(
+                        ["pkexec", sys.executable or "/usr/bin/python3", "-c", py_zero, str(val_zero_core), str(val_zero_cache)],
+                        capture_output=True, text=True, timeout=15
+                    )
+                    hw_reset_ok = (res.returncode == 0)
+                except Exception:
+                    hw_reset_ok = False
         elif vendor == "AMD":
             if shutil.which("ryzenadj"):
                 try:
-                    subprocess.run(["ryzenadj", "--set-coall=0"], capture_output=True, text=True, timeout=5)
+                    res = subprocess.run(["ryzenadj", "--set-coall=0"], capture_output=True, text=True, timeout=5)
+                    hw_reset_ok = (res.returncode == 0)
+                    if not hw_reset_ok and can_elevate:
+                        res2 = subprocess.run(["pkexec", "ryzenadj", "--set-coall=0"], capture_output=True, text=True, timeout=15)
+                        hw_reset_ok = (res2.returncode == 0)
                 except Exception:
                     pass
 
@@ -929,6 +1121,14 @@ class CpuThermalUndervoltMixin:
             ac_off_path = os.path.join(self.paths.lenovo_wmi_attr_dir, "gpu_nv_ac_offset", "current_value")
             if os.path.exists(ac_off_path) and os.access(ac_off_path, os.W_OK):
                 PermissionsManager.write_sysfs_value(ac_off_path, "20", allow_elevation=False)
+
+        self._undervolt_active_in_hw = False
+        if was_hw_active and not hw_reset_ok:
+            self._last_emergency_reset = (
+                f"{reason}: Configuração salva zerada para 0 mV, mas não foi possível gravar no registrador "
+                "sem permissão root/Polkit. Reinicie o notebook para garantir 0 mV de fábrica."
+            )
+            return False, self._last_emergency_reset
 
         self._last_emergency_reset = f"{reason}: Tensões restauradas para 0 mV (Padrão Seguro de Fábrica)."
         return True, self._last_emergency_reset

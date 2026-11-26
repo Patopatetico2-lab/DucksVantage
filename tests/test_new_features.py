@@ -16,7 +16,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from core.backend import HardwareBackend
 from core.dbus_service import DucksvantageCommandRouter
-from core.models import BatteryInfo, DisplayRefreshInfo, HardwareFeatures, HardwarePaths
+from core.models import BatteryInfo, DisplayRefreshInfo, GpuMuxInfo, HardwareFeatures, HardwarePaths
 
 
 def _isolated_backend() -> HardwareBackend:
@@ -41,8 +41,6 @@ def _isolated_backend() -> HardwareBackend:
         battery=True,
         wifi_power_save=True,
         eco_travel=True,
-        cinema_mode=True,
-        audio_control=True,
         usb_wakeup=True,
         external_monitor_dock=True,
         thermal_throttling=True,
@@ -220,101 +218,6 @@ class TestNewFeatures(unittest.TestCase):
             self.assertTrue(ok)
             self.assertIn("output.eDP-1.vrrpolicy.always", m_run.call_args_list[-1][0][0])
 
-    # 7 & 8. Modo Cinema & Presets de Áudio
-    def test_cinema_mode_and_audio_presets(self):
-        """Modo Cinema gerencia backlight + DND; Presets de Áudio aplicam wpctl/câmera."""
-        with patch.object(self.backend.settings, "save", return_value=None), \
-             patch.object(self.backend, "get_kbd_backlight", return_value=2), \
-             patch.object(self.backend, "set_kbd_backlight", return_value=(True, "OK")) as m_kbd, \
-             patch.object(self.backend, "_set_kde_notifications_inhibited") as m_dnd:
-            ok, _ = self.backend.set_cinema_mode(True)
-            self.assertTrue(ok)
-            self.assertTrue(self.backend.get_cinema_mode())
-            m_kbd.assert_called_with(0)
-            m_dnd.assert_called_with(True)
-
-            self.backend.set_cinema_mode(False)
-            self.assertFalse(self.backend.get_cinema_mode())
-            m_kbd.assert_called_with(2)
-            m_dnd.assert_called_with(False)
-
-        with patch.object(self.backend.settings, "save", return_value=None), \
-             patch("core.mixins.smart_features.shutil.which", side_effect=lambda c: f"/usr/bin/{c}" if c in ("wpctl", "pactl") else None), \
-             patch("core.mixins.smart_features.subprocess.run", return_value=MagicMock(returncode=0, stdout="42\n")), \
-             patch.object(self.backend, "get_camera_power", return_value=True), \
-             patch.object(self.backend, "set_camera_power", return_value=(True, "OK")) as m_cam:
-            ok_v, _ = self.backend.set_audio_preset("voice_call")
-            self.assertTrue(ok_v)
-            self.assertEqual(self.backend.get_audio_preset(), "voice_call")
-
-            ok_p, _ = self.backend.set_audio_preset("privacy_mute")
-            self.assertTrue(ok_p)
-            m_cam.assert_called_with(False)
-
-            ok_n, _ = self.backend.set_audio_preset("normal")
-            self.assertTrue(ok_n)
-            m_cam.assert_called_with(True)
-
-    # 9. Checkup Térmico Rápido (Baseline)
-    def test_thermal_checkup_baseline_and_degradation(self):
-        """Registra baseline e detecta degradação térmica acima de +7.5°C."""
-        with patch.object(self.backend.settings, "save", return_value=None), \
-             patch.object(self.backend, "get_cpu_metrics", return_value=MagicMock(temperature_c=68.0, usage_percent=80.0, pl1_w=45)), \
-             patch.object(self.backend, "get_fan_metrics", return_value=MagicMock(rpm=3200, second_rpm=3100)), \
-             patch.object(self.backend, "_read_rapl_package_watts", return_value=45.0):
-            self.backend.settings._data["thermal_checkup_history"] = []
-            self.backend.start_thermal_checkup(duration_sec=5, spawn_load=False)
-            self.backend._checkup_state["start_ts"] -= 6.0
-            res1 = self.backend.poll_thermal_checkup()
-            self.assertTrue(res1["completed"])
-            self.assertEqual(res1["verdict"], "BASELINE REGISTRADA")
-
-        with patch.object(self.backend.settings, "save", return_value=None), \
-             patch.object(self.backend, "get_cpu_metrics", return_value=MagicMock(temperature_c=79.5, usage_percent=80.0, pl1_w=45)), \
-             patch.object(self.backend, "get_fan_metrics", return_value=MagicMock(rpm=3200, second_rpm=3100)), \
-             patch.object(self.backend, "_read_rapl_package_watts", return_value=45.0):
-            self.backend.start_thermal_checkup(duration_sec=5, spawn_load=False)
-            self.backend._checkup_state["start_ts"] -= 6.0
-            res2 = self.backend.poll_thermal_checkup()
-            self.assertTrue(res2["completed"])
-            self.assertEqual(res2["verdict"], "LIMPEZA / PASTA RECOMENDADA")
-            self.assertGreater(res2["delta_temp_c"], 7.5)
-
-    # 10 & 13. Regras Wi-Fi SSID & Perfil Noturno
-    def test_wifi_ssid_rules_and_night_schedule(self):
-        """Aplica regra automática por SSID conectado e alterna Perfil Noturno cruzando meia-noite."""
-        self.assertTrue(HardwareBackend.is_time_in_night_window((23, 30), "23:00", "07:00"))
-        self.assertTrue(HardwareBackend.is_time_in_night_window((6, 59), "23:00", "07:00"))
-        self.assertFalse(HardwareBackend.is_time_in_night_window((14, 0), "23:00", "07:00"))
-
-        with patch.object(self.backend.settings, "save", return_value=None), \
-             patch("core.mixins.smart_features.shutil.which", return_value="/usr/bin/nmcli"), \
-             patch("core.mixins.smart_features.subprocess.run", return_value=MagicMock(returncode=0, stdout="802-11-wireless:AndroidAP\n")), \
-             patch.object(self.backend, "set_eco_travel_mode", return_value=(True, "OK")) as m_eco, \
-             patch.object(self.backend, "set_refresh_rate", return_value=(True, "OK")) as m_hz, \
-             patch.object(self.backend, "get_active_game", return_value=None):
-            self.backend.add_wifi_power_rule("AndroidAP", eco_mode=True, refresh_hz=60)
-            ev = self.backend.check_wifi_ssid_rules()
-            self.assertIsNotNone(ev)
-            self.assertEqual(ev["ssid"], "AndroidAP")
-            m_eco.assert_called_with(True)
-            m_hz.assert_called_with(60)
-
-        with patch.object(self.backend.settings, "save", return_value=None), \
-             patch.object(self.backend, "get_active_game", return_value=None), \
-             patch.object(self.backend, "get_platform_profile", return_value="balanced"), \
-             patch.object(self.backend, "set_platform_profile", return_value=(True, "OK")) as m_prof, \
-             patch.object(self.backend, "set_kbd_backlight", return_value=(True, "OK")), \
-             patch.object(self.backend, "set_conservation_mode", return_value=(True, "OK")):
-            self.backend.set_night_schedule_config(True, "23:00", "07:00", "low-power", True, True)
-            ev_in = self.backend.check_night_schedule(datetime.datetime(2026, 11, 25, 23, 15))
-            self.assertEqual(ev_in["type"], "night_mode_entered")
-            m_prof.assert_called_with("low-power", allow_elevation=False)
-
-            ev_out = self.backend.check_night_schedule(datetime.datetime(2026, 11, 26, 8, 0))
-            self.assertEqual(ev_out["type"], "night_mode_exited")
-            m_prof.assert_called_with("balanced", allow_elevation=False)
-
     # 11 & 12. Roteador D-Bus / KRunner & Plasmoid Plasma 6
     def test_dbus_krunner_router_and_plasmoid_packaging(self):
         """KRunner Match/Run executam comandos e Plasmoid Plasma 6 possui metadados e QML válidos."""
@@ -346,25 +249,6 @@ class TestNewFeatures(unittest.TestCase):
                 self.assertTrue(ok_kr)
                 self.assertTrue(self.backend.is_kde_plasmoid_installed())
                 self.assertTrue(self.backend.is_krunner_plugin_installed())
-
-    # 14. Top 5 Processos
-    def test_top_power_processes_sorted_with_watts(self):
-        """Lista Top processos ordenados por CPU% e calcula estimativa em Watts."""
-        p1 = MagicMock()
-        p1.info = {"pid": 101, "name": "chrome", "memory_info": MagicMock(rss=400 * 1024 * 1024)}
-        p1.cpu_percent.return_value = 80.0
-        p2 = MagicMock()
-        p2.info = {"pid": 102, "name": "blender", "memory_info": MagicMock(rss=900 * 1024 * 1024)}
-        p2.cpu_percent.return_value = 240.0
-
-        self.backend._proc_cpu_map = {101: p1, 102: p2}
-        with patch("core.mixins.smart_features.psutil.cpu_count", return_value=8), \
-             patch("core.mixins.smart_features.psutil.process_iter", return_value=[p1, p2]), \
-             patch.object(self.backend, "get_battery_info", return_value=BatteryInfo(available=True, ac_connected=False, power_draw_w=20.0)):
-            top = self.backend.get_top_power_processes(limit=5, force=True)
-            self.assertEqual(len(top), 2)
-            self.assertEqual(top[0]["name"], "blender")
-            self.assertGreater(top[0]["est_watts"], top[1]["est_watts"])
 
     # 15. Exportação/Importação de Preset + Curva EC + App Rule com preset_id
     def test_preset_export_import_with_fan_curve_and_app_rule_preset(self):
@@ -419,18 +303,23 @@ class TestNewFeatures(unittest.TestCase):
 
     # 17. Redesign UI: Modo Básico vs Avançado, Sub-abas e Painel EDGE enxuto
     def test_ui_redesign_basic_advanced_subtabs_and_clean_edge(self):
-        """Modo Básico oculta tuning avançado, painéis duplicados foram removidos e sub-abas funcionam."""
+        """Modo Básico mostra recursos cotidianos, oculta tuning técnico/arriscado e Avançado revela tudo."""
         from core.qt_compat import QApplication
         from ui_main import MainWindow
 
         _app = QApplication.instance() or QApplication(["ducksvantage", "-platform", "offscreen"])
         self.backend.features.cpu_undervolt = True
         self.backend.features.wmi_gpu_ac_offset = True
+        self.backend.features.screen_brightness = True
+        self.backend.features.rgb_keyboard = True
         self.assertEqual(self.backend.get_ui_mode(), "basic")
 
         with patch.object(self.backend.settings, "save", return_value=None), \
              patch.object(self.backend, "get_platform_profile_choices", return_value=["low-power", "balanced", "performance", "max-power"]), \
              patch.object(self.backend, "get_available_cpu_governors", return_value=["powersave", "performance"]), \
+             patch.object(self.backend, "get_gpu_mux_info", return_value=GpuMuxInfo(
+                 available=True, current_mode="hybrid", available_modes=["hybrid", "dedicated", "integrated"], backend_name="supergfxctl"
+             )), \
              patch.object(self.backend, "get_display_refresh_info", return_value=DisplayRefreshInfo(
                  available=True, current_hz=144, available_rates=[60, 144], display_name="eDP-1",
                  resolution="1920x1080", backend_name="kscreen-doctor", vrr_supported=True, vrr_policy="never"
@@ -446,39 +335,437 @@ class TestNewFeatures(unittest.TestCase):
             self.assertFalse(hasattr(win.performance_tab, "prof_card"))
             self.assertFalse(hasattr(win.about_tab, "caps_card"))
 
-            # Modo Básico ativo por padrão: tuning avançado oculto
+            # Modo Básico ativo por padrão: mostra controles cotidianos/visuais e oculta técnicos/arriscados
+            self.assertFalse(win.battery_tab.hist_card.isHidden())
+            self.assertFalse(win.automation_tab.presets_card.isHidden())
+            self.assertFalse(win.gpu_display_tab.vrr_box.isHidden())
+            self.assertFalse(win.about_tab.brightness_prefs_box.isHidden())
+
             self.assertTrue(win.performance_tab.uv_card.isHidden())
+            self.assertTrue(win.performance_tab.turbo_box.isHidden())
             self.assertTrue(win.performance_tab.gov_box.isHidden())
+            self.assertTrue(win.performance_tab.fan_curve_widget.isHidden())
             self.assertTrue(win.performance_tab.sliders_box.isHidden())
-            self.assertTrue(win.performance_tab.checkup_card.isHidden())
-            self.assertTrue(win.battery_tab.hist_card.isHidden())
-            self.assertTrue(win.battery_tab.wifi_rules_box.isHidden())
-            self.assertTrue(win.battery_tab.top_procs_card.isHidden())
-            self.assertTrue(win.automation_tab.presets_card.isHidden())
+            self.assertTrue(win.gpu_display_tab.gpu_stats_widget.isHidden())
+            self.assertTrue(win.gpu_display_tab.mux_card.isHidden())
+            self.assertTrue(win.gpu_display_tab.dock_adv_box.isHidden())
+            self.assertTrue(win.automation_tab.add_rule_box.isHidden())
             self.assertTrue(win.automation_tab.session_hist_card.isHidden())
+            self.assertTrue(win.automation_tab.btn_import_preset.isHidden())
+            self.assertTrue(win.battery_tab.elec_adv_boxes[0].isHidden())
+            self.assertTrue(win.lighting_tab.speed_widget.isHidden())
+            self.assertTrue(win.lighting_tab.zones_custom_widget.isHidden())
+            self.assertTrue(win.about_tab.backup_widget.isHidden())
+            self.assertTrue(win.about_tab.btn_copy_diag.isHidden())
+            self.assertTrue(win.about_tab.btn_copy_udev.isHidden())
+            self.assertTrue(win.about_tab.dmi_adv_boxes[0].isHidden())
 
             # Sub-abas funcionam corretamente
             win.battery_tab.sub_tabs._on_button_clicked(1)
             self.assertEqual(win.battery_tab.sub_stack.currentIndex(), 1)
-            win.automation_tab.sub_tabs._on_button_clicked(2)
-            self.assertEqual(win.automation_tab.sub_stack.currentIndex(), 2)
+            win.automation_tab.sub_tabs._on_button_clicked(1)
+            self.assertEqual(win.automation_tab.sub_stack.currentIndex(), 1)
             win.about_tab.sub_tabs._on_button_clicked(1)
             self.assertEqual(win.about_tab.sub_stack.currentIndex(), 1)
 
-            # Alternar para Modo Avançado revela tudo
-            win.apply_ui_mode("advanced")
+            # Botão contextual "Ativar Modo Avançado" revela todos os controles técnicos
+            win.performance_tab.basic_hint_card.btn_switch.click()
             self.assertEqual(self.backend.get_ui_mode(), "advanced")
             self.assertFalse(win.performance_tab.uv_card.isHidden())
+            self.assertFalse(win.performance_tab.turbo_box.isHidden())
             self.assertFalse(win.performance_tab.gov_box.isHidden())
+            self.assertFalse(win.performance_tab.fan_curve_widget.isHidden())
             self.assertFalse(win.performance_tab.sliders_box.isHidden())
-            self.assertFalse(win.performance_tab.checkup_card.isHidden())
-            self.assertFalse(win.battery_tab.hist_card.isHidden())
-            self.assertFalse(win.battery_tab.top_procs_card.isHidden())
+            self.assertFalse(win.gpu_display_tab.gpu_stats_widget.isHidden())
+            self.assertFalse(win.gpu_display_tab.mux_card.isHidden())
+            self.assertFalse(win.gpu_display_tab.dock_adv_box.isHidden())
             self.assertFalse(win.automation_tab.presets_card.isHidden())
+            self.assertFalse(win.automation_tab.add_rule_box.isHidden())
             self.assertFalse(win.automation_tab.session_hist_card.isHidden())
+            self.assertFalse(win.automation_tab.btn_import_preset.isHidden())
+            self.assertFalse(win.battery_tab.hist_card.isHidden())
+            self.assertFalse(win.battery_tab.elec_adv_boxes[0].isHidden())
+            self.assertFalse(win.lighting_tab.speed_widget.isHidden())
+            self.assertFalse(win.lighting_tab.zones_custom_widget.isHidden())
+            self.assertFalse(win.about_tab.backup_widget.isHidden())
+            self.assertFalse(win.about_tab.btn_copy_diag.isHidden())
+            self.assertFalse(win.about_tab.btn_copy_udev.isHidden())
+            self.assertFalse(win.about_tab.dmi_adv_boxes[0].isHidden())
 
             win._quit_app()
             win.close()
+
+    # 18. Carga 100% Única + D-Bus/KRunner full_charge_once
+    def test_one_time_full_charge_lifecycle_and_dbus(self):
+        """Ativa Carga 100% Única e restaura Conservação 80% ao atingir 100% ou expirar timer."""
+        with patch.object(self.backend.settings, "save", return_value=None), \
+             patch.object(self.backend, "set_conservation_mode", return_value=(True, "OK")) as m_cons, \
+             patch.object(self.backend, "get_conservation_mode", side_effect=[False, False, False]):
+            ok, _ = self.backend.start_one_time_full_charge("until_full")
+            self.assertTrue(ok)
+            self.assertTrue(self.backend.get_one_time_full_charge_status()["active"])
+            m_cons.assert_called_with(False)
+
+            # Em 85% ainda não restaura
+            with patch.object(self.backend, "get_battery_info", return_value=BatteryInfo(available=True, capacity_percent=85, status="Charging")):
+                self.assertIsNone(self.backend.check_one_time_full_charge_tick())
+
+            # Em 100% restaura conservação 80%
+            with patch.object(self.backend, "get_battery_info", return_value=BatteryInfo(available=True, capacity_percent=100, status="Full")):
+                ev = self.backend.check_one_time_full_charge_tick()
+                self.assertIsNotNone(ev)
+                self.assertEqual(ev["type"], "one_time_full_charge_completed")
+                self.assertFalse(self.backend.get_one_time_full_charge_status()["active"])
+                m_cons.assert_called_with(True)
+
+        # Expiração por tempo (2h) + roteador KRunner
+        events = []
+        router = DucksvantageCommandRouter(self.backend, ui_callback=lambda e, p: events.append((e, p)))
+        with patch.object(self.backend.settings, "save", return_value=None), \
+             patch.object(self.backend, "set_conservation_mode", return_value=(True, "OK")), \
+             patch.object(self.backend, "get_conservation_mode", return_value=False), \
+             patch.object(self.backend, "get_battery_info", return_value=BatteryInfo(available=True, capacity_percent=72, status="Charging")):
+            ok_cmd, _ = router.execute_command("full_charge_once")
+            self.assertTrue(ok_cmd)
+            self.assertEqual(events[-1][0], "full_charge_once")
+            self.backend.settings._data["one_time_full_charge_until_ts"] = 1.0
+            ev2 = self.backend.check_one_time_full_charge_tick()
+            self.assertIsNotNone(ev2)
+
+    # 19. Detector de Processos NVIDIA (Respeita D3cold + separa compositor vs offender)
+    def test_nvidia_wakelock_detector_respects_d3cold_and_classifies(self):
+        """Não executa nvidia-smi em D3cold; quando ativa, separa kwin_wayland de apps de usuário."""
+        self.backend.features.nvidia_wakelock_detect = True
+        self.backend.nvidia_available = True
+        with tempfile.TemporaryDirectory() as td:
+            rt_dir = os.path.join(td, "device", "power")
+            os.makedirs(rt_dir)
+            rt_file = os.path.join(rt_dir, "runtime_status")
+            ctl_file = os.path.join(rt_dir, "control")
+            with open(rt_file, "w") as f:
+                f.write("suspended\n")
+            with open(ctl_file, "w") as f:
+                f.write("auto\n")
+            self.backend.paths.nvidia_drm_card = td
+            self.backend.paths.nvidia_pci_power_control = ctl_file
+
+            with patch("core.mixins.smart_features.subprocess.run") as m_sub:
+                res_sleep = self.backend.get_nvidia_wakelock_processes(force=True)
+                self.assertFalse(res_sleep["gpu_awake"])
+                self.assertEqual(res_sleep["runtime_state"], "D3cold")
+                m_sub.assert_not_called()
+
+            # GPU acordada com kwin_wayland (sistema) + firefox (usuário)
+            with open(rt_file, "w") as f:
+                f.write("active\n")
+            self.backend._nvml_initialized = False
+            smi_out = "111, kwin_wayland, 20\n222, firefox, 180\n"
+            p_kwin = MagicMock(info={"pid": 111, "name": "kwin_wayland", "uids": MagicMock(real=os.getuid())})
+            p_ff = MagicMock(info={"pid": 222, "name": "firefox", "uids": MagicMock(real=os.getuid())})
+
+            def _fake_smi(cmd, **_kw):
+                if "--query-compute-apps" in " ".join(cmd):
+                    return MagicMock(returncode=0, stdout=smi_out)
+                return MagicMock(returncode=0, stdout="")
+
+            with patch("core.mixins.smart_features.shutil.which", return_value="/usr/bin/nvidia-smi"), \
+                 patch("core.mixins.smart_features.subprocess.run", side_effect=_fake_smi), \
+                 patch("core.mixins.smart_features.psutil.process_iter", return_value=[p_kwin, p_ff]):
+                res_awake = self.backend.get_nvidia_wakelock_processes(force=True)
+                self.assertTrue(res_awake["gpu_awake"])
+                self.assertEqual([o["name"] for o in res_awake["offenders"]], ["firefox"])
+
+                with patch("core.mixins.smart_features.psutil.Process") as m_proc:
+                    ok_rel, _ = self.backend.release_nvidia_wakelocks(terminate_offenders=True)
+                    self.assertTrue(ok_rel)
+                    m_proc.assert_called_once_with(222)
+                    m_proc.return_value.terminate.assert_called_once()
+
+    # 20. Painel Dedicado Modo Custom Lenovo + Filtro de Duplicidade WMI
+    def test_lenovo_custom_power_panel_and_dedup(self):
+        """Lê e aplica cTGP/PPAB/PPT em perfil custom e exclui promovidos da lista genérica WMI."""
+        with tempfile.TemporaryDirectory() as td:
+            for name, cur, dval, mn, mx in [
+                ("gpu_nv_ctgp", "55", "55", "0", "0"),
+                ("gpu_nv_ppab", "10", "10", "0", "0"),
+                ("ppt_pl1_spl", "45", "45", "15", "60"),
+                ("flip_to_boot", "0", "0", "0", "1"),
+            ]:
+                adir = os.path.join(td, name)
+                os.makedirs(adir)
+                with open(os.path.join(adir, "current_value"), "w") as f:
+                    f.write(cur)
+                with open(os.path.join(adir, "default_value"), "w") as f:
+                    f.write(dval)
+                with open(os.path.join(adir, "min_value"), "w") as f:
+                    f.write(mn)
+                with open(os.path.join(adir, "max_value"), "w") as f:
+                    f.write(mx)
+                with open(os.path.join(adir, "type"), "w") as f:
+                    f.write("integer")
+
+            self.backend.paths.lenovo_wmi_attr_dir = td
+            self.backend.features.wmi_custom_power = True
+
+            ctrls = self.backend.get_lenovo_custom_power_controls()
+            self.assertEqual([c["attr_id"] for c in ctrls], ["gpu_nv_ctgp", "gpu_nv_ppab", "ppt_pl1_spl"])
+            ctgp_ctrl = ctrls[0]
+            self.assertGreaterEqual(ctgp_ctrl["max"], 95)
+
+            with patch.object(self.backend, "_ensure_custom_profile_for_wmi", return_value=True):
+                ok_cool, _ = self.backend.apply_lenovo_custom_power_preset("cool_quiet", allow_elevation=False)
+                self.assertTrue(ok_cool)
+                self.assertEqual(self.backend._read_file_text(os.path.join(td, "gpu_nv_ctgp", "current_value")), "45")
+                self.assertEqual(self.backend._read_file_text(os.path.join(td, "gpu_nv_ppab", "current_value")), "0")
+
+            self.assertIn("gpu_nv_ctgp", self.backend.PROMOTED_BIOS_ATTR_IDS)
+            self.assertNotIn("flip_to_boot", self.backend.PROMOTED_BIOS_ATTR_IDS)
+
+    # 21. Brilho Automático de Tela (Eco-Mode)
+    def test_screen_brightness_automation_eco(self):
+        """Controla /sys/class/backlight/* e restaura brilho anterior ao sair do Modo Viagem."""
+        with tempfile.TemporaryDirectory() as td:
+            with open(os.path.join(td, "max_brightness"), "w") as f:
+                f.write("1000\n")
+            with open(os.path.join(td, "brightness"), "w") as f:
+                f.write("800\n")
+            with open(os.path.join(td, "actual_brightness"), "w") as f:
+                f.write("800\n")
+
+            self.backend.paths.backlight_dir = td
+            self.backend.paths.backlight_brightness = os.path.join(td, "brightness")
+            self.backend.paths.backlight_max_brightness = os.path.join(td, "max_brightness")
+            self.backend.features.screen_brightness = True
+
+            self.assertEqual(self.backend.get_screen_brightness_pct(), 80)
+
+            with patch.dict(os.environ, {"QT_QPA_PLATFORM": "offscreen"}), \
+                 patch.object(self.backend.settings, "save", return_value=None), \
+                 patch("core.mixins.cpu_thermal.PermissionsManager.write_multiple_sysfs_values", return_value=(True, "OK")), \
+                 patch.object(self.backend, "set_cpu_governor", return_value=(True, "OK")), \
+                 patch.object(self.backend, "_read_raw_platform_profile", return_value="low-power"):
+                self.backend.set_brightness_automation_config(eco_dim_enabled=True, eco_brightness_pct=40)
+                self.backend.set_eco_travel_mode(True)
+                self.assertEqual(self.backend._read_file_text(self.backend.paths.backlight_brightness), "400")
+                with open(os.path.join(td, "actual_brightness"), "w") as f:
+                    f.write("400\n")
+
+                self.backend.set_eco_travel_mode(False)
+                self.assertEqual(self.backend._read_file_text(self.backend.paths.backlight_brightness), "800")
+                with open(os.path.join(td, "actual_brightness"), "w") as f:
+                    f.write("800\n")
+
+                # Reentrada (True 2x) + desativar opção antes de desligar ainda restaura 80%
+                self.backend.set_eco_travel_mode(True)
+                self.assertEqual(self.backend._read_file_text(self.backend.paths.backlight_brightness), "400")
+                with open(os.path.join(td, "actual_brightness"), "w") as f:
+                    f.write("400\n")
+                self.backend.set_eco_travel_mode(True)
+                self.backend.set_brightness_automation_config(eco_dim_enabled=False, eco_brightness_pct=40)
+                self.backend.set_eco_travel_mode(False)
+                self.assertEqual(self.backend._read_file_text(self.backend.paths.backlight_brightness), "800")
+                with open(os.path.join(td, "actual_brightness"), "w") as f:
+                    f.write("800\n")
+
+                # Sair do Modo Viagem via troca manual de perfil para performance restaura brilho original
+                self.backend.features.platform_profile = True
+                self.backend.paths.platform_profile = os.path.join(td, "platform_profile")
+                with open(self.backend.paths.platform_profile, "w") as f:
+                    f.write("balanced\n")
+                self.backend.set_eco_travel_config(dim_brightness=True, brightness_pct=40, profile=True)
+                self.backend.set_eco_travel_mode(True)
+                self.assertEqual(self.backend._read_file_text(self.backend.paths.backlight_brightness), "400")
+                self.backend.set_platform_profile("performance", allow_elevation=False)
+                self.assertFalse(self.backend.get_eco_travel_mode())
+                self.assertEqual(self.backend._read_file_text(self.backend.paths.backlight_brightness), "800")
+
+                # Personalização do Modo Economia: desativar brilho/turbo evita alteração e atualiza resumo
+                self.backend.set_eco_travel_config(dim_brightness=False, turbo_off=False, kbd_off=False)
+                self.assertNotIn("Brilho", self.backend.get_eco_travel_summary())
+                self.backend.set_eco_travel_mode(True)
+                self.assertEqual(self.backend._read_file_text(self.backend.paths.backlight_brightness), "800")
+                self.backend.set_eco_travel_mode(False)
+
+        # KDE Plasma 6 org.kde.ScreenBrightness via qdbus6 (sem setBrightnessSilent)
+        def _fake_kde6(cmd, **_kw):
+            c_str = " ".join(str(x) for x in cmd)
+            if "DisplaysDBusNames" in c_str:
+                return MagicMock(returncode=0, stdout="display0\n")
+            if "IsInternal" in c_str:
+                return MagicMock(returncode=0, stdout="true\n")
+            if "MaxBrightness" in c_str:
+                return MagicMock(returncode=0, stdout="10000\n")
+            if "Display.Brightness" in c_str:
+                return MagicMock(returncode=0, stdout="7500\n")
+            if "Display.SetBrightness" in c_str:
+                return MagicMock(returncode=0, stdout="")
+            return MagicMock(returncode=1, stdout="")
+
+        with patch.dict(os.environ, {"QT_QPA_PLATFORM": "wayland", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/fake"}), \
+             patch.dict(sys.modules, {"dbus": None}), \
+             patch("core.mixins.smart_features.shutil.which", side_effect=lambda c: "/usr/bin/qdbus6" if c == "qdbus6" else None), \
+             patch("core.mixins.smart_features.subprocess.run", side_effect=_fake_kde6) as m_qdbus:
+            self.assertEqual(self.backend.get_screen_brightness_pct(), 75)
+            ok_set, _ = self.backend.set_screen_brightness_pct(80)
+            self.assertTrue(ok_set)
+            last_cmd = m_qdbus.call_args_list[-1][0][0]
+            self.assertIn("org.kde.ScreenBrightness.Display.SetBrightness", last_cmd)
+            self.assertEqual(last_cmd[-2:], ["8000", "0"])
+
+    # 22. Saúde SSD NVMe SMART + Alerta Térmico
+    def test_nvme_health_udisks_parser_and_thermal_alert(self):
+        """Parses UDisks2 NVMe SMART attrs (TBW, health %, hours) e dispara alerta >= 68°C."""
+        parsed = HardwareBackend._parse_udisks_nvme_smart_dict(
+            {
+                "percent_used": 17,
+                "avail_spare": 100,
+                "spare_thresh": 10,
+                "total_data_written": 16986702336000,
+                "total_data_read": 26144473088000,
+                "power_cycles": 708,
+                "unsafe_shutdowns": 79,
+                "media_errors": 0,
+                "temp_sensors": [342, 332],
+            },
+            power_on_hours=3191,
+            smart_temp_k=332,
+        )
+        self.assertEqual(parsed["health_percent"], 83)
+        self.assertEqual(parsed["wear_percent"], 17)
+        self.assertAlmostEqual(parsed["tbw_tb"], 16.99, places=2)
+        self.assertEqual(parsed["power_on_hours"], 3191)
+        self.assertEqual(parsed["power_cycles"], 708)
+
+        self.backend.features.nvme_health = True
+        self.backend._last_nvme_temp_alert_ts = 0.0
+        with patch.object(self.backend, "get_nvme_health_info", return_value=[{"device": "nvme0", "model": "SAMSUNG", "temp_c": 71.0}]):
+            al = self.backend.check_nvme_thermal_alert()
+            self.assertIsNotNone(al)
+            self.assertEqual(al["urgency"], "critical")
+
+    # 23. Auto-Ocultamento de Sub-Abas + Layout Zero Scroll Horizontal
+    def test_automation_subtabs_and_layout_no_hscroll(self):
+        """Oculta sub-aba vazia e mantém hbar_max == 0 em todas as 7 abas."""
+        from core.qt_compat import QApplication
+        from ui_main import MainWindow
+
+        _app = QApplication.instance() or QApplication(["ducksvantage", "-platform", "offscreen"])
+
+        # Testa UI completa em Basic e Advanced + hbar_max == 0 nas 7 abas + auto-ocultamento em AutomationTab
+        self.backend.features.wmi_custom_power = True
+        self.backend.features.screen_brightness = True
+        self.backend.features.nvme_health = True
+        self.backend.features.nvidia_wakelock_detect = True
+
+        fake_cp = [
+            {"attr_id": "gpu_nv_ctgp", "label": "Potência Base da GPU (cTGP)", "unit": "W", "current": 55, "default": 55, "min": 35, "max": 95, "step": 1, "has_real_bounds": False, "path": "/dev/null"}
+        ]
+        fake_nvme = [
+            {"device": "nvme0", "model": "SAMSUNG", "firmware": "EXB7", "temp_c": 45.0, "smart_available": True, "health_percent": 83, "wear_percent": 17, "avail_spare_percent": 100, "tbw_tb": 16.99, "tbr_tb": 26.14, "power_on_hours": 3191, "power_cycles": 708, "media_errors": 0, "critical_warning": "", "badge": "SAUDÁVEL", "color": "#00d2ff"}
+        ]
+
+        with patch.object(self.backend.settings, "save", return_value=None), \
+             patch.object(self.backend, "get_platform_profile_choices", return_value=["low-power", "balanced", "performance", "max-power"]), \
+             patch.object(self.backend, "get_available_cpu_governors", return_value=["powersave", "performance"]), \
+             patch.object(self.backend, "get_lenovo_custom_power_controls", return_value=fake_cp), \
+             patch.object(self.backend, "get_nvme_health_info", return_value=fake_nvme), \
+             patch.object(self.backend, "get_nvidia_wakelock_processes", return_value={"supported": True, "gpu_awake": True, "runtime_state": "active", "processes": [{"pid": 999, "name": "blender", "vram_mb": 400, "is_system": False}], "offenders": [{"pid": 999, "name": "blender", "vram_mb": 400, "is_system": False}]}), \
+             patch.object(self.backend, "get_display_refresh_info", return_value=DisplayRefreshInfo(available=True, current_hz=144, available_rates=[60, 144], display_name="eDP-1", resolution="1920x1080", backend_name="kscreen-doctor", vrr_supported=True, vrr_policy="never")), \
+             patch.object(self.backend, "get_battery_info", return_value=BatteryInfo(available=True, capacity_percent=75, ac_connected=False, energy_full_wh=56.0, energy_design_wh=60.0, health_percent=93.3)):
+            win = MainWindow(self.backend)
+            win.resize(1160, 770)
+            win.show()
+            _app.processEvents()
+
+            # Modo Básico: Custom Power mostra botões rápidos e esconde sliders
+            self.assertFalse(win.gpu_display_tab.custom_power_card.isHidden())
+            self.assertTrue(win.gpu_display_tab.custom_power_adv_box.isHidden())
+
+            # Verifica hbar_max == 0 nos dois modos em todas as 7 abas
+            from core.qt_compat import QScrollArea
+            for mode in ("basic", "advanced"):
+                win.apply_ui_mode(mode)
+                for tab_idx in range(win.stack.count()):
+                    win._switch_tab(tab_idx)
+                    _app.processEvents()
+                    page = win.stack.widget(tab_idx)
+                    for sc in page.findChildren(QScrollArea):
+                        self.assertEqual(sc.horizontalScrollBar().maximum(), 0, f"Horizontal scroll on tab {tab_idx} in {mode}")
+
+            # Auto-ocultamento de sub-aba vazia em AutomationTab quando sem jogos/sessões
+            win.automation_tab.rules_card.setVisible(False)
+            win.automation_tab.session_hist_card.setVisible(False)
+            win.automation_tab._update_subtabs_visibility()
+            self.assertTrue(win.automation_tab.sub_tabs.isHidden())
+            self.assertEqual(win.automation_tab.sub_stack.currentIndex(), 1)
+
+            win._quit_app()
+            win.close()
+
+    # 24. Regressão dos 8 Fixes: Undervolt Polkit Reset, KDE Session/D-Bus QML, Wi-Fi Game Auto-Switch e WMI Dedup
+    def test_undervolt_polkit_reset_kde_session_wifi_game_and_bios_dedup(self):
+        """Valida reset Polkit do Undervolt, detecção de sessão KDE, QML D-Bus, Wi-Fi Auto-Switch e PROMOTED_BIOS_ATTR_IDS."""
+        # A. Reset de Undervolt usa Polkit quando hardware esteve ativo sem acesso direto MSR
+        with patch.object(self.backend.settings, "save", return_value=None), \
+             patch.object(self.backend, "get_cpu_vendor", return_value="Intel"), \
+             patch("glob.glob", return_value=["/dev/cpu/0/msr"]), \
+             patch("os.access", return_value=False), \
+             patch("shutil.which", side_effect=lambda c: "/usr/bin/pkexec" if c == "pkexec" else None), \
+             patch.dict(os.environ, {"DUCKSVANTAGE_ALLOW_TEST_PKEXEC": "1"}), \
+             patch("core.backend.subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")) as m_uv:
+            ok_uv, _ = self.backend.apply_undervolt_offsets(-60, -50)
+            self.assertTrue(ok_uv)
+            self.assertTrue(self.backend._undervolt_active_in_hw)
+            ok_rst, _ = self.backend.emergency_reset_undervolt("Teste Reset Polkit")
+            self.assertTrue(ok_rst)
+            self.assertFalse(self.backend._undervolt_active_in_hw)
+            self.assertGreaterEqual(m_uv.call_count, 2)
+
+        # B. Detecção KDE Plasma vs GNOME e main.qml via D-Bus
+        with patch.dict(os.environ, {"XDG_CURRENT_DESKTOP": "KDE", "DESKTOP_SESSION": "plasma"}, clear=True):
+            self.assertTrue(self.backend.is_kde_plasma_session())
+        with patch.dict(os.environ, {"XDG_CURRENT_DESKTOP": "GNOME", "DESKTOP_SESSION": "gnome"}, clear=True):
+            self.assertFalse(self.backend.is_kde_plasma_session())
+
+        qml_p = os.path.join(self.backend.get_plasmoid_source_dir(), "contents", "ui", "main.qml")
+        with open(qml_p, "r", encoding="utf-8") as fh:
+            qml_src = fh.read()
+        self.assertIn("org.ducksvantage.Control.GetStatusJson", qml_src)
+        self.assertIn("org.ducksvantage.Control.RunCommand", qml_src)
+
+        # C. Game Auto-Switch ativa Baixa Latência no Wi-Fi (sem Polkit) e restaura Eco ao encerrar
+        from core.models import NetworkPowerStatus
+        with patch.object(self.backend.settings, "save", return_value=None):
+            self.backend.set_game_auto_switch(True)
+            self.backend.set_game_auto_wifi_low_latency(True)
+            self.backend._active_game_name = None
+            self.backend._game_changed_wifi = False
+
+            with patch.object(self.backend, "detect_running_game", side_effect=["cs2", None]), \
+                 patch.object(self.backend, "detect_running_app_rule", return_value=None), \
+                 patch.object(self.backend, "get_platform_profile", return_value="balanced"), \
+                 patch.object(self.backend, "get_cpu_governor", return_value="powersave"), \
+                 patch.object(self.backend, "set_platform_profile", return_value=(True, "OK")), \
+                 patch.object(self.backend, "set_cpu_governor", return_value=(True, "OK")), \
+                 patch.object(self.backend, "get_network_power_status", return_value=NetworkPowerStatus(wifi_available=True, wifi_iface="wlan0", wifi_power_save_on=True)), \
+                 patch.object(self.backend, "set_wifi_power_saving", return_value=(True, "OK")) as m_wifi:
+                ev1 = self.backend.check_game_auto_switch()
+                self.assertIn("Wi-Fi Baixa Latência", ev1["extras"])
+                m_wifi.assert_called_with(False, allow_elevation=False)
+
+                ev2 = self.backend.check_game_auto_switch()
+                self.assertIn("Wi-Fi Eco", ev2["extras"])
+                m_wifi.assert_called_with(True, allow_elevation=False)
+
+        # D. PROMOTED_BIOS_ATTR_IDS inclui nós já promovidos e evita ativar bios_attributes sem extras
+        for promoted_id in ("cpu_temp", "gpu_temp", "gpu_nv_ac_offset", "usb_charging", "usb_power_in_sleep", "gpu_mode"):
+            self.assertIn(promoted_id, self.backend.PROMOTED_BIOS_ATTR_IDS)
+        with patch("core.mixins.display_mux_bios.glob.glob", side_effect=lambda p: [
+            "/sys/class/firmware-attributes/lenovo-wmi/attributes/cpu_temp/current_value",
+            "/sys/class/firmware-attributes/lenovo-wmi/attributes/usb_charging/current_value",
+        ] if "firmware-attributes" in p else []):
+            self.backend._scan_bios_attributes()
+            self.assertFalse(self.backend.features.bios_attributes)
 
 
 if __name__ == "__main__":

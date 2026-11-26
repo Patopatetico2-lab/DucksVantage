@@ -56,17 +56,14 @@ SUBSYSTEM=="hidraw", ATTRS{idVendor}=="048d", MODE="0666"
 
 # 11. Controle de Wake-on-USB (evita receptor/mouse 2.4GHz acordar notebook na mochila)
 ACTION=="add|change", SUBSYSTEM=="usb", RUN+="/bin/sh -c 'chmod 0666 /sys/bus/usb/devices/*/power/wakeup 2>/dev/null || true'"
+
+# 12. Brilho Automático da Tela (Backlight sysfs)
+ACTION=="add|change", SUBSYSTEM=="backlight", RUN+="/bin/sh -c 'chmod 0666 /sys/class/backlight/*/brightness 2>/dev/null || true'"
 """
 
 
 class PermissionsManager:
     """Gerencia checagem de permissões e instalação de regras udev do Ducksvantage."""
-
-    @staticmethod
-    def is_writable(path: str) -> bool:
-        if not path or not os.path.exists(path):
-            return False
-        return os.access(path, os.W_OK)
 
     @staticmethod
     def check_system_permissions(paths: List[str]) -> Tuple[bool, List[str]]:
@@ -135,6 +132,7 @@ class PermissionsManager:
             "chmod 0666 /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null || true",
             "chmod 0666 /sys/class/net/*/device/power/control 2>/dev/null || true",
             "chmod 0666 /sys/bus/usb/devices/*/power/wakeup 2>/dev/null || true",
+            "chmod 0666 /sys/class/backlight/*/brightness 2>/dev/null || true",
             "chmod 0644 /dev/input/by-path/*kbd* /dev/input/by-path/*VPC* 2>/dev/null || true",
         ]
 

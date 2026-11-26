@@ -255,7 +255,7 @@ HDMI-1 disconnected (normal left inverted right x axis y axis)
         mock_get_info.return_value = DisplayRefreshInfo(
             available=True, current_hz=144, available_rates=[60, 144], display_name="eDP-1"
         )
-        events = self.backend.poll_hardware_events()
+        events = self.backend.fast_poll_changes()
         
         # Deve ter evento de ac_changed e refresh_rate_changed para 60Hz
         ref_ev = next((e for e in events if e.get("type") == "refresh_rate_changed"), None)
@@ -268,7 +268,7 @@ HDMI-1 disconnected (normal left inverted right x axis y axis)
         mock_get_info.return_value = DisplayRefreshInfo(
             available=True, current_hz=60, available_rates=[60, 144], display_name="eDP-1"
         )
-        events2 = self.backend.poll_hardware_events()
+        events2 = self.backend.fast_poll_changes()
         ref_ev2 = next((e for e in events2 if e.get("type") == "refresh_rate_changed"), None)
         self.assertIsNotNone(ref_ev2)
         self.assertEqual(ref_ev2.get("hz"), 144)
@@ -429,10 +429,10 @@ DP-1 disconnected (normal left inverted right x axis y axis)
                 self.assertEqual(km["refresh_rate_hotkey"]["action"], "cycle_refresh_rate")
 
     def test_gpu_mux_unsupported_mode_rejected_for_backend(self):
-        """Backend pcie-runtime rejeita 'dedicated' pois não possui comutação física de MUX."""
+        """Backend sem suporte ao modo 'dedicated' rejeita com mensagem amigável."""
         with patch.object(self.backend, "get_gpu_mux_info") as mock_info:
             mock_info.return_value = GpuMuxInfo(
-                available=True, current_mode="hybrid", available_modes=["hybrid", "integrated"], backend_name="pcie-runtime"
+                available=True, current_mode="hybrid", available_modes=["hybrid", "integrated"], backend_name="lenovo-wmi"
             )
             ok, msg, req_reboot = self.backend.set_gpu_mux_mode("dedicated")
             self.assertFalse(ok)
@@ -514,21 +514,19 @@ DP-1 disconnected (normal left inverted right x axis y axis)
         mock_get_info.return_value = DisplayRefreshInfo(
             available=True, current_hz=60, available_rates=[60, 144], display_name="eDP-1"
         )
-        events = self.backend.poll_hardware_events()
+        events = self.backend.fast_poll_changes()
 
         # Não deve haver evento de refresh_rate_changed
         ref_ev = next((e for e in events if e.get("type") == "refresh_rate_changed"), None)
         self.assertIsNone(ref_ev)
         mock_set_rate.assert_not_called()
 
-    def test_ui_main_dashboard_lcd_overdrive_toggled(self):
-        """Ao clicar no switch de LCD Overdrive no Dashboard, ui_main chama set_lcd_overdrive e atualiza OSD."""
+    def test_ui_main_lcd_overdrive_changed_osd(self):
+        """Ao receber lcd_overdrive_changed da aba Tela/GPU, ui_main atualiza o OSD."""
         from ui_main import MainWindow
         win = MainWindow(self.backend)
-        with patch.object(self.backend, "set_lcd_overdrive", return_value=(True, "OK")) as mock_set_od, \
-             patch.object(win.osd, "notify_lcd_overdrive") as mock_osd:
-            win._apply_lcd_overdrive(True)
-            mock_set_od.assert_called_with(True)
+        with patch.object(win.osd, "notify_lcd_overdrive") as mock_osd:
+            win._on_lcd_overdrive_changed(True)
             mock_osd.assert_called_with(True)
         win.close()
 

@@ -13,7 +13,7 @@ from core.qt_compat import (
     Qt, Signal, QFont, QPixmap, QMessageBox, QColor, QColorDialog
 )
 from ui.theme_tokens import ThemeTokens
-from ui.components import StatusBadge
+from ui.components import StatusBadge, BasicModeHintBar
 
 ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "assets", "icons")
 
@@ -29,10 +29,12 @@ RGB_EFFECTS = [
 class LightingTab(QWidget):
     """Controle de Teclado RGB 4-Zonas Lenovo Legion / LOQ."""
     rgb_changed = Signal(str)
+    switch_advanced_requested = Signal()
 
     def __init__(self, backend, parent=None):
         super().__init__(parent)
         self.backend = backend
+        self._advanced_mode = self.backend.is_advanced_mode()
         state = self.backend.get_rgb_keyboard_state()
         self._zone_colors: List[str] = list(state.get("zones", ["#00d2ff"] * 4))
 
@@ -117,15 +119,20 @@ class LightingTab(QWidget):
         self.slider_brightness.valueChanged.connect(lambda v: self.lbl_brightness.setText(f"Brilho: {v} / 2"))
         sliders_row.addWidget(self.slider_brightness, stretch=1)
 
+        self.speed_widget = QWidget()
+        spd_l = QHBoxLayout(self.speed_widget)
+        spd_l.setContentsMargins(0, 0, 0, 0)
+        spd_l.setSpacing(10)
         self.lbl_speed = QLabel(f"Velocidade: {state.get('speed', 2)} / 4")
         self.lbl_speed.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; font-size: 11px; min-width: 110px;")
-        sliders_row.addWidget(self.lbl_speed)
+        spd_l.addWidget(self.lbl_speed)
 
         self.slider_speed = QSlider(Qt.Orientation.Horizontal)
         self.slider_speed.setRange(1, 4)
         self.slider_speed.setValue(int(state.get("speed", 2)))
         self.slider_speed.valueChanged.connect(lambda v: self.lbl_speed.setText(f"Velocidade: {v} / 4"))
-        sliders_row.addWidget(self.slider_speed, stretch=1)
+        spd_l.addWidget(self.slider_speed, stretch=1)
+        sliders_row.addWidget(self.speed_widget, stretch=1)
 
         eff_layout.addLayout(sliders_row)
         c_layout.addWidget(eff_box)
@@ -137,10 +144,15 @@ class LightingTab(QWidget):
         z_v.setContentsMargins(14, 12, 14, 12)
         z_v.setSpacing(10)
 
+        self.zones_custom_widget = QWidget()
+        zc_v = QVBoxLayout(self.zones_custom_widget)
+        zc_v.setContentsMargins(0, 0, 0, 0)
+        zc_v.setSpacing(10)
+
         z_top = QLabel("Cores das 4 Zonas Físicas do Teclado (Esquerda → NumPad)")
         z_top.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.Bold))
         z_top.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
-        z_v.addWidget(z_top)
+        zc_v.addWidget(z_top)
 
         zones_row = QHBoxLayout()
         zones_row.setSpacing(10)
@@ -153,7 +165,8 @@ class LightingTab(QWidget):
             self.zone_buttons.append(btn)
             zones_row.addWidget(btn)
         self._refresh_zone_buttons()
-        z_v.addLayout(zones_row)
+        zc_v.addLayout(zones_row)
+        z_v.addWidget(self.zones_custom_widget)
 
         # Presets rápidos + Aplicar
         act_row = QHBoxLayout()
@@ -198,12 +211,26 @@ class LightingTab(QWidget):
 
         c_layout.addWidget(zones_box)
         layout.addWidget(card)
+
+        self.basic_hint_card = BasicModeHintBar(
+            "Modo Básico ativo • Controle de velocidade da animação e cores HEX individuais por zona (1–4) disponíveis no Modo Avançado."
+        )
+        self.basic_hint_card.switch_advanced_requested.connect(self.switch_advanced_requested.emit)
+        layout.addWidget(self.basic_hint_card)
         layout.addStretch()
 
         scroll.setWidget(container)
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(scroll)
+        self.set_advanced_mode(self._advanced_mode)
+
+    def set_advanced_mode(self, advanced: bool):
+        """No Modo Básico exibe efeitos, brilho e presets rápidos; no Avançado libera velocidade e 4 zonas HEX."""
+        self._advanced_mode = bool(advanced)
+        self.speed_widget.setVisible(self._advanced_mode)
+        self.zones_custom_widget.setVisible(self._advanced_mode)
+        self.basic_hint_card.setVisible(not self._advanced_mode)
 
     def _refresh_zone_buttons(self):
         for idx, btn in enumerate(self.zone_buttons):

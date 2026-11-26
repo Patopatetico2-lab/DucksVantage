@@ -23,6 +23,8 @@ def get_asset_files():
         ("share/ducksvantage/assets", ["assets/app_icon.svg"]),
         ("share/ducksvantage/assets/icons", glob.glob("assets/icons/*.svg")),
         ("share/ducksvantage/packaging", ["packaging/99-ducksvantage.rules", "packaging/ducksvantage.desktop"]),
+        ("share/ducksvantage/plasmoid/org.ducksvantage.plasmoid", ["plasmoid/org.ducksvantage.plasmoid/metadata.json"]),
+        ("share/ducksvantage/plasmoid/org.ducksvantage.plasmoid/contents/ui", glob.glob("plasmoid/org.ducksvantage.plasmoid/contents/ui/*.qml")),
     ]
     # Se estiver instalando como root ou construindo pacote DEB/RPM/Arch (com --root / DESTDIR)
     if os.geteuid() == 0 or any("--root" in arg for arg in sys.argv):

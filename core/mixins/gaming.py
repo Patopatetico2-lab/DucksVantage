@@ -36,6 +36,15 @@ class GamingAutoSwitchMixin:
             self._game_changed_tdp = False
             self._game_changed_fan_curve = False
             self._game_changed_vrr = False
+            if getattr(self, "_game_changed_wifi", False):
+                prev_wifi_ps = getattr(self, "_pre_game_wifi_ps", None)
+                self._game_changed_wifi = False
+                self._pre_game_wifi_ps = None
+                if prev_wifi_ps is not None:
+                    try:
+                        self.set_wifi_power_saving(bool(prev_wifi_ps), allow_elevation=False)
+                    except Exception:
+                        pass
             self._game_locked_touchpad = False
             self._game_session_start_ts = 0.0
             self._game_peak_cpu_c = 0.0
@@ -75,6 +84,12 @@ class GamingAutoSwitchMixin:
 
     def set_game_auto_lock_touchpad(self, enable: bool) -> None:
         self.settings.set("game_auto_lock_touchpad", bool(enable))
+
+    def get_game_auto_wifi_low_latency(self) -> bool:
+        return bool(self.settings.get("game_auto_wifi_low_latency", False))
+
+    def set_game_auto_wifi_low_latency(self, enable: bool) -> None:
+        self.settings.set("game_auto_wifi_low_latency", bool(enable))
 
     def get_game_target_preset_id(self) -> str:
         return str(self.settings.get("game_target_preset_id", "") or "").strip()
@@ -613,6 +628,23 @@ class GamingAutoSwitchMixin:
                     except Exception:
                         pass
 
+                # 4. Baixa Latência no Wi-Fi (Power Save OFF) durante jogos sem elevar privilégio
+                if (
+                    self.get_game_auto_wifi_low_latency()
+                    and self.features.wifi_power_save
+                    and not getattr(self, "_game_changed_wifi", False)
+                ):
+                    try:
+                        net_st = self.get_network_power_status(force=True)
+                        if net_st.wifi_available and net_st.wifi_power_save_on:
+                            ok_wf, _ = self.set_wifi_power_saving(False, allow_elevation=False)
+                            if ok_wf:
+                                self._pre_game_wifi_ps = True
+                                self._game_changed_wifi = True
+                                extras.append("Wi-Fi Baixa Latência")
+                    except Exception:
+                        pass
+
             return {
                 "type": "app_rule_started" if rule_exec else "game_started",
                 "game": target_name,
@@ -722,6 +754,18 @@ class GamingAutoSwitchMixin:
                 if prev_vrr:
                     try:
                         self.set_vrr_policy(prev_vrr)
+                    except Exception:
+                        pass
+
+            if getattr(self, "_game_changed_wifi", False):
+                prev_wifi_ps = getattr(self, "_pre_game_wifi_ps", None)
+                self._game_changed_wifi = False
+                self._pre_game_wifi_ps = None
+                if prev_wifi_ps is not None:
+                    try:
+                        ok_rwf, _ = self.set_wifi_power_saving(bool(prev_wifi_ps), allow_elevation=False)
+                        if ok_rwf:
+                            extras.append("Wi-Fi Eco")
                     except Exception:
                         pass
 

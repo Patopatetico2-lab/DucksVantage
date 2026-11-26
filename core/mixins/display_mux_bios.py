@@ -15,6 +15,31 @@ from core.permissions import PermissionsManager
 class DisplayMuxBiosMixin:
     """Alternância de GPU MUX, gerenciamento dinâmico de Hz/Display, Overdrive e BIOS WMI."""
 
+    LENOVO_CUSTOM_POWER_ATTRS: Tuple[Tuple[str, str, str, int, int], ...] = (
+        ("gpu_nv_ctgp", "Potência Base da GPU (cTGP)", "W", 35, 95),
+        ("gpu_nv_ppab", "Dynamic Boost GPU (PPAB)", "W", 0, 25),
+        ("gpu_nv_cpu_boost", "Dynamic Boost CPU → GPU", "W", 0, 25),
+        ("ppt_cpu_cl", "Limite Cruzado CPU+GPU", "W", 15, 55),
+        ("ppt_pl1_spl", "CPU Sustentado WMI (PL1)", "W", 15, 65),
+        ("ppt_pl2_sppt", "CPU Boost Curto WMI (PL2)", "W", 20, 85),
+    )
+
+    PROMOTED_BIOS_ATTR_IDS = frozenset({
+        "lcd_overdrive",
+        "gpu_nv_ctgp",
+        "gpu_nv_ppab",
+        "gpu_nv_cpu_boost",
+        "ppt_cpu_cl",
+        "ppt_pl1_spl",
+        "ppt_pl2_sppt",
+        "cpu_temp",
+        "gpu_temp",
+        "gpu_nv_ac_offset",
+        "usb_charging",
+        "usb_power_in_sleep",
+        "gpu_mode",
+    })
+
     # =========================================================================
     # RECURSO 1: GPU MUX Switch (Modo Híbrido vs dGPU Direta vs iGPU Pura)
     # =========================================================================
@@ -29,10 +54,9 @@ class DisplayMuxBiosMixin:
                 self.paths.gpu_mode = cand
                 break
 
-        # 2. Somente ativa GPU MUX se houver ferramenta dedicada, nó sysfs ou PCIe Runtime PM (iGPU + dGPU)
+        # 2. Somente ativa GPU MUX se houver ferramenta dedicada ou nó sysfs real (lenovo-wmi / ideapad_acpi)
         has_tool = any(shutil.which(cmd) for cmd in ("supergfxctl", "envycontrol", "prime-select"))
-        has_pcie_pm = bool(self.paths.nvidia_pci_power_control and self.paths.igpu_drm_card)
-        self.features.gpu_mux = bool(has_tool or self.paths.gpu_mode or has_pcie_pm)
+        self.features.gpu_mux = bool(has_tool or self.paths.gpu_mode)
 
     def get_gpu_mux_info(self) -> GpuMuxInfo:
         """Retorna o estado atual do GPU MUX Switch, modos suportados e backend ativo."""
@@ -110,21 +134,6 @@ class DisplayMuxBiosMixin:
                 cur_mode = "integrated"
             else:
                 cur_mode = "hybrid"
-
-        # 5. Fallback via PCI Runtime Power Management (somente em sistemas híbridos com dGPU + iGPU)
-        elif self.paths.nvidia_pci_power_control and self.paths.igpu_drm_card:
-            backend_name = "pcie-runtime"
-            modes = ["hybrid", "integrated"]
-            rt_status_p = os.path.join(os.path.dirname(self.paths.nvidia_pci_power_control), "runtime_status")
-            rt_status = (self._read_file_text(rt_status_p) or "").strip().lower()
-            ctrl = (self._read_file_text(self.paths.nvidia_pci_power_control) or "").strip().lower()
-            cur_mode = "integrated" if ctrl == "auto" else "hybrid"
-            if ctrl == "auto" and rt_status == "suspended":
-                msg = "PCIe Runtime PM = auto (dGPU em D3cold / suspensa)"
-            elif ctrl == "auto":
-                msg = "PCIe Runtime PM = auto (dGPU entrará em D3cold quando ociosa)"
-            else:
-                msg = "PCIe Runtime PM = on (dGPU mantida sempre ativa)"
         else:
             backend_name = "none"
             modes = []
@@ -213,15 +222,6 @@ class DisplayMuxBiosMixin:
                 self._cached_gpu_mux_info = None
                 return True, f"Modo GPU {mode.upper()} gravado na BIOS Lenovo. Reinicie o notebook.", True
             return False, f"Erro ao gravar no nó Lenovo gpu_mode: {msg}", False
-
-        elif backend == "pcie-runtime" and self.paths.nvidia_pci_power_control:
-            val = "auto" if mode == "integrated" else "on"
-            ok, msg = PermissionsManager.write_sysfs_value(self.paths.nvidia_pci_power_control, val, allow_elevation=False)
-            if ok:
-                self.settings.set("gpu_mux_mode", mode)
-                self._cached_gpu_mux_info = None
-                return True, f"Estado PCIe dGPU ajustado para {val} ({mode.upper()}).", False
-            return False, f"Erro ao ajustar controle PCIe: {msg}", False
 
         return False, "Comutação de GPU MUX não é suportada pelo hardware/sistema atual.", False
 
@@ -739,8 +739,11 @@ class DisplayMuxBiosMixin:
                 break
 
         wmi_attrs = glob.glob("/sys/class/firmware-attributes/*/attributes/*/current_value")
-        non_od = [p for p in wmi_attrs if os.path.basename(os.path.dirname(p)).lower() != "lcd_overdrive"]
-        self.features.bios_attributes = bool(non_od)
+        non_promoted = [
+            p for p in wmi_attrs
+            if os.path.basename(os.path.dirname(p)).lower() not in self.PROMOTED_BIOS_ATTR_IDS
+        ]
+        self.features.bios_attributes = bool(non_promoted)
 
     def is_lcd_overdrive_supported(self) -> bool:
         """Indica se a tela suporta aceleração de tempo de resposta (Overdrive)."""
@@ -764,7 +767,6 @@ class DisplayMuxBiosMixin:
                 val = "1" if enabled else "0"
             ok, msg = PermissionsManager.write_sysfs_value(self.paths.lcd_overdrive, val, allow_elevation=True)
             if ok:
-                self.settings.set("lcd_overdrive_enabled", bool(enabled))
                 return True, f"LCD Overdrive {'ativado' if enabled else 'desativado'} com sucesso."
             return False, f"Falha ao aplicar LCD Overdrive: {msg}"
         return False, "LCD Overdrive não suportado pelo painel ou BIOS deste notebook."
@@ -930,4 +932,130 @@ class DisplayMuxBiosMixin:
             extra = " (Perfil alterado para Custom para liberar escrita WMI)" if switched_custom else ""
             return True, f"Atributo '{attr_id}' atualizado para '{clean_val}' com sucesso.{extra}"
         return False, msg
+
+    # =========================================================================
+    # RECURSO 4: Painel Dedicado do Modo Custom Lenovo (cTGP GPU + Dynamic Boost + WMI PPT)
+    # =========================================================================
+    def get_lenovo_custom_power_controls(self) -> List[Dict[str, Any]]:
+        """Lê os limites dedicados de GPU (cTGP / Dynamic Boost) e PPT do lenovo-wmi-other."""
+        wmi_dir = self.paths.lenovo_wmi_attr_dir
+        if not wmi_dir or not os.path.isdir(wmi_dir):
+            return []
+
+        controls: List[Dict[str, Any]] = []
+        for attr_id, label, unit, fb_min, fb_max in self.LENOVO_CUSTOM_POWER_ATTRS:
+            a_dir = os.path.join(wmi_dir, attr_id)
+            cur_p = os.path.join(a_dir, "current_value")
+            if not os.path.exists(cur_p):
+                continue
+            cur_v = self._read_file_int(cur_p, default=-1)
+            if cur_v < 0:
+                continue
+            def_v = self._read_file_int(os.path.join(a_dir, "default_value"), default=cur_v)
+            raw_min = self._read_file_int(os.path.join(a_dir, "min_value"), default=0)
+            raw_max = self._read_file_int(os.path.join(a_dir, "max_value"), default=0)
+            step_v = max(1, self._read_file_int(os.path.join(a_dir, "scalar_increment"), default=1))
+
+            has_real_bounds = (raw_max > raw_min)
+            if has_real_bounds:
+                min_v, max_v = raw_min, raw_max
+            else:
+                min_v = fb_min
+                max_v = max(fb_max, cur_v + 20, def_v + 20)
+
+            controls.append({
+                "attr_id": attr_id,
+                "label": label,
+                "unit": unit,
+                "current": cur_v,
+                "default": def_v,
+                "min": min_v,
+                "max": max_v,
+                "step": step_v,
+                "has_real_bounds": has_real_bounds,
+                "path": cur_p,
+            })
+        return controls
+
+    def set_lenovo_custom_power_values(self, values: Dict[str, int], allow_elevation: bool = True) -> Tuple[bool, str]:
+        """Aplica os valores de cTGP/Boost/PPT no lenovo-wmi-other ativando o perfil Custom antes."""
+        controls = {c["attr_id"]: c for c in self.get_lenovo_custom_power_controls()}
+        if not controls:
+            return False, "Atributos Custom WMI de GPU/PPT não encontrados neste notebook."
+
+        valid_items = [(aid, int(val)) for aid, val in values.items() if aid in controls]
+        if not valid_items:
+            return False, "Nenhum parâmetro válido informado para o Modo Custom."
+
+        first_path = controls[valid_items[0][0]]["path"]
+        switched = self._ensure_custom_profile_for_wmi(first_path, allow_elevation=allow_elevation)
+
+        applied: List[str] = []
+        rejected: List[str] = []
+        for aid, raw_val in valid_items:
+            ctrl = controls[aid]
+            clamped = max(ctrl["min"], min(ctrl["max"], int(raw_val)))
+            ok, _ = PermissionsManager.write_sysfs_value(ctrl["path"], str(clamped), allow_elevation=allow_elevation)
+            if ok:
+                applied.append(f"{aid}={clamped}{ctrl['unit']}")
+            else:
+                rejected.append(aid)
+
+        self._cached_bios_attrs = None
+        if applied:
+            extra = " (Modo Custom ativado)" if switched else ""
+            warn = f" [Ignorados pelo firmware: {', '.join(rejected)}]" if rejected else ""
+            return True, f"Limites aplicados{extra}: {', '.join(applied)}{warn}"
+        return False, f"Firmware recusou escrita para: {', '.join(rejected)}"
+
+    def apply_lenovo_custom_power_preset(self, preset_key: str, allow_elevation: bool = True) -> Tuple[bool, str]:
+        """Aplica preset rápido 1-clique: 'cool_quiet' (Jogos Frios) ou 'max_gpu' (Potência Máxima GPU)."""
+        controls = self.get_lenovo_custom_power_controls()
+        if not controls:
+            return False, "Atributos Custom WMI de GPU/PPT não encontrados neste notebook."
+
+        key = str(preset_key or "").strip().lower()
+        if key not in ("cool_quiet", "max_gpu"):
+            return False, f"Preset Custom desconhecido: {preset_key}"
+
+        self._ensure_custom_profile_for_wmi(controls[0]["path"], allow_elevation=allow_elevation)
+
+        applied: List[str] = []
+        if key == "cool_quiet":
+            cool_targets = {
+                "gpu_nv_ctgp": 45,
+                "gpu_nv_ppab": 0,
+                "gpu_nv_cpu_boost": 5,
+                "ppt_cpu_cl": 25,
+                "ppt_pl1_spl": 30,
+                "ppt_pl2_sppt": 45,
+            }
+            for c in controls:
+                aid = c["attr_id"]
+                target = max(c["min"], min(c["max"], cool_targets.get(aid, c["min"])))
+                ok, _ = PermissionsManager.write_sysfs_value(c["path"], str(target), allow_elevation=allow_elevation)
+                if ok:
+                    applied.append(f"{aid}={target}W")
+        else:
+            for c in controls:
+                aid = c["attr_id"]
+                if c["has_real_bounds"]:
+                    target = c["max"]
+                    ok, _ = PermissionsManager.write_sysfs_value(c["path"], str(target), allow_elevation=allow_elevation)
+                    if ok:
+                        applied.append(f"{aid}={target}W")
+                else:
+                    # Quando kernel reporta min=0,max=0 (ex: LOQ cTGP), tenta boost seguro e faz fallback ao default
+                    base = max(c["default"], c["current"])
+                    for candidate in (base + 10, base + 5, base):
+                        ok, _ = PermissionsManager.write_sysfs_value(c["path"], str(candidate), allow_elevation=allow_elevation)
+                        if ok:
+                            applied.append(f"{aid}={candidate}W")
+                            break
+
+        self._cached_bios_attrs = None
+        if applied:
+            title = "Jogos Frios & Silenciosos" if key == "cool_quiet" else "Potência Máxima GPU"
+            return True, f"{title} aplicado: {', '.join(applied[:4])}"
+        return False, "Não foi possível aplicar os limites no Modo Custom."
 

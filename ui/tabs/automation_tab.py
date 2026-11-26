@@ -8,14 +8,14 @@ Agrupa automação de perfil, jogos e atalhos:
 
 import os
 import shutil
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 from core.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QPushButton, QScrollArea, QStackedWidget, QComboBox, QLineEdit, QFileDialog,
     Qt, Signal, QFont, QMessageBox, QPixmap
 )
 from ui.theme_tokens import ThemeTokens
-from ui.components import ToggleSwitch, StatusBadge, SubTabSelector
+from ui.components import ToggleSwitch, StatusBadge, SubTabSelector, BasicModeHintBar
 from ui.widgets import KeyCaptureButton
 from core.key_mapper import default_extra_codes_for_slot, normalize_modifiers
 
@@ -29,8 +29,6 @@ AVAILABLE_KEY_ACTIONS: List[Tuple[str, str]] = [
     ("toggle_window", "Abrir / Minimizar Janela do Ducksvantage"),
     ("toggle_conservation", "Ativar / Desativar Conservação da Bateria (80%)"),
     ("toggle_mic_mute", "Silenciar / Ativar Microfone"),
-    ("cycle_audio_preset", "Alternar Preset de Áudio (Padrão / Voz / Mudo)"),
-    ("toggle_cinema_mode", "Ativar / Desativar Modo Cinema & Não Perturbe"),
     ("toggle_touchpad", "Bloquear / Desbloquear Touchpad"),
     ("custom_command", "Executar Comando ou Script Personalizado"),
 ]
@@ -44,12 +42,12 @@ PROFILE_COMBO_ITEMS: List[Tuple[str, str]] = [
 
 
 class AutomationTab(QWidget):
-    """Aba Automação & Atalhos: jogos/app rules, teclas/presets e horários/ambiente."""
+    """Aba Automação & Atalhos: jogos/app rules e teclas/presets."""
     shortcuts_updated = Signal()
     custom_action_requested = Signal(str, str)
     preset_applied = Signal(str, str)
     presets_updated = Signal()
-    cinema_mode_toggled = Signal(bool)
+    switch_advanced_requested = Signal()
 
     def __init__(self, backend, parent=None):
         super().__init__(parent)
@@ -72,7 +70,6 @@ class AutomationTab(QWidget):
         self.sub_tabs = SubTabSelector([
             ("games", "Jogos & Regras"),
             ("keys", "Teclas & Presets"),
-            ("schedule", "Horários & Ambiente"),
         ])
         root_layout.addWidget(self.sub_tabs)
 
@@ -89,11 +86,6 @@ class AutomationTab(QWidget):
         keys_layout = QVBoxLayout(page_keys)
         keys_layout.setContentsMargins(0, 0, 0, 0)
         keys_layout.setSpacing(16)
-
-        page_sched = QWidget()
-        sched_layout = QVBoxLayout(page_sched)
-        sched_layout.setContentsMargins(0, 0, 0, 0)
-        sched_layout.setSpacing(16)
 
         # =====================================================================
         # 1. Perfis Personalizados (Presets em 1 Clique -> Sub-aba Teclas & Presets)
@@ -152,6 +144,7 @@ class AutomationTab(QWidget):
         self.btn_import_preset.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_import_preset.setFixedHeight(30)
         self.btn_import_preset.clicked.connect(self._on_import_user_preset)
+        self.btn_import_preset.setVisible(bool(self._advanced_mode))
         add_p_row.addWidget(self.btn_import_preset)
         presets_layout.addWidget(add_preset_box)
 
@@ -171,7 +164,7 @@ class AutomationTab(QWidget):
             feat.refresh_rate,
         ))
         self._has_preset_ctrl = bool(has_preset_ctrl)
-        self.presets_card.setVisible(bool(self._advanced_mode and has_preset_ctrl))
+        self.presets_card.setVisible(bool(has_preset_ctrl))
         keys_layout.addWidget(self.presets_card)
 
         # =====================================================================
@@ -192,16 +185,16 @@ class AutomationTab(QWidget):
 
         rules_titles = QVBoxLayout()
         rules_titles.setSpacing(2)
-        rt_title = QLabel("Auto-Switch em Jogos & Regras por Aplicativo")
-        rt_title.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.DemiBold))
-        rt_title.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
-        rules_titles.addWidget(rt_title)
+        self.rules_title_lbl = QLabel("Auto-Switch em Jogos & Regras por Aplicativo")
+        self.rules_title_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.DemiBold))
+        self.rules_title_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        rules_titles.addWidget(self.rules_title_lbl)
 
-        rt_sub = QLabel("Configure comportamento automático em jogos (Steam/Heroic/Proton) e apps.")
-        rt_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
-        rules_titles.addWidget(rt_sub)
-        rules_header.addLayout(rules_titles)
-        rules_header.addStretch()
+        self.rules_sub_lbl = QLabel("Configure comportamento automático em jogos (Steam/Heroic/Proton) e apps.")
+        self.rules_sub_lbl.setWordWrap(True)
+        self.rules_sub_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        rules_titles.addWidget(self.rules_sub_lbl)
+        rules_header.addLayout(rules_titles, stretch=1)
 
         self.app_rules_badge = StatusBadge("AUTO-SWITCH ATIVO", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.STATUS_GREEN)
         rules_header.addWidget(self.app_rules_badge)
@@ -274,6 +267,18 @@ class AutomationTab(QWidget):
         gtp_row.addWidget(self.sw_game_lock_touchpad)
         self.game_touchpad_row_widget.setVisible(bool(feat.touchpad_control))
         gopts_layout.addWidget(self.game_touchpad_row_widget)
+
+        self.game_wifi_row_widget = QWidget()
+        gwf_row = QHBoxLayout(self.game_wifi_row_widget)
+        gwf_row.setContentsMargins(0, 0, 0, 0)
+        gwf_lbl = QLabel("Ativar Wi-Fi em Baixa Latência (Power Save OFF) durante jogos e restaurar ao fechar")
+        gwf_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        gwf_row.addWidget(gwf_lbl, stretch=1)
+        self.sw_game_wifi_low_latency = ToggleSwitch(checked=self.backend.get_game_auto_wifi_low_latency())
+        self.sw_game_wifi_low_latency.toggled.connect(self._on_game_wifi_low_latency_toggled)
+        gwf_row.addWidget(self.sw_game_wifi_low_latency)
+        self.game_wifi_row_widget.setVisible(bool(feat.wifi_power_save))
+        gopts_layout.addWidget(self.game_wifi_row_widget)
 
         self.game_preset_row_widget = QWidget()
         gp_row = QHBoxLayout(self.game_preset_row_widget)
@@ -399,7 +404,6 @@ class AutomationTab(QWidget):
 
         self.rules_card.setVisible(bool(feat.platform_profile and supported_profiles))
         games_layout.addWidget(self.rules_card)
-        games_layout.addStretch()
 
         # =====================================================================
         # 3. Mapeador de Teclas Personalizadas (Tecla Copilot F23 -> Sub-aba Teclas & Presets)
@@ -463,36 +467,7 @@ class AutomationTab(QWidget):
         keys_layout.addStretch()
 
         # =====================================================================
-        # 4. Modo Cinema / Apresentação (Sub-aba Horários & Ambiente)
-        # =====================================================================
-        self.cinema_card = QFrame()
-        self.cinema_card.setProperty("class", "card")
-        cin_lay = QHBoxLayout(self.cinema_card)
-        cin_lay.setContentsMargins(18, 16, 18, 16)
-        cin_lay.setSpacing(14)
-
-        cin_titles = QVBoxLayout()
-        cin_titles.setSpacing(2)
-        cin_t = QLabel("Modo Cinema / Apresentação")
-        cin_t.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.DemiBold))
-        cin_t.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
-        cin_titles.addWidget(cin_t)
-        cin_sub = QLabel(
-            "Impede a tela de apagar, silencia notificações do KDE (Não Perturbe) e apaga a luz do teclado."
-        )
-        cin_sub.setWordWrap(True)
-        cin_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
-        cin_titles.addWidget(cin_sub)
-        cin_lay.addLayout(cin_titles, stretch=1)
-
-        self.sw_cinema_mode = ToggleSwitch(checked=self.backend.get_cinema_mode() if feat.cinema_mode else False)
-        self.sw_cinema_mode.toggled.connect(self.cinema_mode_toggled.emit)
-        cin_lay.addWidget(self.sw_cinema_mode)
-        self.cinema_card.setVisible(bool(feat.cinema_mode))
-        sched_layout.addWidget(self.cinema_card)
-
-        # =====================================================================
-        # 5. Histórico Persistente de Sessões de Jogo
+        # 4. Histórico Persistente de Sessões de Jogo (Sub-aba Jogos & Regras)
         # =====================================================================
         self.session_hist_card = QFrame()
         self.session_hist_card.setProperty("class", "card")
@@ -531,120 +506,17 @@ class AutomationTab(QWidget):
         self._rebuild_game_session_history()
 
         self.session_hist_card.setVisible(bool(self._advanced_mode and feat.platform_profile and supported_profiles))
-
-        # =====================================================================
-        # 6. Perfil Noturno / Agendamento por Horário
-        # =====================================================================
-        night_cfg = self.backend.get_night_schedule_config()
-        self.night_card = QFrame()
-        self.night_card.setProperty("class", "card")
-        night_layout = QVBoxLayout(self.night_card)
-        night_layout.setContentsMargins(18, 16, 18, 16)
-        night_layout.setSpacing(10)
-
-        night_header = QHBoxLayout()
-        night_titles = QVBoxLayout()
-        night_titles.setSpacing(2)
-        nt_lbl = QLabel("Perfil Noturno (Agendamento por Horário)")
-        nt_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.DemiBold))
-        nt_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
-        night_titles.addWidget(nt_lbl)
-        ns_lbl = QLabel("Reduz ruído, brilho do teclado e ativa conservação automaticamente no período configurado.")
-        ns_lbl.setWordWrap(True)
-        ns_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
-        night_titles.addWidget(ns_lbl)
-        night_header.addLayout(night_titles, stretch=1)
-
-        self.night_badge = StatusBadge(
-            "ATIVO" if night_cfg["enabled"] else "DESATIVADO",
-            bg_color=ThemeTokens.BG_CARD_HOVER,
-            text_color=ThemeTokens.STATUS_GREEN if night_cfg["enabled"] else ThemeTokens.TEXT_WHITE_80,
-        )
-        night_header.addWidget(self.night_badge)
-        self.sw_night_enabled = ToggleSwitch(checked=night_cfg["enabled"])
-        self.sw_night_enabled.toggled.connect(self._on_night_schedule_changed)
-        night_header.addWidget(self.sw_night_enabled)
-        night_layout.addLayout(night_header)
-
-        night_box = QFrame()
-        night_box.setProperty("class", "subBox")
-        nb_l = QVBoxLayout(night_box)
-        nb_l.setContentsMargins(14, 10, 14, 10)
-        nb_l.setSpacing(8)
-
-        nb_row1 = QHBoxLayout()
-        nb_row1.setSpacing(10)
-        nb_row1.addWidget(QLabel("Início:"))
-        self.combo_night_start = QComboBox()
-        self.combo_night_start.setFixedHeight(28)
-        for h in range(24):
-            val = f"{h:02d}:00"
-            self.combo_night_start.addItem(val, val)
-        s_i = self.combo_night_start.findData(night_cfg["start_time"])
-        if s_i >= 0:
-            self.combo_night_start.setCurrentIndex(s_i)
-        self.combo_night_start.currentIndexChanged.connect(self._on_night_schedule_changed)
-        nb_row1.addWidget(self.combo_night_start)
-
-        nb_row1.addWidget(QLabel("Fim:"))
-        self.combo_night_end = QComboBox()
-        self.combo_night_end.setFixedHeight(28)
-        for h in range(24):
-            val = f"{h:02d}:00"
-            self.combo_night_end.addItem(val, val)
-        e_i = self.combo_night_end.findData(night_cfg["end_time"])
-        if e_i >= 0:
-            self.combo_night_end.setCurrentIndex(e_i)
-        self.combo_night_end.currentIndexChanged.connect(self._on_night_schedule_changed)
-        nb_row1.addWidget(self.combo_night_end)
-
-        nb_row1.addWidget(QLabel("Perfil:"))
-        self.combo_night_profile = QComboBox()
-        self.combo_night_profile.setFixedHeight(28)
-        for pid, pname in [("low-power", "Silencioso"), ("balanced", "Equilibrado")]:
-            if pid in supported_profiles or not supported_profiles:
-                self.combo_night_profile.addItem(pname, pid)
-        np_i = self.combo_night_profile.findData(night_cfg["profile"])
-        if np_i >= 0:
-            self.combo_night_profile.setCurrentIndex(np_i)
-        self.combo_night_profile.currentIndexChanged.connect(self._on_night_schedule_changed)
-        nb_row1.addWidget(self.combo_night_profile)
-        nb_row1.addStretch()
-        nb_l.addLayout(nb_row1)
-
-        nb_opts = QHBoxLayout()
-        nb_opts.setSpacing(14)
-        self.night_kbd_widget = QWidget()
-        nk_l = QHBoxLayout(self.night_kbd_widget)
-        nk_l.setContentsMargins(0, 0, 0, 0)
-        nk_l.addWidget(QLabel("Apagar luz do teclado"))
-        self.sw_night_kbd_off = ToggleSwitch(checked=night_cfg["kbd_off"])
-        self.sw_night_kbd_off.toggled.connect(self._on_night_schedule_changed)
-        nk_l.addWidget(self.sw_night_kbd_off)
-        self.night_kbd_widget.setVisible(bool(feat.kbd_backlight))
-        nb_opts.addWidget(self.night_kbd_widget)
-
-        self.night_cons_widget = QWidget()
-        nc_l = QHBoxLayout(self.night_cons_widget)
-        nc_l.setContentsMargins(0, 0, 0, 0)
-        nc_l.addWidget(QLabel("Ativar Conservação 80%"))
-        self.sw_night_conservation = ToggleSwitch(checked=night_cfg["conservation"])
-        self.sw_night_conservation.toggled.connect(self._on_night_schedule_changed)
-        nc_l.addWidget(self.sw_night_conservation)
-        self.night_cons_widget.setVisible(bool(feat.conservation_mode))
-        nb_opts.addWidget(self.night_cons_widget)
-        nb_opts.addStretch()
-        nb_l.addLayout(nb_opts)
-
-        night_layout.addWidget(night_box)
-        self.night_card.setVisible(bool(feat.platform_profile and supported_profiles))
-        sched_layout.addWidget(self.night_card)
-        sched_layout.addWidget(self.session_hist_card)
-        sched_layout.addStretch()
+        games_layout.addWidget(self.session_hist_card)
+        games_layout.addStretch()
 
         self.sub_stack.addWidget(page_games)
         self.sub_stack.addWidget(page_keys)
-        self.sub_stack.addWidget(page_sched)
+
+        self.basic_hint_card = BasicModeHintBar(
+            "Modo Básico ativo • Regras por aplicativo, políticas VRR em jogos, lista de exclusões, histórico de sessões, exportar/importar JSON e scripts customizados disponíveis no Modo Avançado."
+        )
+        self.basic_hint_card.switch_advanced_requested.connect(self.switch_advanced_requested.emit)
+        root_layout.addWidget(self.basic_hint_card)
 
         scroll.setWidget(container)
         main_layout = QVBoxLayout(self)
@@ -655,16 +527,48 @@ class AutomationTab(QWidget):
         self.refresh_automation_state()
 
     def set_advanced_mode(self, advanced: bool):
-        """Alterna visibilidade das opções avançadas (Presets, VRR, Exclusões, App Rules e Histórico)."""
+        """Alterna visibilidade das opções avançadas (App Rules, VRR, Exclusões, Histórico, JSON e Script Shell)."""
         self._advanced_mode = bool(advanced)
         feat = self.backend.features
-        self.presets_card.setVisible(bool(self._advanced_mode and self._has_preset_ctrl))
+        self.presets_card.setVisible(bool(self._has_preset_ctrl))
+        self.btn_import_preset.setVisible(bool(self._advanced_mode))
         self.game_preset_row_widget.setVisible(bool(self._advanced_mode))
         self.game_vrr_row_widget.setVisible(bool(self._advanced_mode and feat.refresh_rate))
         self.game_ignore_box.setVisible(bool(self._advanced_mode))
         self.add_rule_box.setVisible(bool(self._advanced_mode))
         self.rules_list_container.setVisible(bool(self._advanced_mode))
         self.session_hist_card.setVisible(bool(self._advanced_mode and feat.platform_profile and self._supported_profiles))
+        self.basic_hint_card.setVisible(not self._advanced_mode)
+
+        if self._advanced_mode:
+            self.rules_title_lbl.setText("Auto-Switch em Jogos & Regras por Aplicativo")
+            self.rules_sub_lbl.setText("Configure comportamento automático em jogos (Steam/Heroic/Proton) e apps.")
+            self.sub_tabs.set_tab_title(0, "Jogos & Regras")
+        else:
+            self.rules_title_lbl.setText("Auto-Switch Inteligente em Jogos")
+            self.rules_sub_lbl.setText("Ajusta perfil térmico, Hz e Wi-Fi automaticamente ao abrir jogos.")
+            self.sub_tabs.set_tab_title(0, "Auto-Switch Jogos")
+
+        self._rebuild_user_presets_list()
+        if hasattr(self, "_slot_widgets"):
+            self._sync_key_mapping_widgets()
+        self._update_subtabs_visibility()
+
+    def _update_subtabs_visibility(self):
+        """Oculta sub-abas sem cards suportados neste hardware/modo e esconde a barra se <= 1 visível."""
+        has_games = (not self.rules_card.isHidden()) or (not self.session_hist_card.isHidden())
+        has_keys = (not self.presets_card.isHidden()) or (not self.remap_card.isHidden())
+        vis_list = [has_games, has_keys]
+        for idx, vis in enumerate(vis_list):
+            self.sub_tabs.set_tab_visible(idx, vis)
+
+        vis_count = sum(1 for v in vis_list if v)
+        self.sub_tabs.setVisible(vis_count > 1)
+        cur_idx = self.sub_stack.currentIndex()
+        if 0 <= cur_idx < len(vis_list) and not vis_list[cur_idx] and vis_count > 0:
+            first_vis = next(i for i, v in enumerate(vis_list) if v)
+            self.sub_tabs.set_current_index(first_vis)
+            self.sub_stack.setCurrentIndex(first_vis)
 
     def refresh_automation_state(self):
         active_game = self.backend.get_active_game()
@@ -690,6 +594,11 @@ class AutomationTab(QWidget):
         self.sw_game_lock_touchpad.setChecked(self.backend.get_game_auto_lock_touchpad())
         self.sw_game_lock_touchpad.blockSignals(False)
 
+        if hasattr(self, "sw_game_wifi_low_latency"):
+            self.sw_game_wifi_low_latency.blockSignals(True)
+            self.sw_game_wifi_low_latency.setChecked(self.backend.get_game_auto_wifi_low_latency())
+            self.sw_game_wifi_low_latency.blockSignals(False)
+
         self.combo_game_target_preset.blockSignals(True)
         cur_gp = self.backend.get_game_target_preset_id()
         gp_idx = self.combo_game_target_preset.findData(cur_gp)
@@ -701,11 +610,6 @@ class AutomationTab(QWidget):
         gv_idx = self.combo_game_vrr.findData(cur_gvrr)
         self.combo_game_vrr.setCurrentIndex(gv_idx if gv_idx >= 0 else 0)
         self.combo_game_vrr.blockSignals(False)
-
-        if hasattr(self, "sw_cinema_mode"):
-            self.sw_cinema_mode.blockSignals(True)
-            self.sw_cinema_mode.setChecked(self.backend.get_cinema_mode())
-            self.sw_cinema_mode.blockSignals(False)
 
         self._refresh_evdev_status_badge()
         self._sync_key_mapping_widgets()
@@ -771,22 +675,6 @@ class AutomationTab(QWidget):
     def _on_clear_session_history(self):
         self.backend.clear_game_session_history()
         self._rebuild_game_session_history()
-
-    def _on_night_schedule_changed(self, _val=None):
-        en = self.sw_night_enabled.isChecked()
-        self.backend.set_night_schedule_config(
-            enabled=en,
-            start_time=str(self.combo_night_start.currentData() or "23:00"),
-            end_time=str(self.combo_night_end.currentData() or "07:00"),
-            profile=str(self.combo_night_profile.currentData() or "low-power"),
-            kbd_off=self.sw_night_kbd_off.isChecked(),
-            conservation=self.sw_night_conservation.isChecked(),
-        )
-        self.night_badge.setText("ATIVO" if en else "DESATIVADO")
-        self.night_badge.setColor(
-            ThemeTokens.BG_CARD_HOVER,
-            ThemeTokens.STATUS_GREEN if en else ThemeTokens.TEXT_WHITE_80,
-        )
 
     # =========================================================================
     # App Rules & Auto-Switch
@@ -899,6 +787,9 @@ class AutomationTab(QWidget):
 
     def _on_game_lock_touchpad_toggled(self, checked: bool):
         self.backend.set_game_auto_lock_touchpad(checked)
+
+    def _on_game_wifi_low_latency_toggled(self, checked: bool):
+        self.backend.set_game_auto_wifi_low_latency(checked)
 
     def _populate_game_preset_combo(self):
         self.combo_game_target_preset.blockSignals(True)
@@ -1026,6 +917,7 @@ class AutomationTab(QWidget):
             btn_exp.setCursor(Qt.CursorShape.PointingHandCursor)
             btn_exp.setFixedHeight(26)
             btn_exp.clicked.connect(lambda _c=False, p_id=pid, p_name=pname: self._on_export_user_preset(p_id, p_name))
+            btn_exp.setVisible(bool(self._advanced_mode))
             r_lay.addWidget(btn_exp)
 
             btn_del = QPushButton("Remover")
@@ -1110,11 +1002,13 @@ class AutomationTab(QWidget):
     # =========================================================================
     # Key Remapper (Tecla Copilot F23)
     # =========================================================================
-    def _get_supported_key_actions(self) -> List[Tuple[str, str]]:
+    def _get_supported_key_actions(self, current_action: str = "") -> List[Tuple[str, str]]:
         feat = self.backend.features
         has_mic_tool = bool(shutil.which("wpctl") or shutil.which("pactl"))
         filtered: List[Tuple[str, str]] = []
         for act_id, act_label in AVAILABLE_KEY_ACTIONS:
+            if act_id == "custom_command" and not self._advanced_mode and current_action != "custom_command":
+                continue
             if act_id == "cycle_profile" and not feat.platform_profile:
                 continue
             if act_id == "cycle_refresh_rate" and not feat.refresh_rate:
@@ -1127,10 +1021,6 @@ class AutomationTab(QWidget):
             if act_id == "toggle_eco_mode" and not feat.eco_travel:
                 continue
             if act_id == "toggle_conservation" and not feat.conservation_mode:
-                continue
-            if act_id == "toggle_cinema_mode" and not feat.cinema_mode:
-                continue
-            if act_id == "cycle_audio_preset" and not feat.audio_control:
                 continue
             if act_id == "toggle_touchpad" and not feat.touchpad_control:
                 continue
@@ -1167,7 +1057,7 @@ class AutomationTab(QWidget):
         combo.setMinimumWidth(210)
         combo.setFixedHeight(30)
         current_act = str(slot_cfg.get("action", "cycle_profile"))
-        supported_actions = self._get_supported_key_actions()
+        supported_actions = self._get_supported_key_actions(current_act)
         sel_idx = 0
         for idx, (act_id, act_label) in enumerate(supported_actions):
             combo.addItem(act_label, act_id)
@@ -1207,7 +1097,7 @@ class AutomationTab(QWidget):
 
         cmd_edit = QLineEdit(str(slot_cfg.get("custom_command", "")))
         cmd_edit.setPlaceholderText("Comando ou script (ex: /usr/bin/konsole ou ~/.local/bin/script.sh)")
-        cmd_edit.setVisible(current_act == "custom_command")
+        cmd_edit.setVisible(bool(self._advanced_mode and current_act == "custom_command"))
         cmd_edit.editingFinished.connect(lambda s=slot_id: self._on_slot_modified(s))
         v_layout.addWidget(cmd_edit)
 
@@ -1274,15 +1164,19 @@ class AutomationTab(QWidget):
                 evdev_modifiers=list(cfg.get("evdev_modifiers") or []),
             )
             combo: QComboBox = w["combo"]
+            cur_act = str(cfg.get("action", "cycle_profile"))
             combo.blockSignals(True)
-            idx = combo.findData(str(cfg.get("action", "cycle_profile")))
+            combo.clear()
+            for act_id, act_label in self._get_supported_key_actions(cur_act):
+                combo.addItem(act_label, act_id)
+            idx = combo.findData(cur_act)
             if idx >= 0:
                 combo.setCurrentIndex(idx)
             combo.blockSignals(False)
 
             w["cmd_edit"].blockSignals(True)
             w["cmd_edit"].setText(str(cfg.get("custom_command", "")))
-            w["cmd_edit"].setVisible(str(cfg.get("action", "")) == "custom_command")
+            w["cmd_edit"].setVisible(bool(self._advanced_mode and cur_act == "custom_command"))
             w["cmd_edit"].blockSignals(False)
 
             sw: ToggleSwitch = w["switch"]

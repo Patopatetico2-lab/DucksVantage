@@ -65,14 +65,13 @@ class TestFeatureGating(unittest.TestCase):
         )
         backend = _make_blank_backend(feat)
         fake_attr = BiosAttribute(
-            attr_id="cpu_temp",
-            display_name="Limite Térmico da CPU",
-            category="Ajustes Térmicos & Potência",
-            attr_type="integer",
-            current_value="94",
-            min_value=85,
-            max_value=100,
-            path="/fake/cpu_temp/current_value",
+            attr_id="flip_to_boot",
+            display_name="Ligar ao Abrir a Tampa",
+            category="Energia & Boot",
+            attr_type="boolean",
+            current_value="1",
+            possible_values=["0", "1"],
+            path="/fake/flip_to_boot/current_value",
         )
 
         with patch.object(backend, "get_bios_attributes", return_value=[fake_attr]), \
@@ -142,7 +141,7 @@ class TestFeatureGating(unittest.TestCase):
         with patch.object(backend, "get_bios_attributes", return_value=[]), \
              patch.object(backend, "get_gpu_mux_info", return_value=GpuMuxInfo(available=False, available_modes=[], backend_name="none")), \
              patch.object(backend, "get_display_refresh_info", return_value=DisplayRefreshInfo(available=False, current_hz=60, available_rates=[60], backend_name="drm-fallback")), \
-             patch.object(backend, "get_network_power_status", return_value=NetworkPowerStatus(wifi_available=False, eth_available=False)), \
+             patch.object(backend, "get_network_power_status", return_value=NetworkPowerStatus(wifi_available=False)), \
              patch.object(backend, "get_battery_info", return_value=BatteryInfo(available=False)):
             from ui_main import MainWindow
 
@@ -211,7 +210,7 @@ class TestFeatureGating(unittest.TestCase):
         backend.close()
 
     # =========================================================================
-    # 3. Perfil Parcial (Ex: Lenovo LOQ com pcie-runtime, sem kbd_backlight, sem USB, sem Ethernet)
+    # 3. Perfil Parcial (Ex: Lenovo LOQ com lenovo-wmi 2 modos, sem kbd_backlight, sem USB)
     # =========================================================================
     def test_partial_loq_profile_shows_only_supported_controls(self):
         """Exibe somente os controles realmente presentes e oculta modos/itens indisponíveis."""
@@ -241,16 +240,15 @@ class TestFeatureGating(unittest.TestCase):
             bios_attributes=True,
             battery=True,
             wifi_power_save=True,
-            eth_power_save=False,
             eco_travel=True,
         )
         backend = _make_blank_backend(feat)
 
-        mux_pcie = GpuMuxInfo(
+        mux_lenovo = GpuMuxInfo(
             available=True,
             current_mode="hybrid",
             available_modes=["hybrid", "integrated"],
-            backend_name="pcie-runtime",
+            backend_name="lenovo-wmi",
         )
         ref_single = DisplayRefreshInfo(
             available=True,
@@ -262,13 +260,12 @@ class TestFeatureGating(unittest.TestCase):
         )
         net_wifi_only = NetworkPowerStatus(
             wifi_available=True, wifi_iface="wlan0", wifi_driver="iwlwifi",
-            eth_available=False,
         )
         bat_ok = BatteryInfo(available=True, capacity_percent=80, energy_full_wh=55.0, energy_design_wh=57.5, health_percent=95.6)
 
         with patch.object(backend, "get_platform_profile_choices", return_value=["low-power", "balanced", "performance"]), \
              patch.object(backend, "get_available_cpu_governors", return_value=["powersave", "performance"]), \
-             patch.object(backend, "get_gpu_mux_info", return_value=mux_pcie), \
+             patch.object(backend, "get_gpu_mux_info", return_value=mux_lenovo), \
              patch.object(backend, "get_display_refresh_info", return_value=ref_single), \
              patch.object(backend, "get_network_power_status", return_value=net_wifi_only), \
              patch.object(backend, "get_battery_info", return_value=bat_ok), \
@@ -342,7 +339,6 @@ class TestFeatureGating(unittest.TestCase):
             self.assertTrue(bat.cons_div.isHidden())
             self.assertFalse(bat.net_card.isHidden())
             self.assertFalse(bat.wifi_box.isHidden())
-            self.assertTrue(bat.eth_box.isHidden())
 
             about = AboutTab(backend)
             self.assertFalse(about.fn_lock_row_widget.isHidden())
@@ -418,7 +414,6 @@ class TestFeatureGating(unittest.TestCase):
             bios_attributes=True,
             battery=True,
             wifi_power_save=True,
-            eth_power_save=True,
             eco_travel=True,
         )
         paths = HardwarePaths(lcd_overdrive="/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes/lcd_overdrive/current_value")
@@ -486,7 +481,7 @@ class TestFeatureGating(unittest.TestCase):
         with patch.object(backend_no_rgb, "get_bios_attributes", return_value=[]), \
              patch.object(backend_no_rgb, "get_gpu_mux_info", return_value=GpuMuxInfo(available=False, available_modes=[], backend_name="none")), \
              patch.object(backend_no_rgb, "get_display_refresh_info", return_value=DisplayRefreshInfo(available=False, current_hz=60, available_rates=[60], backend_name="drm-fallback")), \
-             patch.object(backend_no_rgb, "get_network_power_status", return_value=NetworkPowerStatus(wifi_available=False, eth_available=False)), \
+             patch.object(backend_no_rgb, "get_network_power_status", return_value=NetworkPowerStatus(wifi_available=False)), \
              patch.object(backend_no_rgb, "get_battery_info", return_value=BatteryInfo(available=False)):
             win_off = MainWindow(backend_no_rgb)
             self.assertTrue(win_off.lighting_nav_btn.isHidden())
@@ -498,7 +493,7 @@ class TestFeatureGating(unittest.TestCase):
         with patch.object(backend_rgb, "get_bios_attributes", return_value=[]), \
              patch.object(backend_rgb, "get_gpu_mux_info", return_value=GpuMuxInfo(available=False, available_modes=[], backend_name="none")), \
              patch.object(backend_rgb, "get_display_refresh_info", return_value=DisplayRefreshInfo(available=False, current_hz=60, available_rates=[60], backend_name="drm-fallback")), \
-             patch.object(backend_rgb, "get_network_power_status", return_value=NetworkPowerStatus(wifi_available=False, eth_available=False)), \
+             patch.object(backend_rgb, "get_network_power_status", return_value=NetworkPowerStatus(wifi_available=False)), \
              patch.object(backend_rgb, "get_battery_info", return_value=BatteryInfo(available=False)):
             win_on = MainWindow(backend_rgb)
             self.assertFalse(win_on.lighting_nav_btn.isHidden())

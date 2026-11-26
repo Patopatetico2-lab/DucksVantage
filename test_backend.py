@@ -100,7 +100,7 @@ def main():
     print("\n[+] Feature Discovery & Permissões UDEV:")
     print(f"    - Fn-Lock: {feat.fn_lock} | Camera Power: {feat.camera_power} | USB Charging: {feat.usb_charging} | Kbd Backlight: {feat.kbd_backlight}")
     print(f"    - Fan Control: {feat.fan_control} | CPU Undervolt: {feat.cpu_undervolt} | WMI GPU Offset: {feat.wmi_gpu_ac_offset} | Touchpad: {feat.touchpad_control}")
-    print(f"    - Wi-Fi PowerSave: {feat.wifi_power_save} | Ethernet PowerSave: {feat.eth_power_save} | LCD Overdrive: {feat.lcd_overdrive}")
+    print(f"    - Wi-Fi PowerSave: {feat.wifi_power_save} | LCD Overdrive: {feat.lcd_overdrive}")
     caps = backend.get_detected_capabilities()
     print(f"    - Recursos Liberados na UI ({len(caps)}): {', '.join(c['name'] for c in caps)}")
     print(f"    - Regra UDEV Ativa:   {'SIM' if PermissionsManager.is_udev_rule_installed() else 'NÃO'}")

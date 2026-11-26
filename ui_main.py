@@ -282,15 +282,17 @@ class MainWindow(QMainWindow):
 
         self.btn_mode_basic = QPushButton("Básico")
         self.btn_mode_basic.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_mode_basic.setFixedHeight(24)
+        self.btn_mode_basic.setFixedHeight(28)
         self.btn_mode_basic.setFont(QFont(ThemeTokens.FONT_NAME, 9, QFont.Weight.DemiBold))
+        self.btn_mode_basic.setToolTip("Modo Básico: foco nos controles do dia a dia, perfis simples e visão clara.")
         self.btn_mode_basic.clicked.connect(lambda _c=False: self.apply_ui_mode("basic"))
         mp_row.addWidget(self.btn_mode_basic)
 
         self.btn_mode_advanced = QPushButton("Avançado")
         self.btn_mode_advanced.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_mode_advanced.setFixedHeight(24)
+        self.btn_mode_advanced.setFixedHeight(28)
         self.btn_mode_advanced.setFont(QFont(ThemeTokens.FONT_NAME, 9, QFont.Weight.DemiBold))
+        self.btn_mode_advanced.setToolTip("Modo Avançado: ajuste fino de TDP, Undervolt, curvas EC, MUX, BIOS e diagnóstico.")
         self.btn_mode_advanced.clicked.connect(lambda _c=False: self.apply_ui_mode("advanced"))
         mp_row.addWidget(self.btn_mode_advanced)
 
@@ -337,6 +339,7 @@ class MainWindow(QMainWindow):
         self.gpu_display_tab.set_advanced_mode(is_adv)
         self.automation_tab.set_advanced_mode(is_adv)
         self.battery_tab.set_advanced_mode(is_adv)
+        self.lighting_tab.set_advanced_mode(is_adv)
         self.about_tab.set_advanced_mode(is_adv)
 
         if self.gpu_display_nav_btn is not None:
@@ -374,6 +377,7 @@ class MainWindow(QMainWindow):
             self.about_tab.update_permission_status()
             self.about_tab.update_kde_integration_status()
             self.about_tab.refresh_hardware_toggles()
+            self.about_tab.refresh_nvme_health(force=False)
         elif index == 5:
             self.gpu_display_tab.refresh_all()
         elif index == 6:
@@ -383,7 +387,6 @@ class MainWindow(QMainWindow):
         # 1. Troca de Perfis Térmicos e Ciclo Fn + Q (incluindo Max-Power)
         self.dashboard_tab.profile_requested.connect(self._apply_profile)
         self.dashboard_tab.fn_q_cycle_requested.connect(self._on_fn_q_cycle)
-        self.performance_tab.profile_changed.connect(self._on_profile_changed)
         self.tray_manager.profile_requested.connect(self._apply_profile)
 
         # 2. ELITE 6 & ELITE 2: Modo Viagem (Eco-Mode Extremo) & Auto-Switch em Jogos
@@ -396,15 +399,16 @@ class MainWindow(QMainWindow):
         self.automation_tab.custom_action_requested.connect(
             lambda act, cmd="": self._execute_custom_key_action(act, cmd, source="test")
         )
-        self.automation_tab.cinema_mode_toggled.connect(self._apply_cinema_mode)
 
         # 4. Exclusão Mútua de Bateria (Modo de Conservação vs Rapid Charge) e Alertas Inteligentes
         self.dashboard_tab.conservation_toggled.connect(self._apply_conservation)
         self.dashboard_tab.rapid_charge_toggled.connect(self._apply_rapid_charge)
         self.battery_tab.conservation_changed.connect(self._on_conservation_changed)
         self.battery_tab.rapid_charge_changed.connect(self._on_rapid_charge_changed)
+        self.battery_tab.one_time_full_charge_changed.connect(self._on_one_time_full_charge_changed)
         self.battery_tab.test_alert_requested.connect(self._on_test_battery_alert)
         self.tray_manager.conservation_toggled.connect(self._apply_conservation)
+        self.tray_manager.one_time_full_charge_toggled.connect(self._apply_one_time_full_charge_from_tray)
 
         # 5. Controles do Painel EDGE & Controles Eventuais na Aba Config. & Sistema
         self.dashboard_tab.camera_toggled.connect(self._apply_camera)
@@ -413,7 +417,6 @@ class MainWindow(QMainWindow):
         self.about_tab.fn_lock_toggled.connect(self._apply_fn_lock)
         self.about_tab.usb_charging_toggled.connect(self._apply_usb_charging)
         self.about_tab.auto_power_toggled.connect(self._apply_auto_power)
-        self.tray_manager.cinema_mode_toggled.connect(self._apply_cinema_mode)
 
         # 6. Aba Sobre / UDEV / Autostart XDG / Preferências
         self.about_tab.permissions_updated.connect(self.about_tab.update_permission_status)
@@ -436,9 +439,22 @@ class MainWindow(QMainWindow):
         self.gpu_display_tab.vrr_policy_changed.connect(self._on_vrr_policy_changed)
         self.gpu_display_tab.dock_config_changed.connect(self._on_dock_config_changed)
         self.gpu_display_tab.lcd_overdrive_changed.connect(self._on_lcd_overdrive_changed)
+        self.gpu_display_tab.custom_power_applied.connect(self._on_custom_power_applied)
         self.automation_tab.preset_applied.connect(self._on_user_preset_applied)
         self.automation_tab.presets_updated.connect(self._on_presets_updated)
         self.lighting_tab.rgb_changed.connect(self._on_rgb_changed)
+
+        # Atalho contextual "Ativar Modo Avançado" nas abas no Modo Básico
+        for tab_w in (
+            self.performance_tab,
+            self.gpu_display_tab,
+            self.automation_tab,
+            self.battery_tab,
+            self.lighting_tab,
+            self.about_tab,
+        ):
+            if hasattr(tab_w, "switch_advanced_requested"):
+                tab_w.switch_advanced_requested.connect(lambda: self.apply_ui_mode("advanced"))
 
     def _register_qt_shortcuts(self):
         """Registra os atalhos de teclado Qt dentro da janela (ignorando valores inválidos)."""
@@ -545,40 +561,6 @@ class MainWindow(QMainWindow):
             self.gpu_display_tab.refresh_all()
             self.tray_manager.update_tray_state()
 
-    def _apply_cinema_mode(self, enable: bool):
-        ok, msg = self.backend.set_cinema_mode(enable)
-        self.osd.notify_feature_osd(
-            title="Modo Cinema / Apresentação: Ativo" if enable else "Modo Cinema Desativado",
-            subtitle="Tela acesa • Não Perturbe KDE • Teclado Off" if enable else msg[:58],
-            icon_name="power.svg",
-            accent_color=ThemeTokens.ACCENT_STEEL if enable else ThemeTokens.TEXT_LIGHT_GRAY,
-        )
-        self.dashboard_tab.update_telemetry()
-        self.automation_tab.refresh_automation_state()
-        self.tray_manager.update_tray_state()
-
-    def _apply_audio_preset(self, preset_id: str):
-        ok, msg = self.backend.set_audio_preset(preset_id)
-        if not ok:
-            QMessageBox.warning(self, "Presets de Áudio", msg)
-            self.dashboard_tab.update_telemetry()
-            return
-        titles = {
-            "normal": "Áudio: Modo Padrão",
-            "voice_call": "Áudio: Call / Voz (Filtro Ruído)",
-            "privacy_mute": "Áudio: Silêncio & Privacidade",
-        }
-        accent = ThemeTokens.STATUS_GREEN if preset_id == "voice_call" else (
-            ThemeTokens.STATUS_DANGER if preset_id == "privacy_mute" else ThemeTokens.ACCENT_STEEL
-        )
-        self.osd.notify_feature_osd(
-            title=titles.get(preset_id, "Áudio"),
-            subtitle=msg[:58],
-            icon_name="copilot_key.svg",
-            accent_color=accent,
-        )
-        self.dashboard_tab.update_telemetry()
-
     def _on_dbus_command_executed(self, event_name: str, payload: dict):
         QTimer.singleShot(0, lambda: self._handle_dbus_ui_sync(event_name, dict(payload)))
 
@@ -602,25 +584,10 @@ class MainWindow(QMainWindow):
             self.dashboard_tab.update_telemetry()
             self.performance_tab.refresh_profile_state()
             self.tray_manager.update_tray_state()
-        elif event_name == "cinema":
-            en = bool(payload.get("enabled", False))
-            self.osd.notify_feature_osd(
-                title="Modo Cinema: Ativo" if en else "Modo Cinema Desativado",
-                subtitle="Tela acesa • Não Perturbe KDE" if en else "Estado padrão restaurado",
-                icon_name="power.svg",
-                accent_color=ThemeTokens.ACCENT_STEEL if en else ThemeTokens.TEXT_LIGHT_GRAY,
-            )
-            self.dashboard_tab.update_telemetry()
-            self.automation_tab.refresh_automation_state()
-            self.tray_manager.update_tray_state()
-        elif event_name == "audio":
-            self.osd.notify_feature_osd(
-                title="Preset de Áudio",
-                subtitle=str(payload.get("message", ""))[:58],
-                icon_name="copilot_key.svg",
-                accent_color=ThemeTokens.ACCENT_STEEL,
-            )
-            self.dashboard_tab.update_telemetry()
+        elif event_name == "full_charge_once":
+            act = bool(payload.get("active", False))
+            self._on_one_time_full_charge_changed(act)
+            self.battery_tab.refresh_display()
         elif event_name == "show_window":
             if not self.isVisible():
                 self._toggle_visibility()
@@ -647,6 +614,7 @@ class MainWindow(QMainWindow):
         self.performance_tab.refresh_profile_state()
         self.gpu_display_tab.refresh_all()
         self.battery_tab.refresh_display()
+        self.dashboard_tab.update_telemetry()
         self.tray_manager.rebuild_presets_menu()
         self.tray_manager.rebuild_refresh_menu()
         self.tray_manager.update_tray_state()
@@ -685,23 +653,45 @@ class MainWindow(QMainWindow):
             accent_color=ThemeTokens.BORDER_CYAN
         )
 
-    def _apply_lcd_overdrive(self, enabled: bool):
-        ok, msg = self.backend.set_lcd_overdrive(enabled)
-        if ok:
-            self.osd.notify_lcd_overdrive(enabled)
-            self.gpu_display_tab.refresh_bios_state()
-            if getattr(self.dashboard_tab, "item_lcd_overdrive", None):
-                self.dashboard_tab.item_lcd_overdrive.set_checked(enabled)
-        else:
-            if getattr(self.dashboard_tab, "item_lcd_overdrive", None):
-                self.dashboard_tab.item_lcd_overdrive.set_checked(not enabled)
-            self.gpu_display_tab.refresh_bios_state()
-            QMessageBox.warning(self, "LCD Overdrive", f"Não foi possível alterar o LCD Overdrive:\n{msg}")
-
     def _on_lcd_overdrive_changed(self, enabled: bool):
         self.osd.notify_lcd_overdrive(enabled)
-        if getattr(self.dashboard_tab, "item_lcd_overdrive", None):
-            self.dashboard_tab.item_lcd_overdrive.set_checked(enabled)
+
+    def _on_custom_power_applied(self, summary: str):
+        self.osd.notify_feature_osd(
+            title="Modo Custom Lenovo (WMI)",
+            subtitle=str(summary or "")[:58],
+            icon_name="gpu_stack.svg",
+            accent_color=ThemeTokens.THERMAL_CUSTOM,
+        )
+        self._update_header_profile_pill()
+        self.dashboard_tab.update_telemetry()
+        self.performance_tab.refresh_profile_state()
+        self.tray_manager.update_tray_state()
+
+    def _apply_one_time_full_charge_from_tray(self, activate: bool):
+        if activate:
+            ok, msg = self.backend.start_one_time_full_charge()
+        else:
+            ok, msg = self.backend.cancel_one_time_full_charge(restore_conservation=True)
+        if not ok:
+            self.tray_manager.update_tray_state()
+            QMessageBox.warning(self, "Carga 100% Única", msg)
+            return
+        self._on_one_time_full_charge_changed(activate)
+        self.battery_tab.refresh_display()
+
+    def _on_one_time_full_charge_changed(self, active: bool):
+        cons_now = self.backend.get_conservation_mode()
+        self.dashboard_tab.item_conservation.set_checked(cons_now)
+        if active and self.backend.features.rapid_charge:
+            self.dashboard_tab.item_rapid_charge.set_checked(self.backend.get_rapid_charge())
+        self.osd.notify_feature_osd(
+            title="Carga 100% Única Ativada" if active else "Conservação 80% Restaurada",
+            subtitle="Retorna aos 80% ao completar a carga" if active else "Limite de proteção ~80% ativo no EC",
+            icon_name="edge_conservation.svg",
+            accent_color=ThemeTokens.COLOR_WARNING if active else ThemeTokens.STATUS_GREEN,
+        )
+        self.tray_manager.update_tray_state()
 
     def _on_user_preset_applied(self, preset_name: str, summary: str):
         self.osd.notify_feature_osd(
@@ -1002,35 +992,16 @@ class MainWindow(QMainWindow):
                 tot_w,
             )
 
-        # 2.5 Verificar Modo Mesa (Monitor Externo), Regras Wi-Fi SSID e Perfil Noturno
-        for bg_ev in (
-            self.backend.check_external_monitor_dock_mode(),
-            self.backend.check_wifi_ssid_rules(),
-            self.backend.check_night_schedule(),
-        ):
-            if not bg_ev:
-                continue
-            ev_t = bg_ev.get("type", "")
+        # 2.5 Verificar Modo Mesa (Monitor Externo)
+        dock_ev = self.backend.check_external_monitor_dock_mode()
+        if dock_ev:
+            ev_t = dock_ev.get("type", "")
             if ev_t in ("dock_mode_entered", "dock_mode_exited"):
                 self.osd.notify_feature_osd(
                     title="Modo Mesa (Monitor Externo)" if ev_t == "dock_mode_entered" else "Monitor Externo Desconectado",
-                    subtitle=str(bg_ev.get("summary", ""))[:58],
+                    subtitle=str(dock_ev.get("summary", ""))[:58],
                     icon_name="gpu_stack.svg",
                     accent_color=ThemeTokens.ACCENT_STEEL,
-                )
-            elif ev_t == "wifi_rule_applied":
-                self.osd.notify_feature_osd(
-                    title=f"Regra Wi-Fi: {str(bg_ev.get('ssid', ''))[:24]}",
-                    subtitle=str(bg_ev.get("summary", ""))[:58],
-                    icon_name="network_power.svg",
-                    accent_color=ThemeTokens.STATUS_GREEN,
-                )
-            elif ev_t in ("night_mode_entered", "night_mode_exited"):
-                self.osd.notify_feature_osd(
-                    title="Perfil Noturno Ativado" if ev_t == "night_mode_entered" else "Perfil Noturno Encerrado",
-                    subtitle=str(bg_ev.get("summary", ""))[:58],
-                    icon_name="thermal_quiet.svg",
-                    accent_color=ThemeTokens.THERMAL_QUIET,
                 )
             self._update_header_profile_pill()
             self.dashboard_tab.update_telemetry()
@@ -1038,7 +1009,29 @@ class MainWindow(QMainWindow):
             self.gpu_display_tab.refresh_all()
             self.tray_manager.update_tray_state()
 
-        # 3. Verificar Alertas Inteligentes de Ciclo de Vida e Temperatura da Bateria
+        # 3. Verificar Alertas Inteligentes de Ciclo de Vida, Carga 100% Única e NVMe
+        ot_ev = self.backend.check_one_time_full_charge_tick()
+        if ot_ev:
+            self.tray_manager.send_native_notification(
+                "Ducksvantage • Conservação 80% Reativada",
+                ot_ev["summary"],
+                "normal",
+            )
+            self.osd.notify_feature_osd(
+                title="Carga 100% Concluída",
+                subtitle=ot_ev["summary"][:58],
+                icon_name="edge_conservation.svg",
+                accent_color=ThemeTokens.STATUS_GREEN,
+            )
+            self.dashboard_tab.item_conservation.set_checked(self.backend.get_conservation_mode())
+            self.battery_tab.refresh_display()
+
+        nvme_al = self.backend.check_nvme_thermal_alert()
+        if nvme_al:
+            self.tray_manager.send_native_notification(
+                nvme_al["title"], nvme_al["message"], nvme_al.get("urgency", "critical")
+            )
+
         bat_alerts = self.backend.check_battery_smart_alerts(force_test=False)
         for al in bat_alerts:
             urg = al.get("urgency", "normal")
@@ -1062,6 +1055,8 @@ class MainWindow(QMainWindow):
                 self.performance_tab.refresh_profile_state()
             elif idx == 2:
                 self.battery_tab.refresh_display()
+            elif idx == 3:
+                self.about_tab.refresh_nvme_health(force=False)
             elif idx == 5:
                 self.gpu_display_tab.refresh_all()
             elif idx == 6:
@@ -1136,8 +1131,6 @@ class MainWindow(QMainWindow):
             self.telemetry_timer.stop()
         if hasattr(self, "about_tab") and hasattr(self.about_tab, "cleanup_workers"):
             self.about_tab.cleanup_workers()
-        if hasattr(self, "performance_tab") and hasattr(self.performance_tab, "_checkup_timer"):
-            self.performance_tab._checkup_timer.stop()
         if hasattr(self, "dbus_service") and self.dbus_service:
             self.dbus_service.stop()
         if hasattr(self, "backend") and self.backend:

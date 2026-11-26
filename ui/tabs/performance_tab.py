@@ -11,33 +11,29 @@ import os
 from typing import Dict, List
 from core.qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
-    QPushButton, QScrollArea, QSlider, QProgressBar,
-    Qt, QTimer, Signal, QFont, QMessageBox, QPixmap
+    QPushButton, QScrollArea, QSlider,
+    Qt, Signal, QTimer, QFont, QMessageBox, QPixmap
 )
 from ui.theme_tokens import ThemeTokens
-from ui.components import ProfileCard, ToggleSwitch, StatusBadge
-from ui.widgets import GpuModeBlock, FanCurveWidget, KeyCaptureButton  # Re-export compatível
+from ui.components import ToggleSwitch, StatusBadge, BasicModeHintBar
+from ui.widgets import FanCurveWidget
 
 ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "assets", "icons")
 
 
 class PerformanceTab(QWidget):
     """Aba CPU & Térmico: frequência, TDP, curva de ventoinhas, undervolt e perfis ACPI."""
-    profile_changed = Signal(str)
+    switch_advanced_requested = Signal()
 
     def __init__(self, backend, parent=None):
         super().__init__(parent)
         self.backend = backend
-        self.cards: Dict[str, ProfileCard] = {}
+        self._advanced_mode = self.backend.is_advanced_mode()
         self.gov_buttons: Dict[str, QPushButton] = {}
         self._watchdog_seconds = 0
         self._watchdog_timer = QTimer(self)
         self._watchdog_timer.setInterval(1000)
         self._watchdog_timer.timeout.connect(self._on_undervolt_watchdog_tick)
-
-        self._checkup_timer = QTimer(self)
-        self._checkup_timer.setInterval(500)
-        self._checkup_timer.timeout.connect(self._on_checkup_tick)
 
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
@@ -113,6 +109,14 @@ class PerformanceTab(QWidget):
         self.cpu_freq_badge = StatusBadge("-- MHz", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.ACCENT_STEEL)
         cpu_header.addWidget(self.cpu_freq_badge)
         cpu_layout.addLayout(cpu_header)
+
+        self.cpu_basic_summary_lbl = QLabel(
+            "Frequência e envelope térmico gerenciados pelo perfil ativo no Dashboard. "
+            "No Modo Avançado você pode forçar CPU Turbo Boost e Scaling Governor manualmente."
+        )
+        self.cpu_basic_summary_lbl.setWordWrap(True)
+        self.cpu_basic_summary_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        cpu_layout.addWidget(self.cpu_basic_summary_lbl)
 
         # Turbo Boost
         self.turbo_box = QFrame()
@@ -312,6 +316,7 @@ class PerformanceTab(QWidget):
 
         fc_preset_row = QHBoxLayout()
         fc_preset_row.setSpacing(8)
+        self.btn_fan_passive = None
         for p_key, p_title in [
             ("passive_gaming", "Passivo 0 RPM"),
             ("silent", "Silencioso"),
@@ -323,6 +328,8 @@ class PerformanceTab(QWidget):
             btn_fp.setFixedHeight(28)
             btn_fp.setStyleSheet(chip_btn_style)
             btn_fp.clicked.connect(lambda _c, k=p_key: self._apply_fan_curve_preset(k))
+            if p_key == "passive_gaming":
+                self.btn_fan_passive = btn_fp
             fc_preset_row.addWidget(btn_fp)
 
         fc_preset_row.addStretch()
@@ -345,6 +352,10 @@ class PerformanceTab(QWidget):
         s_layout = QVBoxLayout(self.sliders_box)
         s_layout.setContentsMargins(14, 12, 14, 12)
         s_layout.setSpacing(10)
+
+        rapl_note = QLabel("Limites Imediatos do Processador via Intel RAPL / Powercap:")
+        rapl_note.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px; border: none;")
+        s_layout.addWidget(rapl_note)
 
         pl1_row = QHBoxLayout()
         self.lbl_pl1_title = QLabel(f"PL1 • Potência Sustentada: {init_pl1} W")
@@ -449,16 +460,26 @@ class PerformanceTab(QWidget):
         uv_header.addLayout(uv_titles)
         uv_header.addStretch()
 
+        uv_hw_active = bool(getattr(self.backend, "_undervolt_active_in_hw", False))
+        uv_saved_unapplied = bool(has_cpu_uv and (uv_status.core_offset_mv < 0 or uv_status.cache_offset_mv < 0) and not uv_hw_active)
+
         if has_cpu_uv and not is_amd_uv:
-            uv_badge_txt = f"CORE: {uv_status.core_offset_mv} mV | CACHE: {uv_status.cache_offset_mv} mV"
+            if uv_saved_unapplied:
+                uv_badge_txt = f"SALVO: {uv_status.core_offset_mv} / {uv_status.cache_offset_mv} mV"
+            else:
+                uv_badge_txt = f"CORE: {uv_status.core_offset_mv} mV | CACHE: {uv_status.cache_offset_mv} mV"
         elif has_cpu_uv:
-            uv_badge_txt = f"CURVE OPT: {uv_status.core_offset_mv} mV"
+            uv_badge_txt = (
+                f"SALVO: {uv_status.core_offset_mv} mV"
+                if uv_saved_unapplied
+                else f"CURVE OPT: {uv_status.core_offset_mv} mV"
+            )
         else:
             uv_badge_txt = f"GPU OFFSET: +{uv_status.gpu_ac_offset_w} W"
         self.uv_badge = StatusBadge(
             uv_badge_txt,
             bg_color=ThemeTokens.BG_CARD_HOVER,
-            text_color=ThemeTokens.ACCENT_STEEL,
+            text_color=ThemeTokens.COLOR_WARNING if uv_saved_unapplied else ThemeTokens.ACCENT_STEEL,
         )
         uv_header.addWidget(self.uv_badge)
         uv_layout.addLayout(uv_header)
@@ -542,7 +563,7 @@ class PerformanceTab(QWidget):
         self.uv_gpu_offset_widget = QWidget()
         ac_off_row = QHBoxLayout(self.uv_gpu_offset_widget)
         ac_off_row.setContentsMargins(0, 0, 0, 0)
-        self.lbl_uv_gpu_offset = QLabel(f"Boost Dinâmico de Potência GPU: +{uv_status.gpu_ac_offset_w} W")
+        self.lbl_uv_gpu_offset = QLabel(f"Boost Dinâmico WMI AC da GPU: +{uv_status.gpu_ac_offset_w} W")
         self.lbl_uv_gpu_offset.setToolTip("Lenovo WMI GPU / AC Dynamic Offset")
         self.lbl_uv_gpu_offset.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.DemiBold))
         self.lbl_uv_gpu_offset.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; min-width: 270px;")
@@ -610,9 +631,16 @@ class PerformanceTab(QWidget):
             if has_cpu_uv
             else "Ajusta gpu_nv_ac_offset dentro dos limites da BIOS (10W a 30W)."
         )
-        self.lbl_uv_status = QLabel(
-            uv_status.last_emergency_reset if uv_status.last_emergency_reset else default_uv_note
-        )
+        if uv_status.last_emergency_reset:
+            init_uv_note = uv_status.last_emergency_reset
+        elif uv_saved_unapplied:
+            init_uv_note = (
+                f"Offsets salvos da última sessão ({uv_status.core_offset_mv} / {uv_status.cache_offset_mv} mV) "
+                "ainda não aplicados no hardware — clique em 'Aplicar Offsets' para ativar nesta sessão."
+            )
+        else:
+            init_uv_note = default_uv_note
+        self.lbl_uv_status = QLabel(init_uv_note)
         self.lbl_uv_status.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px; border: none;")
         uv_box_layout.addWidget(self.lbl_uv_status)
 
@@ -621,93 +649,12 @@ class PerformanceTab(QWidget):
         layout.addWidget(self.uv_card)
 
         # =====================================================================
-        # 3.5 Checkup Térmico Rápido (20s Baseline das Ventoinhas & Pasta Térmica)
-        # =====================================================================
-        self.checkup_card = QFrame()
-        self.checkup_card.setProperty("class", "card")
-        chk_layout = QVBoxLayout(self.checkup_card)
-        chk_layout.setContentsMargins(18, 16, 18, 16)
-        chk_layout.setSpacing(10)
-
-        chk_header = QHBoxLayout()
-        chk_titles = QVBoxLayout()
-        chk_titles.setSpacing(2)
-        chk_t = QLabel("Checkup Térmico Rápido (Baseline de Ventoinhas & Pasta)")
-        chk_t.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.DemiBold))
-        chk_t.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
-        chk_titles.addWidget(chk_t)
-
-        chk_sub = QLabel(
-            "Executa carga controlada de 20s para comparar Temperatura × Consumo (W) × RPM contra a baseline do notebook."
-        )
-        chk_sub.setWordWrap(True)
-        chk_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
-        chk_titles.addWidget(chk_sub)
-        chk_header.addLayout(chk_titles, stretch=1)
-
-        self.checkup_badge = StatusBadge("PRONTO", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.ACCENT_STEEL)
-        chk_header.addWidget(self.checkup_badge)
-
-        self.btn_start_checkup = QPushButton("Iniciar Checkup (20s)")
-        self.btn_start_checkup.setProperty("class", "primaryButton")
-        self.btn_start_checkup.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_start_checkup.setFixedHeight(30)
-        self.btn_start_checkup.clicked.connect(self._on_toggle_thermal_checkup)
-        chk_header.addWidget(self.btn_start_checkup)
-        chk_layout.addLayout(chk_header)
-
-        self.checkup_progress = QProgressBar()
-        self.checkup_progress.setRange(0, 100)
-        self.checkup_progress.setValue(0)
-        self.checkup_progress.setFixedHeight(8)
-        self.checkup_progress.setTextVisible(False)
-        self.checkup_progress.setStyleSheet(f"""
-            QProgressBar {{
-                background-color: {ThemeTokens.BG_SURFACE_DEEP};
-                border: 1px solid {ThemeTokens.BORDER_DEFAULT};
-                border-radius: 4px;
-            }}
-            QProgressBar::chunk {{
-                background-color: {ThemeTokens.ACCENT_STEEL};
-                border-radius: 3px;
-            }}
-        """)
-        self.checkup_progress.setVisible(False)
-        chk_layout.addWidget(self.checkup_progress)
-
-        chk_foot = QHBoxLayout()
-        self.lbl_checkup_status = QLabel("Nenhuma medição salva ainda.")
-        self.lbl_checkup_status.setWordWrap(True)
-        self.lbl_checkup_status.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
-        chk_foot.addWidget(self.lbl_checkup_status, stretch=1)
-
-        self.btn_clear_checkup = QPushButton("Limpar Histórico")
-        self.btn_clear_checkup.setProperty("class", "secondaryButton")
-        self.btn_clear_checkup.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_clear_checkup.setFixedHeight(26)
-        self.btn_clear_checkup.clicked.connect(self._on_clear_checkup_history)
-        chk_foot.addWidget(self.btn_clear_checkup)
-        chk_layout.addLayout(chk_foot)
-
-        has_checkup = any((feat.platform_profile, feat.turbo_boost, feat.cpu_governor, feat.fan_control))
-        self.checkup_card.setVisible(bool(has_checkup))
-        layout.addWidget(self.checkup_card)
-        self._refresh_checkup_summary()
-
-        # =====================================================================
         # 4. Aviso discreto do Modo Básico (oculto no Modo Avançado)
         # =====================================================================
-        self.basic_hint_card = QFrame()
-        self.basic_hint_card.setProperty("class", "subBox")
-        bh_lay = QHBoxLayout(self.basic_hint_card)
-        bh_lay.setContentsMargins(16, 12, 16, 12)
-        bh_lbl = QLabel(
-            "Modo Básico ativo • Alterne para 'Avançado' no final da barra lateral para acessar "
-            "Limites de Potência (PL1/PL2), Undervolt, Governor manual e Checkup Térmico."
+        self.basic_hint_card = BasicModeHintBar(
+            "Modo Básico ativo • Ajuste fino (Turbo Boost, Governor, Curva PWM de 5 pontos, Passivo 0 RPM, PL1/PL2 RAPL e Undervolt) disponível no Modo Avançado."
         )
-        bh_lbl.setWordWrap(True)
-        bh_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
-        bh_lay.addWidget(bh_lbl, stretch=1)
+        self.basic_hint_card.switch_advanced_requested.connect(self.switch_advanced_requested.emit)
         layout.addWidget(self.basic_hint_card)
         layout.addStretch()
 
@@ -720,18 +667,35 @@ class PerformanceTab(QWidget):
         self.refresh_profile_state()
 
     def set_advanced_mode(self, advanced: bool):
-        """Exibe ou recolhe controles avançados (Governor, PL1/PL2, Alvos WMI, Undervolt e Checkup)."""
+        """Exibe ou recolhe controles técnicos (Turbo, Governor, Curva PWM, 0 RPM, PL1/PL2 e Undervolt)."""
         feat = self.backend.features
         adv = bool(advanced)
+        self._advanced_mode = adv
+
+        self.cpu_basic_summary_lbl.setVisible(not adv)
+        self.turbo_box.setVisible(bool(adv and feat.turbo_boost))
         self.gov_box.setVisible(bool(adv and feat.cpu_governor and self.gov_buttons))
+
+        self.tdp_badge.setVisible(bool(adv and feat.custom_tdp))
+        self.fan_ctrl_box.setVisible(bool(feat.fan_control))
+        self.fan_curve_widget.setVisible(bool(adv and feat.fan_control))
+        self.btn_apply_fan_curve.setVisible(bool(adv and feat.fan_control))
+        if getattr(self, "btn_fan_passive", None) is not None:
+            self.btn_fan_passive.setVisible(bool(adv and feat.fan_control))
         self.wmi_temp_widget.setVisible(bool(adv and (feat.wmi_cpu_temp or feat.wmi_gpu_temp)))
         self.sliders_box.setVisible(bool(adv and feat.custom_tdp))
         self.tdp_card.setVisible(bool(feat.fan_control or (adv and feat.custom_tdp)))
+
+        if feat.fan_control:
+            self.lbl_fan_curve_status.setText(
+                "Arraste os pontos ou selecione um preset térmico abaixo."
+                if adv
+                else "Selecione um modo rápido de ventilação ou ative o Modo Avançado para editar a curva."
+            )
+
         has_cpu_uv = feat.cpu_undervolt
         has_gpu_off = feat.wmi_gpu_ac_offset
         self.uv_card.setVisible(bool(adv and (has_cpu_uv or has_gpu_off)))
-        has_checkup = any((feat.platform_profile, feat.turbo_boost, feat.cpu_governor, feat.fan_control))
-        self.checkup_card.setVisible(bool(adv and has_checkup))
         self.basic_hint_card.setVisible(not adv)
 
     # =========================================================================
@@ -787,7 +751,7 @@ class PerformanceTab(QWidget):
             self.lbl_uv_core.setText(f"Offset de Tensão dos Núcleos (Core): {core_mv} mV")
             self.lbl_uv_core.setToolTip(f"Intel MSR Voltage Plane 0 ({hex_core})")
         self.lbl_uv_cache.setText(f"Offset de Tensão do Cache (Ring): {cache_mv} mV")
-        self.lbl_uv_gpu_offset.setText(f"Boost Dinâmico de Potência GPU: +{gpu_w} W")
+        self.lbl_uv_gpu_offset.setText(f"Boost Dinâmico WMI AC da GPU: +{gpu_w} W")
 
     def _set_uv_sliders(self, core_mv: int, cache_mv: int):
         self.slider_uv_core.setValue(core_mv)
@@ -816,10 +780,13 @@ class PerformanceTab(QWidget):
 
         if feat.cpu_undervolt and self.backend.get_cpu_vendor() != "AMD":
             self.uv_badge.setText(f"CORE: {core_mv} mV | CACHE: {cache_mv} mV")
+            self.uv_badge.setColor(ThemeTokens.BG_CARD_HOVER, ThemeTokens.ACCENT_STEEL)
         elif feat.cpu_undervolt:
             self.uv_badge.setText(f"CURVE OPT: {core_mv} mV")
+            self.uv_badge.setColor(ThemeTokens.BG_CARD_HOVER, ThemeTokens.ACCENT_STEEL)
         elif gpu_w is not None:
             self.uv_badge.setText(f"GPU OFFSET: +{gpu_w} W")
+            self.uv_badge.setColor(ThemeTokens.BG_CARD_HOVER, ThemeTokens.ACCENT_STEEL)
 
         if feat.cpu_undervolt and (core_mv < 0 or cache_mv < 0):
             self._watchdog_seconds = 15
@@ -970,79 +937,3 @@ class PerformanceTab(QWidget):
         else:
             self.current_badge.setText("EQUILIBRADO")
             self.current_badge.setColor(badge_bg, ThemeTokens.THERMAL_BALANCED)
-
-    # =========================================================================
-    # Métodos do Checkup Térmico Rápido (Baseline 20s)
-    # =========================================================================
-    def _refresh_checkup_summary(self):
-        if not hasattr(self, "lbl_checkup_status"):
-            return
-        hist = self.backend.get_thermal_checkup_history()
-        self.btn_clear_checkup.setVisible(bool(hist))
-        if not hist:
-            self.checkup_badge.setText("PRONTO")
-            self.checkup_badge.setColor(ThemeTokens.BG_CARD_HOVER, ThemeTokens.ACCENT_STEEL)
-            self.lbl_checkup_status.setText("Nenhuma baseline registrada. Clique em 'Iniciar Checkup (20s)' com o notebook na tomada.")
-            return
-        base = hist[0]
-        last = hist[-1]
-        verdict = str(last.get("verdict", "OK"))
-        v_col = ThemeTokens.STATUS_GREEN if ("SAUDÁVEL" in verdict or "BASELINE" in verdict) else (
-            ThemeTokens.STATUS_WARNING if "ATENÇÃO" in verdict else ThemeTokens.STATUS_DANGER
-        )
-        self.checkup_badge.setText(verdict)
-        self.checkup_badge.setColor(ThemeTokens.BG_CARD_HOVER, v_col)
-        delta_s = f" ({last.get('delta_vs_baseline_c', 0):+.1f}°C vs baseline)" if len(hist) > 1 else " (Baseline inicial)"
-        rpm_s = f" • {last['max_fan_rpm']} RPM" if last.get("max_fan_rpm", 0) > 0 else ""
-        self.lbl_checkup_status.setText(
-            f"Último ({last['timestamp']}): Pico {last['peak_temp_c']:.1f}°C | Média {last['avg_temp_c']:.1f}°C | "
-            f"{last['avg_power_w']:.1f}W{rpm_s}{delta_s}  •  Baseline ({base['timestamp']}): {base['peak_temp_c']:.1f}°C."
-        )
-
-    def _on_toggle_thermal_checkup(self):
-        if self._checkup_timer.isActive():
-            self._checkup_timer.stop()
-            self.backend.cancel_thermal_checkup()
-            self.btn_start_checkup.setText("Iniciar Checkup (20s)")
-            self.checkup_progress.setVisible(False)
-            self._refresh_checkup_summary()
-            return
-
-        ok, msg = self.backend.start_thermal_checkup(duration_sec=20, spawn_load=True)
-        if not ok:
-            QMessageBox.warning(self, "Checkup Térmico", msg)
-            return
-        self.btn_start_checkup.setText("Cancelar Checkup")
-        self.checkup_progress.setValue(2)
-        self.checkup_progress.setVisible(True)
-        self.checkup_badge.setText("EM ANDAMENTO")
-        self.checkup_badge.setColor(ThemeTokens.BG_CARD_HOVER, ThemeTokens.STATUS_WARNING)
-        self.lbl_checkup_status.setText(msg)
-        self._checkup_timer.start()
-
-    def _on_checkup_tick(self):
-        st = self.backend.poll_thermal_checkup()
-        if not st.get("running") and not st.get("completed"):
-            self._checkup_timer.stop()
-            self.btn_start_checkup.setText("Iniciar Checkup (20s)")
-            self.checkup_progress.setVisible(False)
-            return
-
-        self.checkup_progress.setValue(int(st.get("progress_pct", 0)))
-        if st.get("completed"):
-            self._checkup_timer.stop()
-            self.btn_start_checkup.setText("Iniciar Checkup (20s)")
-            self.checkup_progress.setVisible(False)
-            self._refresh_checkup_summary()
-            QMessageBox.information(self, "Checkup Térmico Concluído", st.get("summary", "Checkup finalizado."))
-            return
-
-        rpm_txt = f" | {st['max_fan_rpm']} RPM" if st.get("max_fan_rpm", 0) > 0 else ""
-        self.lbl_checkup_status.setText(
-            f"Medindo ({st['elapsed_sec']:.0f}/{st['duration_sec']}s): Atual {st['current_temp_c']:.1f}°C | "
-            f"Pico {st['peak_temp_c']:.1f}°C | {st['avg_power_w']:.1f}W{rpm_txt}"
-        )
-
-    def _on_clear_checkup_history(self):
-        self.backend.clear_thermal_checkup_history()
-        self._refresh_checkup_summary()

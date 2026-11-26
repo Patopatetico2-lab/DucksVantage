@@ -27,7 +27,7 @@ def _terminate_previous_instances() -> None:
         "--status", "--json", "--diagnostic", "--list-presets",
         "--cycle-profile", "--cycle-hz", "--apply-preset",
         "--profile", "--conservation", "--install-udev", "--autostart",
-        "--cinema", "--audio-preset", "--eco",
+        "--eco",
     }
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
@@ -66,8 +66,6 @@ def run_cli_mode(args, backend: HardwareBackend):
                 "profile": backend.get_platform_profile(),
                 "active_game": backend.get_active_game(),
                 "eco_mode": backend.get_eco_travel_mode(),
-                "cinema_mode": backend.get_cinema_mode(),
-                "audio_preset": backend.get_audio_preset(),
                 "cpu": {"temp_c": cpu.temperature_c, "freq_mhz": cpu.frequency_mhz, "governor": cpu.governor},
                 "gpu": {"available": gpu.available, "temp_c": gpu.temperature_c, "power_w": gpu.power_draw_w, "state": gpu.runtime_state},
                 "battery": {"available": bat.available, "percent": bat.capacity_percent, "status": bat.status, "ac": bat.ac_connected, "eta": bat.estimated_label},
@@ -166,16 +164,6 @@ def run_cli_mode(args, backend: HardwareBackend):
         ok, msg = backend.set_eco_travel_mode(target_e)
         print(json.dumps({"ok": ok, "eco_mode": target_e, "message": msg}, ensure_ascii=False) if use_json else f"[{'OK' if ok else 'ERRO'}] Eco-Mode: {msg}")
 
-    if getattr(args, "cinema", None):
-        arg_c = str(args.cinema).lower()
-        target_c = (not backend.get_cinema_mode()) if arg_c == "toggle" else (arg_c in ("1", "true", "on"))
-        ok, msg = backend.set_cinema_mode(target_c)
-        print(json.dumps({"ok": ok, "cinema_mode": target_c, "message": msg}, ensure_ascii=False) if use_json else f"[{'OK' if ok else 'ERRO'}] Modo Cinema: {msg}")
-
-    if getattr(args, "audio_preset", None):
-        ok, msg = backend.set_audio_preset(str(args.audio_preset))
-        print(json.dumps({"ok": ok, "audio_preset": str(args.audio_preset), "message": msg}, ensure_ascii=False) if use_json else f"[{'OK' if ok else 'ERRO'}] Áudio: {msg}")
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -213,15 +201,13 @@ def main():
     parser.add_argument("--list-presets", action="store_true", help="Lista todos os presets personalizados salvos")
     parser.add_argument("--diagnostic", action="store_true", help="Imprime o relatório técnico de diagnóstico de hardware")
     parser.add_argument("--eco", type=str, choices=["on", "off", "toggle"], help="Ativa/desativa/alterna o Modo Viagem")
-    parser.add_argument("--cinema", type=str, choices=["on", "off", "toggle"], help="Ativa/desativa/alterna o Modo Cinema & DND")
-    parser.add_argument("--audio-preset", type=str, choices=["normal", "voice_call", "privacy_mute"], help="Aplica preset de áudio PipeWire")
     parser.add_argument("--json", action="store_true", help="Formata saída CLI compatível em JSON (status, presets, ações)")
     args = parser.parse_args()
 
     if (
         args.status or args.profile or args.conservation or args.install_udev or args.autostart
         or args.cycle_profile or args.cycle_hz or args.apply_preset or args.list_presets or args.diagnostic
-        or args.eco or args.cinema or args.audio_preset
+        or args.eco
     ):
         backend = HardwareBackend()
         try:

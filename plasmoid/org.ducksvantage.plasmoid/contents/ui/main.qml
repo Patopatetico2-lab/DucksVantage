@@ -19,9 +19,9 @@ PlasmoidItem {
     property bool batAc: true
     property int currentHz: 60
     property bool ecoActive: false
-    property bool cinemaActive: false
 
     readonly property bool vertical: Plasmoid.formFactor === PlasmaCore.Types.Vertical
+    readonly property string statusQueryCmd: "sh -c 'OUT=$(qdbus6 org.ducksvantage.Control /org/ducksvantage/Control org.ducksvantage.Control.GetStatusJson 2>/dev/null || qdbus org.ducksvantage.Control /org/ducksvantage/Control org.ducksvantage.Control.GetStatusJson 2>/dev/null); if [ -n \"$OUT\" ]; then printf \"%s\" \"$OUT\"; else exec ducksvantage --status --json; fi'"
 
     function profileShort(prof) {
         if (prof === "max-power") return "MAX"
@@ -39,8 +39,8 @@ PlasmoidItem {
         return "#94a3b8"
     }
 
-    function runDv(args) {
-        var cmd = "ducksvantage " + args
+    function runDv(dbusCmd, cliArgs) {
+        var cmd = "sh -c 'if qdbus6 org.ducksvantage.Control /org/ducksvantage/Control org.ducksvantage.Control.RunCommand \"" + dbusCmd + "\" >/dev/null 2>&1 || qdbus org.ducksvantage.Control /org/ducksvantage/Control org.ducksvantage.Control.RunCommand \"" + dbusCmd + "\" >/dev/null 2>&1; then exit 0; else exec ducksvantage " + cliArgs + "; fi'"
         execAction.connectSource(cmd)
         refreshTimer.restart()
     }
@@ -63,7 +63,6 @@ PlasmoidItem {
                     root.modelName = obj.model || "Lenovo"
                     root.activeProfile = obj.profile || "balanced"
                     root.ecoActive = !!obj.eco_mode
-                    root.cinemaActive = !!obj.cinema_mode
                     if (obj.cpu) root.cpuTemp = obj.cpu.temp_c || 0
                     if (obj.gpu) {
                         root.gpuAvailable = !!obj.gpu.available
@@ -89,17 +88,17 @@ PlasmoidItem {
         connectedSources: []
         onNewData: function(sourceName, _data) {
             execAction.disconnectSource(sourceName)
-            execPoll.connectSource("ducksvantage --status --json")
+            execPoll.connectSource(root.statusQueryCmd)
         }
     }
 
     Timer {
         id: refreshTimer
-        interval: 3000
+        interval: root.expanded ? 3000 : 6000
         running: true
         repeat: true
         triggeredOnStart: true
-        onTriggered: execPoll.connectSource("ducksvantage --status --json")
+        onTriggered: execPoll.connectSource(root.statusQueryCmd)
     }
 
     compactRepresentation: MouseArea {
@@ -109,7 +108,7 @@ PlasmoidItem {
         acceptedButtons: Qt.LeftButton | Qt.MiddleButton
         onClicked: function(mouse) {
             if (mouse.button === Qt.MiddleButton) {
-                root.runDv("--cycle-profile --json")
+                root.runDv("cycle_profile", "--cycle-profile --json")
             } else {
                 root.expanded = !root.expanded
             }
@@ -191,28 +190,28 @@ PlasmoidItem {
                 text: "Silencioso"
                 checkable: true
                 checked: root.activeProfile === "low-power" || root.activeProfile === "quiet"
-                onClicked: root.runDv("--profile low-power")
+                onClicked: root.runDv("profile:low-power", "--profile low-power")
             }
             PlasmaComponents3.Button {
                 Layout.fillWidth: true
                 text: "Equilibrado"
                 checkable: true
                 checked: root.activeProfile === "balanced"
-                onClicked: root.runDv("--profile balanced")
+                onClicked: root.runDv("profile:balanced", "--profile balanced")
             }
             PlasmaComponents3.Button {
                 Layout.fillWidth: true
                 text: "Desempenho"
                 checkable: true
                 checked: root.activeProfile === "performance"
-                onClicked: root.runDv("--profile performance")
+                onClicked: root.runDv("profile:performance", "--profile performance")
             }
             PlasmaComponents3.Button {
                 Layout.fillWidth: true
                 text: "Max-Power"
                 checkable: true
                 checked: root.activeProfile === "max-power"
-                onClicked: root.runDv("--profile max-power")
+                onClicked: root.runDv("profile:max-power", "--profile max-power")
             }
         }
 
@@ -223,14 +222,14 @@ PlasmoidItem {
             PlasmaComponents3.Button {
                 Layout.fillWidth: true
                 text: "Alternar Hz (" + root.currentHz + ")"
-                onClicked: root.runDv("--cycle-hz --json")
+                onClicked: root.runDv("cycle_hz", "--cycle-hz --json")
             }
             PlasmaComponents3.Button {
                 Layout.fillWidth: true
                 text: root.ecoActive ? "Eco: ON" : "Eco-Mode"
                 checkable: true
                 checked: root.ecoActive
-                onClicked: root.runDv("--eco toggle")
+                onClicked: root.runDv("eco_toggle", "--eco toggle")
             }
         }
 
@@ -240,17 +239,10 @@ PlasmoidItem {
 
             PlasmaComponents3.Button {
                 Layout.fillWidth: true
-                text: root.cinemaActive ? "Cinema: ON" : "Modo Cinema"
-                checkable: true
-                checked: root.cinemaActive
-                onClicked: root.runDv("--cinema toggle")
-            }
-            PlasmaComponents3.Button {
-                Layout.fillWidth: true
                 text: "Abrir Painel"
                 icon.name: "configure"
                 onClicked: {
-                    execAction.connectSource("nohup ducksvantage >/dev/null 2>&1 &")
+                    execAction.connectSource("sh -c 'qdbus6 org.ducksvantage.Control /org/ducksvantage/Control org.ducksvantage.Control.RunCommand \"show_window\" >/dev/null 2>&1 || qdbus org.ducksvantage.Control /org/ducksvantage/Control org.ducksvantage.Control.RunCommand \"show_window\" >/dev/null 2>&1 || nohup ducksvantage >/dev/null 2>&1 &'")
                     root.expanded = false
                 }
             }

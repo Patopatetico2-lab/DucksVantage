@@ -43,35 +43,13 @@ class TelemetryBatteryNetworkMixin:
         if not isinstance(raw_hist, list):
             raw_hist = []
 
+        # Descartar quaisquer entradas sintéticas/estimadas legadas; manter somente leituras reais
+        raw_hist = [
+            item for item in raw_hist
+            if isinstance(item, dict) and not item.get("estimated", False)
+        ]
+
         today_str = datetime.date.today().isoformat()
-
-        # Se o histórico estiver vazio ou com apenas 1 ponto, semear evolução realista baseada nos ciclos reais
-        # da bateria atual para que o gráfico exiba imediatamente a curva de preservação do Modo de Conservação
-        if len(raw_hist) < 5:
-            design_wh = bat.energy_design_wh
-            cur_full_wh = bat.energy_full_wh
-            cur_cycles = max(1, bat.cycle_count)
-            today_dt = datetime.date.today()
-
-            seeded = []
-            steps = 5
-            for i in range(steps, 0, -1):
-                past_date = (today_dt - datetime.timedelta(days=i * 14)).isoformat()
-                ratio = i / float(steps)
-                # Interpolação suave entre a capacidade de fábrica (ou levemente superior no início) e a atual
-                interp_full = round(cur_full_wh + (design_wh - cur_full_wh) * (ratio * 0.65), 2)
-                interp_full = min(design_wh, max(cur_full_wh, interp_full))
-                interp_health = round(min(100.0, (interp_full / design_wh) * 100.0), 1)
-                interp_cycles = max(1, int(cur_cycles - (i * max(1, cur_cycles // 8))))
-                seeded.append({
-                    "timestamp": past_date,
-                    "energy_full_wh": interp_full,
-                    "energy_design_wh": design_wh,
-                    "health_percent": interp_health,
-                    "cycle_count": interp_cycles,
-                    "estimated": True,
-                })
-            raw_hist = seeded
 
         # Atualizar ou adicionar o ponto de hoje com os dados reais do sysfs
         today_entry = {
@@ -87,7 +65,7 @@ class TelemetryBatteryNetworkMixin:
         else:
             raw_hist.append(today_entry)
 
-        # Manter até 24 pontos históricos
+        # Manter até 24 pontos históricos reais
         raw_hist = raw_hist[-24:]
         self.settings.set("battery_history", raw_hist)
 
@@ -98,7 +76,7 @@ class TelemetryBatteryNetworkMixin:
                 energy_design_wh=float(item.get("energy_design_wh", bat.energy_design_wh)),
                 health_percent=float(item.get("health_percent", bat.health_percent)),
                 cycle_count=int(item.get("cycle_count", bat.cycle_count)),
-                is_estimated=bool(item.get("estimated", False)),
+                is_estimated=False,
             )
             for item in raw_hist
         ]
@@ -110,9 +88,6 @@ class TelemetryBatteryNetworkMixin:
     # =========================================================================
     # Bateria: Exclusão Mútua (Conservation Mode vs. Rapid Charge)
     # =========================================================================
-    def is_conservation_mode_supported(self) -> bool:
-        return self.features.conservation_mode
-
     def get_conservation_mode(self) -> bool:
         if not self.paths.conservation_mode:
             return False
@@ -133,6 +108,9 @@ class TelemetryBatteryNetworkMixin:
         ok, msg = PermissionsManager.write_sysfs_value(self.paths.conservation_mode, val)
         if ok:
             self._last_conservation = enable
+            if enable and bool(self.settings.get("one_time_full_charge_active", False)):
+                self.settings.set("one_time_full_charge_active", False)
+                self.settings.set("one_time_full_charge_until_ts", 0.0)
         return ok, msg
 
     def get_rapid_charge(self) -> bool:
@@ -741,22 +719,23 @@ class TelemetryBatteryNetworkMixin:
             info.health_percent = round(min(health, 100.0), 1)
 
         raw_bat_temp = self._read_file_int(os.path.join(b_dir, "temp"), default=0)
+        temp_c = 0.0
         if raw_bat_temp > 0:
-            info.temperature_c = round(raw_bat_temp / 10.0, 1)
+            temp_c = raw_bat_temp / 10.0
         else:
-            # Fallback para sensor térmico de chassi/NVMe/SODIMM próximo ao compartimento da bateria
-            base_c = 30.5
-            if self.paths.nvme_temp_input:
-                nv_t = self._read_file_int(self.paths.nvme_temp_input, 0) / 1000.0
-                if 20.0 <= nv_t <= 75.0:
-                    base_c = max(28.0, min(48.0, nv_t * 0.72))
-            elif self.paths.cpu_temp_input:
-                cpu_t = self._read_file_int(self.paths.cpu_temp_input, 0) / 1000.0
-                if cpu_t > 0:
-                    base_c = max(28.0, min(47.0, 24.0 + (cpu_t - 35.0) * 0.25))
-            if info.status.lower() in ("charging", "discharging") and info.power_draw_w > 15.0:
-                base_c += min(4.5, info.power_draw_w * 0.08)
-            info.temperature_c = round(base_c, 1)
+            # Tenta sensor hwmon real anexado diretamente ao nó da bateria (BAT*/hwmon/hwmon*/temp1_input)
+            for h_temp in sorted(glob.glob(os.path.join(b_dir, "hwmon", "hwmon*", "temp1_input"))):
+                mdeg = self._read_file_int(h_temp, default=0)
+                if mdeg > 0:
+                    temp_c = mdeg / 1000.0
+                    break
+
+        if 0.0 < temp_c < 120.0:
+            info.temperature_available = True
+            info.temperature_c = round(temp_c, 1)
+        else:
+            info.temperature_available = False
+            info.temperature_c = 0.0
 
         info.ac_connected = (self._get_ac_online() == 1)
         info.conservation_mode_supported = self.features.conservation_mode
@@ -790,31 +769,26 @@ class TelemetryBatteryNetworkMixin:
 
 
     # =========================================================================
-    # ELITE 9: Controle de Economia de Energia de Rede (Wi-Fi / Ethernet Power Saving)
+    # ELITE 9: Controle de Economia de Energia de Rede (Wi-Fi Power Saving)
     # =========================================================================
-    def _discover_network_interfaces(self) -> Tuple[Optional[str], Optional[str]]:
-        """Identifica dinamicamente as interfaces Wi-Fi (wlan*/wlp*) e Ethernet (en*/eth*)."""
-        wifi_iface = None
-        eth_iface = None
+    def _discover_wifi_interface(self) -> Optional[str]:
+        """Identifica dinamicamente a interface Wi-Fi (wlan*/wlp*)."""
         for net_dir in sorted(glob.glob("/sys/class/net/*")):
             ifname = os.path.basename(net_dir)
             if ifname == "lo" or ifname.startswith(("docker", "veth", "br-", "virbr", "tun", "tap")):
                 continue
             if os.path.isdir(os.path.join(net_dir, "wireless")) or os.path.isdir(os.path.join(net_dir, "phy80211")):
-                if not wifi_iface:
-                    wifi_iface = ifname
-            elif os.path.exists(os.path.join(net_dir, "device")) and not eth_iface:
-                eth_iface = ifname
-        return wifi_iface, eth_iface
+                return ifname
+        return None
 
     def get_network_power_status(self, force: bool = False) -> NetworkPowerStatus:
-        """Lê o estado real de economia de energia das placas Wi-Fi (iwlwifi/rtw89/mt7921) e Ethernet (r8169) com cache seguro de 5s."""
+        """Lê o estado real de economia de energia da placa Wi-Fi com cache seguro de 5s."""
         now = time.time()
         if not force and self._cached_net_power_status is not None and (now - self._last_net_power_status_time < 5.0):
             return self._cached_net_power_status
 
         status = NetworkPowerStatus()
-        wifi_if, eth_if = self._discover_network_interfaces()
+        wifi_if = self._discover_wifi_interface()
 
         if wifi_if:
             status.wifi_available = True
@@ -851,33 +825,20 @@ class TelemetryBatteryNetworkMixin:
                 else:
                     status.wifi_power_save_on = not bool(self.settings.get("wifi_low_latency_gaming", False))
 
-        if eth_if:
-            status.eth_available = True
-            status.eth_iface = eth_if
-            uev = self._read_file_text(f"/sys/class/net/{eth_if}/device/uevent") or ""
-            for line in uev.splitlines():
-                if line.startswith("DRIVER="):
-                    status.eth_driver = line.split("=", 1)[1].strip()
-                    break
-            pm_ctrl = self._read_file_text(f"/sys/class/net/{eth_if}/device/power/control")
-            if pm_ctrl:
-                status.eth_power_save_on = (pm_ctrl.strip() == "auto")
-            else:
-                status.eth_power_save_on = bool(self.settings.get("eth_power_saving", True))
-
         self._cached_net_power_status = status
         self._last_net_power_status_time = now
         return status
 
-    def set_wifi_power_saving(self, enable_saving: bool) -> Tuple[bool, str]:
+    def set_wifi_power_saving(self, enable_saving: bool, allow_elevation: bool = True) -> Tuple[bool, str]:
         """
         Ativa ou desativa a Economia de Energia do Wi-Fi:
         - enable_saving = False -> Modo Jogos Online (Power Save OFF / Baixa Latência / Zero Packet Loss)
         - enable_saving = True  -> Modo Economia de Bateria (Power Save ON / Runtime PM auto)
+        Suporta 'iw' no kernel e persistência no NetworkManager via 'nmcli' (802-11-wireless.powersave).
         """
         self._cached_net_power_status = None
         self._last_net_power_status_time = 0.0
-        wifi_if, _ = self._discover_network_interfaces()
+        wifi_if = self._discover_wifi_interface()
         if not wifi_if:
             return False, "Nenhuma interface Wi-Fi detectada neste sistema."
 
@@ -885,6 +846,7 @@ class TelemetryBatteryNetworkMixin:
         pm_word = "auto" if enable_saving else "on"
         pm_path = f"/sys/class/net/{wifi_if}/device/power/control"
         has_iw = bool(shutil.which("iw"))
+        has_nmcli = bool(shutil.which("nmcli"))
 
         iw_ok = False
         if has_iw:
@@ -898,11 +860,38 @@ class TelemetryBatteryNetworkMixin:
             except Exception:
                 pass
 
+        # NetworkManager sobrescreve 'iw set power_save' ao reconectar; ajusta também o perfil ativo se disponível
+        nmcli_ok = False
+        if has_nmcli:
+            try:
+                res_nm = subprocess.run(
+                    ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+                    capture_output=True, text=True, timeout=2
+                )
+                if res_nm.returncode == 0:
+                    conn_name = ""
+                    for line in res_nm.stdout.splitlines():
+                        if ":" in line:
+                            c_name, c_dev = line.rsplit(":", 1)
+                            if c_dev.strip() == wifi_if and c_name.strip():
+                                conn_name = c_name.strip()
+                                break
+                    if conn_name:
+                        nm_ps_val = "3" if enable_saving else "2"
+                        res_mod = subprocess.run(
+                            ["nmcli", "connection", "modify", conn_name, "802-11-wireless.powersave", nm_ps_val],
+                            capture_output=True, text=True, timeout=3
+                        )
+                        if res_mod.returncode == 0:
+                            nmcli_ok = True
+            except Exception:
+                pass
+
         sysfs_ok = False
         if os.path.exists(pm_path) and os.access(pm_path, os.W_OK):
-            sysfs_ok, _ = PermissionsManager.write_sysfs_value(pm_path, pm_word)
+            sysfs_ok, _ = PermissionsManager.write_sysfs_value(pm_path, pm_word, allow_elevation=allow_elevation)
 
-        if ((has_iw and not iw_ok) or (not has_iw and not sysfs_ok)) and shutil.which("pkexec"):
+        if allow_elevation and ((has_iw and not iw_ok) or (not has_iw and not sysfs_ok and not nmcli_ok)) and shutil.which("pkexec"):
             cmds = []
             if has_iw and not iw_ok:
                 cmds.append(f"iw dev {wifi_if} set power_save {state_word}")
@@ -921,9 +910,9 @@ class TelemetryBatteryNetworkMixin:
                 except Exception:
                     pass
 
-        if has_iw and not iw_ok:
+        if has_iw and not iw_ok and not nmcli_ok:
             return False, f"Permissão necessária para alterar o Power Save do Wi-Fi ({wifi_if}) via iw."
-        if not has_iw and not sysfs_ok:
+        if not has_iw and not sysfs_ok and not nmcli_ok:
             return False, f"Sem permissão de escrita em {pm_path}."
 
         self.settings.set("wifi_low_latency_gaming", not enable_saving)
@@ -933,29 +922,6 @@ class TelemetryBatteryNetworkMixin:
             else f"Modo Jogos Online ({wifi_if}) ATIVADO: Power Save OFF para latência mínima"
         )
         return True, mode_desc
-
-    def set_ethernet_power_saving(self, enable_saving: bool) -> Tuple[bool, str]:
-        """Ativa ('auto') ou desativa ('on') o gerenciamento de energia PCIe da porta Ethernet Gigabit."""
-        self._cached_net_power_status = None
-        self._last_net_power_status_time = 0.0
-        _, eth_if = self._discover_network_interfaces()
-        self.settings.set("eth_power_saving", bool(enable_saving))
-        if not eth_if:
-            return False, "Interface Ethernet dedicada não encontrada."
-
-        pm_path = f"/sys/class/net/{eth_if}/device/power/control"
-        target_val = "auto" if enable_saving else "on"
-        if os.path.exists(pm_path):
-            ok, _ = PermissionsManager.write_sysfs_value(pm_path, target_val)
-            if ok:
-                return (
-                    True,
-                    f"Economia PCIe Ethernet ({eth_if}) {'ativada (auto)' if enable_saving else 'desativada (on - desempenho máximo)'}.",
-                )
-        return (
-            True,
-            f"Preferência PCIe Ethernet ({eth_if}: {'auto' if enable_saving else 'on'}) salva (instale as regras UDEV para escrita direta).",
-        )
 
     # =========================================================================
     # ELITE 10: Monitor de Ciclo de Vida e Alertas Inteligentes da Bateria
@@ -990,6 +956,7 @@ class TelemetryBatteryNetworkMixin:
             "health_percent": bat.health_percent,
             "cycle_count": cycles,
             "temperature_c": bat.temperature_c,
+            "temperature_available": bool(bat.temperature_available),
             "recommendation": recommendation,
         }
 
@@ -997,20 +964,32 @@ class TelemetryBatteryNetworkMixin:
         return {
             "alerts_enabled": bool(self.settings.get("battery_alerts_enabled", True)),
             "alert_80_enabled": bool(self.settings.get("battery_80_alert_enabled", True)),
+            "temp_alert_enabled": bool(self.settings.get("battery_temp_alert_enabled", True)),
             "temp_threshold_c": float(self.settings.get("battery_temp_alert_c", 42.0)),
         }
 
-    def set_battery_alert_settings(self, alerts_enabled: bool, alert_80_enabled: bool, temp_threshold_c: float) -> None:
-        self.settings.set("battery_alerts_enabled", bool(alerts_enabled))
-        self.settings.set("battery_80_alert_enabled", bool(alert_80_enabled))
+    def set_battery_alert_settings(
+        self,
+        alerts_enabled: bool,
+        alert_80_enabled: bool,
+        temp_threshold_c: float,
+        temp_alert_enabled: Optional[bool] = None,
+    ) -> None:
+        if temp_alert_enabled is None:
+            temp_alert_enabled = bool(alerts_enabled)
+        a80 = bool(alert_80_enabled)
+        atemp = bool(temp_alert_enabled)
+        self.settings.set("battery_80_alert_enabled", a80)
+        self.settings.set("battery_temp_alert_enabled", atemp)
+        self.settings.set("battery_alerts_enabled", bool(alerts_enabled or a80 or atemp))
         self.settings.set("battery_temp_alert_c", round(max(36.0, min(52.0, float(temp_threshold_c))), 1))
 
     def check_battery_smart_alerts(self, force_test: bool = False) -> List[Dict[str, str]]:
         """
-        Monitora silenciosamente em segundo plano a carga e a temperatura da bateria.
+        Monitora silenciosamente em segundo plano a carga e a temperatura real da bateria.
         Dispara alertas estruturados para a bandeja do KDE Plasma / notify-send quando:
         1. A bateria atinge o limite de 80% do Modo de Conservação.
-        2. A temperatura da bateria ultrapassa o limite seguro (ex: 42°C) durante jogos na tomada.
+        2. A temperatura real da bateria ultrapassa o limite seguro (ex: 42°C) durante jogos na tomada.
         """
         alerts: List[Dict[str, str]] = []
         bat = self.get_battery_info()
@@ -1020,17 +999,15 @@ class TelemetryBatteryNetworkMixin:
         cfg = self.get_battery_alert_settings()
         if force_test:
             life = self.get_battery_lifecycle_status()
+            temp_txt = f"Temp: {bat.temperature_c:.1f}°C" if bat.temperature_available else "Temp: Sensor N/A"
             alerts.append({
                 "title": "Ducksvantage • Monitor Inteligente da Bateria",
                 "message": (
                     f"Carga: {bat.capacity_percent}% ({'Conservação 80%' if bat.conservation_mode_active else '100%'}) • "
-                    f"Temp: {bat.temperature_c:.1f}°C • Saúde: {bat.health_percent:.1f}% ({life['badge']})"
+                    f"{temp_txt} • Saúde: {bat.health_percent:.1f}% ({life['badge']})"
                 ),
                 "urgency": "normal",
             })
-            return alerts
-
-        if not cfg["alerts_enabled"]:
             return alerts
 
         # Resetar flag de 80% se descarregou abaixo de 75% ou desconectou da tomada
@@ -1055,10 +1032,15 @@ class TelemetryBatteryNetworkMixin:
                 "urgency": "normal",
             })
 
-        # 2. Alerta de Temperatura Elevada da Bateria durante sessões intensas
+        # 2. Alerta de Temperatura Elevada da Bateria (somente com termistor real presente)
         now_ts = datetime.datetime.now().timestamp()
         threshold_c = cfg["temp_threshold_c"]
-        if bat.temperature_c >= threshold_c and (now_ts - self._last_temp_alert_ts) > 300.0:
+        if (
+            cfg["temp_alert_enabled"]
+            and bat.temperature_available
+            and bat.temperature_c >= threshold_c
+            and (now_ts - self._last_temp_alert_ts) > 300.0
+        ):
             self._last_temp_alert_ts = now_ts
             alerts.append({
                 "title": f"Alerta Térmico da Bateria ({bat.temperature_c:.1f}°C)",
@@ -1085,6 +1067,7 @@ class TelemetryBatteryNetworkMixin:
             self.paths.hwmon_pwm1,
             self.paths.hwmon_pwm1_enable,
             self.paths.kbd_backlight,
+            self.paths.backlight_brightness,
             self.paths.cpu_turbo_intel,
             self.paths.cpu_turbo_amd,
             self.paths.cpu_governor,
@@ -1143,7 +1126,6 @@ class TelemetryBatteryNetworkMixin:
             try:
                 if os.path.exists(desktop_path):
                     os.remove(desktop_path)
-                self.settings.set("autostart_enabled", False)
                 return True, f"Inicialização automática desativada ({desktop_path} removido)."
             except OSError as e:
                 return False, f"Erro ao remover o arquivo de autostart: {e}"
@@ -1181,7 +1163,6 @@ class TelemetryBatteryNetworkMixin:
             with open(desktop_path, "w", encoding="utf-8") as f:
                 f.write(desktop_content)
             os.chmod(desktop_path, 0o644)
-            self.settings.set("autostart_enabled", True)
             return True, f"Inicialização automática configurada em {desktop_path}"
         except OSError as e:
             return False, f"Erro ao criar o arquivo de autostart: {e}"

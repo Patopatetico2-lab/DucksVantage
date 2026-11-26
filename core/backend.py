@@ -33,7 +33,7 @@ from core.key_mapper import (
 from core.models import (
     CPUMetrics, GPUMetrics, RAMMetrics, StorageDevice, FanMetrics,
     BatteryInfo, BatteryHistoryEntry, SystemInfo, HardwareFeatures, HardwarePaths,
-    UndervoltStatus, NetworkPowerStatus, AppProfileRule,
+    UndervoltStatus, NetworkPowerStatus,
     GpuMuxInfo, DisplayRefreshInfo, BiosAttribute
 )
 from core.permissions import PermissionsManager
@@ -199,7 +199,10 @@ class HardwareBackend(
         self._game_changed_tdp: bool = False
         self._game_changed_fan_curve: bool = False
         self._game_changed_vrr: bool = False
+        self._game_changed_wifi: bool = False
+        self._pre_game_wifi_ps: Optional[bool] = None
         self._game_locked_touchpad: bool = False
+        self._undervolt_active_in_hw: bool = False
         self._game_session_start_ts: float = 0.0
         self._game_peak_cpu_c: float = 0.0
         self._game_peak_gpu_c: float = 0.0
@@ -207,32 +210,20 @@ class HardwareBackend(
         self._game_power_samples: int = 0
         self._rgb_backend_name: str = "none"
 
-        # Estado dos novos recursos inteligentes (Throttling, Dock, USB, Cinema, Áudio, Wi-Fi, Noite, Checkup)
+        # Estado dos novos recursos inteligentes (Throttling, Dock, USB, NVMe, NVIDIA Wakelock)
         self._prev_cpu_throttle_sum: Optional[int] = None
         self._cached_gpu_throttle_reasons: List[str] = []
-        self._cinema_mode_active: bool = False
-        self._cinema_inhibit_proc: Optional[Any] = None
-        self._cinema_dnd_cookie: Optional[int] = None
-        self._pre_cinema_kbd: Optional[int] = None
-        self._pw_echo_module_id: Optional[int] = None
-        self._pre_privacy_camera: Optional[bool] = None
-        self._checkup_procs: List[Any] = []
-        self._checkup_state: Optional[Dict[str, Any]] = None
         self._prev_rapl_uj: Optional[int] = None
         self._prev_rapl_ts: float = 0.0
-        self._cached_wifi_ssid: Optional[str] = None
-        self._last_wifi_ssid_scan: float = 0.0
-        self._last_applied_wifi_ssid: Optional[str] = None
-        self._night_mode_active: bool = False
-        self._pre_night_profile: str = "balanced"
-        self._pre_night_kbd: Optional[int] = None
         self._dock_active: Optional[bool] = None
         self._dock_pre_profile: str = "balanced"
         self._dock_pre_hz: Optional[int] = None
         self._dock_lid_proc: Optional[Any] = None
-        self._proc_cpu_map: Dict[int, Any] = {}
-        self._cached_top_procs: Optional[List[Dict[str, Any]]] = None
-        self._last_top_procs_scan: float = 0.0
+        self._cached_nvidia_wakelocks: Optional[Dict[str, Any]] = None
+        self._last_nvidia_wakelock_scan: float = 0.0
+        self._cached_nvme_health: Optional[List[Dict[str, Any]]] = None
+        self._last_nvme_health_scan: float = 0.0
+        self._last_nvme_temp_alert_ts: float = 0.0
 
         # Estado da Curva de Ventoinhas e Undervolt Seguro
         self._last_applied_pwm: int = -1
@@ -343,36 +334,17 @@ class HardwareBackend(
         self._evdev_capture_active = False
         self._evdev_capture_mods.clear()
 
-        if hasattr(self, "cancel_thermal_checkup"):
+        proc = getattr(self, "_dock_lid_proc", None)
+        if proc is not None:
             try:
-                self.cancel_thermal_checkup()
+                proc.terminate()
+                proc.wait(timeout=1.0)
             except Exception:
-                pass
-
-        for attr in ("_cinema_inhibit_proc", "_dock_lid_proc"):
-            proc = getattr(self, attr, None)
-            if proc is not None:
                 try:
-                    proc.terminate()
-                    proc.wait(timeout=1.0)
+                    proc.kill()
                 except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                setattr(self, attr, None)
-
-        if hasattr(self, "_set_kde_notifications_inhibited"):
-            try:
-                self._set_kde_notifications_inhibited(False)
-            except Exception:
-                pass
-
-        if hasattr(self, "_unload_pipewire_echo_cancel"):
-            try:
-                self._unload_pipewire_echo_cancel()
-            except Exception:
-                pass
+                    pass
+            self._dock_lid_proc = None
 
     def __del__(self):
         try:
@@ -541,13 +513,18 @@ class HardwareBackend(
             self.paths.rapl_mmio_pl1 = mmio_pl1
             self.paths.rapl_mmio_pl2 = mmio_pl2
 
-        # 4.1 Lenovo WMI Other Firmware Attributes (CPU/GPU Temp Limits, AC Offset, PPT)
+        # 4.1 Lenovo WMI Other Firmware Attributes (CPU/GPU Temp Limits, AC Offset, PPT, cTGP)
+        self.features.wmi_custom_power = False
         for wmi_cand in sorted(glob.glob("/sys/class/firmware-attributes/lenovo-wmi-other-*/attributes")):
             if os.path.isdir(wmi_cand):
                 self.paths.lenovo_wmi_attr_dir = wmi_cand
                 self.features.wmi_cpu_temp = os.path.exists(os.path.join(wmi_cand, "cpu_temp", "current_value"))
                 self.features.wmi_gpu_temp = os.path.exists(os.path.join(wmi_cand, "gpu_temp", "current_value"))
                 self.features.wmi_gpu_ac_offset = os.path.exists(os.path.join(wmi_cand, "gpu_nv_ac_offset", "current_value"))
+                self.features.wmi_custom_power = any(
+                    os.path.exists(os.path.join(wmi_cand, k, "current_value"))
+                    for k in ("gpu_nv_ctgp", "gpu_nv_ppab", "gpu_nv_cpu_boost", "ppt_cpu_cl", "ppt_pl1_spl", "ppt_pl2_sppt")
+                )
                 break
 
         # 5. Sensores HWMon (CPU Intel/AMD, NVMe, DDR5 RAM, Ventoinhas e PWM)
@@ -606,6 +583,30 @@ class HardwareBackend(
         # 12.5 Teclado RGB 4-Zonas (Auto-Discovery USB ITE hidraw / multicolor sysfs)
         self._scan_rgb_keyboard()
 
+        # 12.8 Controle de Brilho de Tela (/sys/class/backlight/*)
+        self.paths.backlight_dir = None
+        self.paths.backlight_brightness = None
+        self.paths.backlight_max_brightness = None
+        self.features.screen_brightness = False
+        bl_dirs = sorted(glob.glob("/sys/class/backlight/*"))
+        bl_priority = ("intel_backlight", "amdgpu_bl", "nvidia", "acpi_video")
+        bl_sorted = sorted(
+            bl_dirs,
+            key=lambda p: next(
+                (i for i, pref in enumerate(bl_priority) if os.path.basename(p).lower().startswith(pref)),
+                len(bl_priority),
+            ),
+        )
+        for bl_dir in bl_sorted:
+            br_p = os.path.join(bl_dir, "brightness")
+            mx_p = os.path.join(bl_dir, "max_brightness")
+            if os.path.exists(br_p) and os.path.exists(mx_p):
+                self.paths.backlight_dir = bl_dir
+                self.paths.backlight_brightness = br_p
+                self.paths.backlight_max_brightness = mx_p
+                self.features.screen_brightness = True
+                break
+
         # 13. Modo Viagem (Eco-Mode Extremo): só habilita se houver ao menos 1 recurso de economia real
         self.features.eco_travel = bool(
             self.features.platform_profile
@@ -615,18 +616,17 @@ class HardwareBackend(
             or self.features.custom_tdp
             or self.paths.nvidia_pci_power_control
             or self.features.kbd_backlight
+            or self.features.screen_brightness
         )
 
-        # 14. Novos Recursos Inteligentes (Cinema, Áudio PipeWire, Wake-on-USB, Dock HDMI, Throttling)
-        self.features.cinema_mode = bool(
-            shutil.which("kde-inhibit") or shutil.which("systemd-inhibit") or shutil.which("qdbus6")
-        )
-        self.features.audio_control = bool(shutil.which("wpctl") or shutil.which("pactl"))
+        # 14. Recursos Inteligentes (Wake-on-USB, Dock HDMI, Throttling, NVMe, NVIDIA Wakelock)
         self.features.usb_wakeup = bool(self.get_usb_wakeup_devices())
         self.features.external_monitor_dock = bool(glob.glob("/sys/class/drm/card*-*/status"))
         self.features.thermal_throttling = bool(
             glob.glob("/sys/devices/system/cpu/cpu*/thermal_throttle/*") or self.nvidia_available
         )
+        self.features.nvme_health = bool(glob.glob("/sys/class/nvme/nvme*") or glob.glob("/sys/block/nvme*"))
+        self.features.nvidia_wakelock_detect = bool(self.nvidia_available or self.paths.nvidia_drm_card)
 
         # Aplica bloqueio de Wake-on-USB salvo no boot se já estiver liberado via UDEV (sem elevation)
         if self.features.usb_wakeup and bool(self.settings.get("usb_wakeup_blocked", False)):
@@ -705,29 +705,35 @@ class HardwareBackend(
             self.features.cpu_undervolt = False
 
     def _scan_network_power(self) -> None:
-        """Detecta interfaces reais de Wi-Fi e Ethernet para controle de economia de energia."""
-        wifi_if, eth_if = self._discover_network_interfaces()
+        """Detecta interface real de Wi-Fi para controle de economia de energia."""
+        wifi_if = self._discover_wifi_interface()
         self.features.wifi_power_save = bool(wifi_if)
-        self.features.eth_power_save = bool(eth_if)
 
     def get_eco_travel_summary(self) -> str:
-        """Retorna descrição dinâmica do Modo Viagem listando apenas ações suportadas neste notebook."""
+        """Retorna descrição dinâmica do Modo Viagem listando apenas ações ativas e suportadas neste notebook."""
+        cfg = self.get_eco_travel_config()
         parts: List[str] = []
-        if self.features.conservation_mode:
+        if cfg["dim_brightness"] and self.features.screen_brightness:
+            parts.append(f"Brilho {cfg['brightness_pct']}%")
+        if cfg["conservation"] and self.features.conservation_mode:
             parts.append("Conservação 80%")
-        if self.paths.nvidia_pci_power_control:
+        if cfg["gpu_d3cold"] and self.paths.nvidia_pci_power_control:
             parts.append("GPU D3cold")
-        if self.features.turbo_boost:
+        if cfg["turbo_off"] and self.features.turbo_boost:
             parts.append("Turbo Off")
-        if self.features.platform_profile:
+        if cfg["profile"] and self.features.platform_profile:
             parts.append("Low Power")
-        if self.features.kbd_backlight:
+        if cfg["kbd_off"] and self.features.kbd_backlight:
             parts.append("Teclado Off")
-        if self.features.custom_tdp:
+        if cfg["tdp_limit"] and self.features.custom_tdp:
             parts.append("TDP 15W")
+        if cfg["refresh_min"] and self.features.refresh_rate:
+            parts.append("Hz Mín")
+        if cfg["wifi_save"] and self.features.wifi_power_save:
+            parts.append("Wi-Fi Eco")
         if not parts:
-            return "Economia de energia rápida em 1 clique."
-        return "1-Clique: " + " + ".join(parts[:4])
+            return "Nenhuma ação selecionada (configure em Config. & Sistema)."
+        return "1-Clique: " + " + ".join(parts[:4]) + ("..." if len(parts) > 4 else "")
 
     def get_detected_capabilities(self) -> List[Dict[str, str]]:
         """Retorna a lista de capacidades de hardware efetivamente liberadas por este notebook."""
@@ -779,16 +785,20 @@ class HardwareBackend(
         if f.lcd_overdrive:
             caps.append({"name": "LCD Overdrive", "detail": "Tempo de resposta GtG"})
         if f.bios_attributes:
-            attrs = [a for a in self.get_bios_attributes() if a.attr_id.lower() != "lcd_overdrive"]
+            attrs = [
+                a for a in self.get_bios_attributes()
+                if a.attr_id.lower() not in self.PROMOTED_BIOS_ATTR_IDS
+            ]
             if attrs:
                 caps.append({"name": "BIOS Lenovo WMI", "detail": f"{len(attrs)} parâmetros"})
-        if f.wifi_power_save or f.eth_power_save:
-            nets = []
-            if f.wifi_power_save:
-                nets.append("Wi-Fi")
-            if f.eth_power_save:
-                nets.append("Ethernet")
-            caps.append({"name": "Economia de Rede", "detail": " & ".join(nets)})
+        if f.wifi_power_save:
+            caps.append({"name": "Economia de Rede", "detail": "Wi-Fi"})
+        if f.wmi_custom_power:
+            caps.append({"name": "Potência Custom WMI", "detail": "cTGP GPU / Dynamic Boost / PPT"})
+        if f.screen_brightness:
+            caps.append({"name": "Brilho Automático de Tela", "detail": os.path.basename(self.paths.backlight_dir or "backlight")})
+        if f.nvme_health:
+            caps.append({"name": "Saúde & SMART NVMe", "detail": "Desgaste, TBW e Alerta Térmico"})
         return caps
 
     def _scan_hwmon(self) -> None:
@@ -1034,12 +1044,6 @@ class HardwareBackend(
                 self._evdev_held_mods[fd] = set()
             except Exception:
                 pass
-
-    def has_evdev_access(self) -> bool:
-        """Retorna True se ao menos um dispositivo de teclado/hotkey estiver aberto no evdev."""
-        if not self._input_fds:
-            self._init_evdev_listeners()
-        return len(self._input_fds) > 0
 
     def get_evdev_monitored_devices(self) -> List[str]:
         """Lista legível dos dispositivos monitorados pelo leitor evdev (sem duplicatas)."""
@@ -1594,8 +1598,6 @@ class HardwareBackend(
 
         return events
 
-    poll_hardware_events = fast_poll_changes
-
     # =========================================================================
     # ELITE 1: Perfis Dinâmicos do Kernel (Suporte nativo a 'max-power')
     # =========================================================================
@@ -1673,9 +1675,9 @@ class HardwareBackend(
             self._sync_platform_profile_cache(raw_after)
             self._apply_max_power_fan_boost(norm_profile == "max-power", allow_elevation=False)
             self._sync_cpu_epp_for_profile(norm_profile)
-            # Se o usuário trocou manualmente para performance/max-power, desmarca Eco-Mode
-            if norm_profile in ("performance", "max-power") and self.get_eco_travel_mode():
-                self.settings.set("eco_travel_mode", False)
+            # Se o usuário trocou manualmente para performance/max-power, sai do Eco-Mode restaurando brilho/estado
+            if norm_profile in ("performance", "max-power") and self.get_eco_travel_mode() and not getattr(self, "_restoring_eco_mode", False):
+                self._restore_eco_side_effects(restore_profile=False)
         return ok, msg
 
     def cycle_next_profile(self) -> Tuple[bool, str]:

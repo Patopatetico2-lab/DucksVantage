@@ -16,7 +16,7 @@ from core.qt_compat import (
     Qt, Signal, QFont, QMessageBox, QPixmap
 )
 from ui.theme_tokens import ThemeTokens
-from ui.components import ToggleSwitch, StatusBadge
+from ui.components import ToggleSwitch, StatusBadge, BasicModeHintBar
 from ui.widgets import GpuModeBlock
 
 ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "assets", "icons")
@@ -29,6 +29,8 @@ class GpuDisplayTab(QWidget):
     vrr_policy_changed = Signal(str)
     dock_config_changed = Signal()
     lcd_overdrive_changed = Signal(bool)
+    custom_power_applied = Signal(str)
+    switch_advanced_requested = Signal()
 
     def __init__(self, backend, parent=None):
         super().__init__(parent)
@@ -38,6 +40,7 @@ class GpuDisplayTab(QWidget):
         self.refresh_rate_buttons: Dict[int, QPushButton] = {}
         self.vrr_buttons: Dict[str, QPushButton] = {}
         self.bios_attr_widgets: Dict[str, Any] = {}
+        self.custom_power_sliders: Dict[str, Any] = {}
 
         feat = self.backend.features
 
@@ -85,7 +88,14 @@ class GpuDisplayTab(QWidget):
         gpu_header.addWidget(self.gpu_state_badge)
         gpu_layout.addLayout(gpu_header)
 
-        gpu_grid = QGridLayout()
+        self.gpu_basic_summary_lbl = QLabel("Lendo estado da GPU...")
+        self.gpu_basic_summary_lbl.setWordWrap(True)
+        self.gpu_basic_summary_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        gpu_layout.addWidget(self.gpu_basic_summary_lbl)
+
+        self.gpu_stats_widget = QWidget()
+        gpu_grid = QGridLayout(self.gpu_stats_widget)
+        gpu_grid.setContentsMargins(0, 0, 0, 0)
         gpu_grid.setSpacing(10)
         self.lbl_gpu_clock = self._create_stat_box(gpu_grid, 0, 0, "Frequência Core", "-- MHz")
         self.lbl_gpu_temp = self._create_stat_box(gpu_grid, 0, 1, "Temperatura GPU", "-- °C")
@@ -94,9 +104,90 @@ class GpuDisplayTab(QWidget):
         self.lbl_gpu_util = self._create_stat_box(gpu_grid, 1, 1, "Carga do Núcleo", "-- %")
         self.lbl_gpu_pstate = self._create_stat_box(gpu_grid, 1, 2, "Runtime / P-State", "--")
 
-        gpu_layout.addLayout(gpu_grid)
+        gpu_layout.addWidget(self.gpu_stats_widget)
         self.gpu_card.setVisible(feat.gpu_telemetry)
         layout.addWidget(self.gpu_card)
+
+        # =====================================================================
+        # 1.5 Painel Dedicado do Modo Custom Lenovo (cTGP GPU + Dynamic Boost + WMI PPT)
+        # =====================================================================
+        self.custom_power_card = QFrame()
+        self.custom_power_card.setProperty("class", "card")
+        cp_layout = QVBoxLayout(self.custom_power_card)
+        cp_layout.setContentsMargins(18, 16, 18, 16)
+        cp_layout.setSpacing(12)
+
+        cp_header = QHBoxLayout()
+        cp_titles = QVBoxLayout()
+        cp_titles.setSpacing(2)
+        cp_t = QLabel("Potência da GPU & Modo Custom Lenovo")
+        cp_t.setWordWrap(True)
+        cp_t.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.DemiBold))
+        cp_t.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
+        cp_titles.addWidget(cp_t)
+        self.cp_sub_lbl = QLabel(
+            "Controle direto da potência da GPU NVIDIA (cTGP), Dynamic Boost e limites WMI da placa."
+        )
+        self.cp_sub_lbl.setWordWrap(True)
+        self.cp_sub_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
+        cp_titles.addWidget(self.cp_sub_lbl)
+        cp_header.addLayout(cp_titles, stretch=1)
+
+        self.custom_power_badge = StatusBadge("LENOVO WMI", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.THERMAL_CUSTOM)
+        cp_header.addWidget(self.custom_power_badge)
+        cp_layout.addLayout(cp_header)
+
+        cp_quick_box = QFrame()
+        cp_quick_box.setProperty("class", "subBox")
+        cp_q_row = QHBoxLayout(cp_quick_box)
+        cp_q_row.setContentsMargins(14, 10, 14, 10)
+        cp_q_row.setSpacing(10)
+
+        cp_q_lbl = QLabel("Modos Rápidos 1-Clique (Ativa Perfil Custom):")
+        cp_q_lbl.setWordWrap(True)
+        cp_q_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; font-size: 11px;")
+        cp_q_row.addWidget(cp_q_lbl, stretch=1)
+
+        self.btn_cp_cool = QPushButton("Jogos Frios & Silenciosos")
+        self.btn_cp_cool.setProperty("class", "secondaryButton")
+        self.btn_cp_cool.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_cp_cool.setFixedHeight(30)
+        self.btn_cp_cool.clicked.connect(lambda _c=False: self._on_custom_power_preset("cool_quiet"))
+        cp_q_row.addWidget(self.btn_cp_cool)
+
+        self.btn_cp_max = QPushButton("Potência Máxima GPU")
+        self.btn_cp_max.setProperty("class", "primaryButton")
+        self.btn_cp_max.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_cp_max.setFixedHeight(30)
+        self.btn_cp_max.clicked.connect(lambda _c=False: self._on_custom_power_preset("max_gpu"))
+        cp_q_row.addWidget(self.btn_cp_max)
+        cp_layout.addWidget(cp_quick_box)
+
+        self.custom_power_adv_box = QFrame()
+        self.custom_power_adv_box.setProperty("class", "subBox")
+        self.cp_adv_layout = QVBoxLayout(self.custom_power_adv_box)
+        self.cp_adv_layout.setContentsMargins(14, 12, 14, 12)
+        self.cp_adv_layout.setSpacing(10)
+
+        self.cp_sliders_container = QWidget()
+        self.cp_sliders_layout = QVBoxLayout(self.cp_sliders_container)
+        self.cp_sliders_layout.setContentsMargins(0, 0, 0, 0)
+        self.cp_sliders_layout.setSpacing(8)
+        self.cp_adv_layout.addWidget(self.cp_sliders_container)
+
+        cp_apply_row = QHBoxLayout()
+        cp_apply_row.addStretch()
+        self.btn_apply_custom_power = QPushButton("Aplicar Limites Custom")
+        self.btn_apply_custom_power.setProperty("class", "primaryButton")
+        self.btn_apply_custom_power.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_apply_custom_power.setFixedHeight(30)
+        self.btn_apply_custom_power.clicked.connect(self._on_apply_custom_power_sliders)
+        cp_apply_row.addWidget(self.btn_apply_custom_power)
+        self.cp_adv_layout.addLayout(cp_apply_row)
+
+        cp_layout.addWidget(self.custom_power_adv_box)
+        self.custom_power_card.setVisible(bool(feat.wmi_custom_power))
+        layout.addWidget(self.custom_power_card)
 
         # =====================================================================
         # 2. GPU MUX Switch
@@ -327,7 +418,8 @@ class GpuDisplayTab(QWidget):
         dock_header.addWidget(self.sw_dock_enabled)
         dock_layout.addLayout(dock_header)
 
-        dock_box = QFrame()
+        self.dock_adv_box = QFrame()
+        dock_box = self.dock_adv_box
         dock_box.setProperty("class", "subBox")
         dock_box_l = QVBoxLayout(dock_box)
         dock_box_l.setContentsMargins(14, 10, 14, 10)
@@ -448,6 +540,12 @@ class GpuDisplayTab(QWidget):
 
         self._build_dynamic_bios_attributes()
         layout.addWidget(self.bios_card)
+
+        self.basic_hint_card = BasicModeHintBar(
+            "Modo Básico ativo • Telemetria detalhada da GPU (P-State/VRAM/clocks), GPU MUX Switch, sliders Custom Lenovo, Clamshell/HDMI e ajustes BIOS/WMI disponíveis no Modo Avançado."
+        )
+        self.basic_hint_card.switch_advanced_requested.connect(self.switch_advanced_requested.emit)
+        layout.addWidget(self.basic_hint_card)
         layout.addStretch()
 
         scroll.setWidget(container)
@@ -456,6 +554,7 @@ class GpuDisplayTab(QWidget):
         main_layout.addWidget(scroll)
 
         self.refresh_all()
+        self.set_advanced_mode(self._advanced_mode)
 
     def _create_stat_box(self, grid: QGridLayout, r: int, c: int, label: str, default: str) -> QLabel:
         box = QFrame()
@@ -477,18 +576,26 @@ class GpuDisplayTab(QWidget):
         grid.addWidget(box, r, c)
         return val
 
-    def has_any_supported_feature(self) -> bool:
-        """Retorna True se ao menos um bloco de GPU, MUX, Hz, Dock ou BIOS/Overdrive estiver ativo."""
-        return not (
-            self.gpu_card.isHidden()
-            and self.mux_card.isHidden()
-            and self.ref_card.isHidden()
-            and self.dock_card.isHidden()
-            and self.bios_card.isHidden()
+    def _has_base_supported_feature(self) -> bool:
+        feat = self.backend.features
+        return bool(
+            not self.gpu_card.isHidden()
+            or not self.custom_power_card.isHidden()
+            or not self.mux_card.isHidden()
+            or not self.ref_card.isHidden()
+            or not self.dock_card.isHidden()
+            or not self.bios_card.isHidden()
+            or feat.gpu_mux
+            or feat.bios_attributes
         )
+
+    def has_any_supported_feature(self) -> bool:
+        """Retorna True se ao menos um bloco de GPU, Custom Power, MUX, Hz, Dock ou BIOS/Overdrive estiver ativo."""
+        return self._has_base_supported_feature()
 
     def refresh_all(self):
         self.refresh_gpu_state()
+        self.refresh_custom_power_state()
         self.refresh_mux_state()
         self.refresh_display_state()
         self.refresh_dock_state()
@@ -500,9 +607,14 @@ class GpuDisplayTab(QWidget):
         if gpu.available:
             self.gpu_state_badge.setText(f"{gpu.runtime_state.upper()} ({gpu.pstate})")
             self.gpu_state_badge.setColor(ThemeTokens.BG_CARD_HOVER, ThemeTokens.STATUS_GREEN)
+            pwr_txt = f"{gpu.power_draw_w:.1f} W" if gpu.power_draw_w > 0 else "Integrada"
+            self.gpu_basic_summary_lbl.setText(
+                f"GPU ativa ({gpu.temperature_c:.0f}°C • {pwr_txt} • uso {gpu.utilization_percent}%). "
+                "No Modo Avançado você vê clocks, P-State e memória VRAM."
+            )
             self.lbl_gpu_clock.setText(f"{gpu.clock_mhz} MHz" if gpu.clock_mhz > 0 else "Dinâmico")
             self.lbl_gpu_temp.setText(f"{gpu.temperature_c:.1f} °C")
-            self.lbl_gpu_power.setText(f"{gpu.power_draw_w:.1f} W" if gpu.power_draw_w > 0 else "Integrada")
+            self.lbl_gpu_power.setText(pwr_txt)
             if gpu.memory_total_mb > 0:
                 self.lbl_gpu_vram.setText(f"{gpu.memory_used_mb} / {gpu.memory_total_mb} MB")
             else:
@@ -512,6 +624,9 @@ class GpuDisplayTab(QWidget):
         else:
             self.gpu_state_badge.setText("D3COLD (SUSPENSA)")
             self.gpu_state_badge.setColor(ThemeTokens.BG_CARD_HOVER, ThemeTokens.ACCENT_STEEL)
+            self.gpu_basic_summary_lbl.setText(
+                "Placa dedicada em repouso econômico (D3cold) • 0 W consumidos da bateria."
+            )
             self.lbl_gpu_clock.setText("0 MHz (D3cold)")
             self.lbl_gpu_temp.setText("Repouso")
             self.lbl_gpu_power.setText("0.0 W")
@@ -529,7 +644,7 @@ class GpuDisplayTab(QWidget):
 
     def refresh_mux_state(self):
         mux = self.backend.get_gpu_mux_info()
-        show_mux = bool(mux.available and mux.available_modes and mux.backend_name not in ("none", "software"))
+        show_mux = bool(self._advanced_mode and mux.available and mux.available_modes and mux.backend_name not in ("none", "software"))
         self.mux_card.setVisible(show_mux)
         if not show_mux:
             return
@@ -637,7 +752,7 @@ class GpuDisplayTab(QWidget):
         self.ref_auto_switch.setChecked(info.auto_switch_ac)
         self.ref_auto_switch.blockSignals(False)
 
-        self.vrr_box.setVisible(bool(self._advanced_mode and info.vrr_supported))
+        self.vrr_box.setVisible(bool(info.vrr_supported))
         if info.vrr_supported:
             for pol, btn in self.vrr_buttons.items():
                 is_sel = (pol == info.vrr_policy)
@@ -668,10 +783,95 @@ class GpuDisplayTab(QWidget):
                     """)
 
     def set_advanced_mode(self, advanced: bool):
-        """Exibe ou oculta VRR detalhado e atributos dinâmicos de BIOS WMI conforme o modo da interface."""
+        """Exibe ou oculta telemetria detalhada GPU, GPU MUX, opções Clamshell, sliders Custom Lenovo e BIOS WMI."""
         self._advanced_mode = bool(advanced)
+        if hasattr(self, "gpu_stats_widget"):
+            self.gpu_stats_widget.setVisible(bool(self._advanced_mode))
+        if hasattr(self, "gpu_basic_summary_lbl"):
+            self.gpu_basic_summary_lbl.setVisible(not self._advanced_mode)
+        self.refresh_custom_power_state()
+        self.refresh_mux_state()
         self.refresh_display_state()
+        self.refresh_dock_state()
         self.refresh_bios_state()
+        if hasattr(self, "basic_hint_card"):
+            self.basic_hint_card.setVisible(bool((not self._advanced_mode) and self._has_base_supported_feature()))
+
+    def refresh_custom_power_state(self):
+        """Atualiza o painel dedicado do Modo Custom Lenovo (cTGP GPU + Dynamic Boost + PPT)."""
+        if not hasattr(self, "custom_power_card"):
+            return
+        ctrls = self.backend.get_lenovo_custom_power_controls() if self.backend.features.wmi_custom_power else []
+        show_card = bool(self.backend.features.wmi_custom_power and ctrls)
+        self.custom_power_card.setVisible(show_card)
+        if not show_card:
+            return
+
+        ctgp = next((c for c in ctrls if c["attr_id"] == "gpu_nv_ctgp"), None)
+        ppab = next((c for c in ctrls if c["attr_id"] == "gpu_nv_ppab"), None)
+        if ctgp and ppab:
+            self.custom_power_badge.setText(f"cTGP {ctgp['current']}W + {ppab['current']}W")
+        elif ctgp:
+            self.custom_power_badge.setText(f"cTGP {ctgp['current']}W")
+        else:
+            self.custom_power_badge.setText(f"{len(ctrls)} CONTROLES")
+
+        self.custom_power_adv_box.setVisible(bool(self._advanced_mode))
+        if not self._advanced_mode:
+            return
+
+        if set(self.custom_power_sliders.keys()) != {c["attr_id"] for c in ctrls}:
+            while self.cp_sliders_layout.count():
+                item = self.cp_sliders_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            self.custom_power_sliders.clear()
+
+            for c in ctrls:
+                row_w = QWidget()
+                rl = QHBoxLayout(row_w)
+                rl.setContentsMargins(0, 0, 0, 0)
+                rl.setSpacing(10)
+                lbl = QLabel(f"{c['label']}:")
+                lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; font-size: 11px; min-width: 195px;")
+                rl.addWidget(lbl)
+                sl = QSlider(Qt.Orientation.Horizontal)
+                sl.setRange(int(c["min"]), int(c["max"]))
+                sl.setValue(max(int(c["min"]), min(int(c["max"]), int(c["current"]))))
+                val_lbl = QLabel(f"{c['current']} {c['unit']}")
+                val_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.DemiBold))
+                val_lbl.setStyleSheet(f"color: {ThemeTokens.ACCENT_STEEL}; min-width: 48px;")
+                sl.valueChanged.connect(lambda v, l=val_lbl, u=c["unit"]: l.setText(f"{v} {u}"))
+                rl.addWidget(sl, stretch=1)
+                rl.addWidget(val_lbl)
+                self.cp_sliders_layout.addWidget(row_w)
+                self.custom_power_sliders[c["attr_id"]] = (sl, val_lbl, c["unit"])
+        else:
+            for c in ctrls:
+                pair = self.custom_power_sliders.get(c["attr_id"])
+                if pair:
+                    sl, val_lbl, unit = pair
+                    sl.blockSignals(True)
+                    sl.setValue(max(sl.minimum(), min(sl.maximum(), int(c["current"]))))
+                    sl.blockSignals(False)
+                    val_lbl.setText(f"{c['current']} {unit}")
+
+    def _on_custom_power_preset(self, preset_key: str):
+        ok, msg = self.backend.apply_lenovo_custom_power_preset(preset_key)
+        self.refresh_custom_power_state()
+        if ok:
+            self.custom_power_applied.emit(msg)
+        else:
+            QMessageBox.warning(self, "Modo Custom Lenovo", msg)
+
+    def _on_apply_custom_power_sliders(self):
+        values = {aid: pair[0].value() for aid, pair in self.custom_power_sliders.items()}
+        ok, msg = self.backend.set_lenovo_custom_power_values(values)
+        self.refresh_custom_power_state()
+        if ok:
+            self.custom_power_applied.emit(msg)
+        else:
+            QMessageBox.warning(self, "Modo Custom Lenovo", msg)
 
     def _on_vrr_button_clicked(self, policy: str):
         ok, msg = self.backend.set_vrr_policy(policy)
@@ -698,6 +898,8 @@ class GpuDisplayTab(QWidget):
         self.dock_card.setVisible(show_dock)
         if not show_dock:
             return
+        if hasattr(self, "dock_adv_box"):
+            self.dock_adv_box.setVisible(bool(self._advanced_mode))
         mons = self.backend.get_external_monitors()
         if mons:
             self.dock_status_badge.setText(f"{', '.join(mons[:2])} CONECTADO")
@@ -727,7 +929,8 @@ class GpuDisplayTab(QWidget):
         self.od_box.setVisible(is_od_supp)
 
         attrs = self.backend.get_bios_attributes()
-        visible_attrs = [a for a in attrs if a.attr_id.lower() not in ("lcd_overdrive",)]
+        promoted = getattr(self.backend, "PROMOTED_BIOS_ATTR_IDS", frozenset({"lcd_overdrive"}))
+        visible_attrs = [a for a in attrs if a.attr_id.lower() not in promoted]
         show_dyn = bool(self._advanced_mode and visible_attrs)
         total_items = (len(visible_attrs) if show_dyn else 0) + (1 if is_od_supp else 0)
         self.bios_count_badge.setText(f"{total_items} {'ITEM' if total_items == 1 else 'ITENS'}")
