@@ -783,6 +783,112 @@ class TestNewFeatures(unittest.TestCase):
             self.backend._scan_bios_attributes()
             self.assertFalse(self.backend.features.bios_attributes)
 
+    # 25. Controle Fácil de Ventoinhas WMI/EC & Alvos Térmicos (LOQ 15IAX9E) + hwmon fan*_target
+    def test_cooling_controls_wmi_loq_basic_advanced_and_presets(self):
+        """Mesmo sem pwm1 bruto, notebooks Lenovo WMI exibem Modo de Ventilação fácil e Alvos WMI no Avançado."""
+        from core.qt_compat import QApplication
+        from ui.tabs.performance_tab import PerformanceTab
+
+        _app = QApplication.instance() or QApplication(["ducksvantage", "-platform", "offscreen"])
+
+        # A. Sistema mínimo sem hardware -> has_cooling_controls() é False
+        blank = _isolated_backend()
+        blank.features = HardwareFeatures()
+        self.assertFalse(blank.has_cooling_controls())
+        blank.close()
+
+        # B. Perfil LOQ 15IAX9E real (fan_control=False, wmi_cpu_temp=True, wmi_gpu_temp=True, platform_profile=True)
+        with tempfile.TemporaryDirectory() as td:
+            pp_file = os.path.join(td, "profile")
+            pp_choices = os.path.join(td, "choices")
+            with open(pp_file, "w", encoding="utf-8") as fh:
+                fh.write("balanced\n")
+            with open(pp_choices, "w", encoding="utf-8") as fh:
+                fh.write("low-power balanced performance max-power custom\n")
+
+            wmi_dir = os.path.join(td, "wmi_attrs")
+            for attr, (lo, hi, cur) in [("cpu_temp", (85, 100, 94)), ("gpu_temp", (75, 87, 87))]:
+                ad = os.path.join(wmi_dir, attr)
+                os.makedirs(ad, exist_ok=True)
+                for fn, val in [("min_value", lo), ("max_value", hi), ("current_value", cur)]:
+                    with open(os.path.join(ad, fn), "w", encoding="utf-8") as fh:
+                        fh.write(f"{val}\n")
+
+            self.backend.features.fan_control = False
+            self.backend.features.wmi_cpu_temp = True
+            self.backend.features.wmi_gpu_temp = True
+            self.backend.features.platform_profile = True
+            self.backend.features.max_power_profile = True
+            self.backend.features.custom_tdp = False
+            self.backend.features.cpu_undervolt = False
+            self.backend.paths.platform_profile = pp_file
+            self.backend.paths.platform_profile_choices = pp_choices
+            self.backend.paths.lenovo_wmi_attr_dir = wmi_dir
+            self.backend._platform_profile_paths = [pp_file]
+            self.assertTrue(self.backend.has_cooling_controls())
+
+            tab = PerformanceTab(self.backend)
+            tab.set_advanced_mode(False)
+            self.assertFalse(tab.tdp_card.isHidden())
+            self.assertFalse(tab.fan_ctrl_box.isHidden())
+            self.assertEqual(set(tab.cooling_mode_buttons.keys()), {"quiet", "auto", "cool", "max"})
+            for btn in tab.cooling_mode_buttons.values():
+                self.assertFalse(btn.isHidden())
+            self.assertTrue(tab.wmi_temp_widget.isHidden())
+            self.assertTrue(tab.fan_curve_widget.isHidden())
+
+            tab.set_advanced_mode(True)
+            self.assertFalse(tab.wmi_temp_widget.isHidden())
+            self.assertFalse(tab.btn_apply_wmi_temps.isHidden())
+            self.assertTrue(tab.fan_curve_widget.isHidden())
+            tab.close()
+
+            # apply_cooling_preset("cool") muda para custom e reduz cpu_temp/gpu_temp aos limites mínimos
+            ok_cool, _ = self.backend.apply_cooling_preset("cool", allow_elevation=False)
+            self.assertTrue(ok_cool)
+            with open(pp_file, "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "custom")
+            with open(os.path.join(wmi_dir, "cpu_temp", "current_value"), "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "85")
+            with open(os.path.join(wmi_dir, "gpu_temp", "current_value"), "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "75")
+            self.assertEqual(self.backend.get_active_cooling_preset(), "cool")
+
+            # apply_cooling_preset("max") ativa max-power
+            ok_max, _ = self.backend.apply_cooling_preset("max", allow_elevation=False)
+            self.assertTrue(ok_max)
+            with open(pp_file, "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "max-power")
+            self.assertEqual(self.backend.get_active_cooling_preset(), "max")
+
+    def test_hwmon_fan_target_discovery_and_curve_apply(self):
+        """_scan_hwmon detecta fan*_target e apply_dynamic_fan_curve_tick grava RPM proporcional."""
+        with tempfile.TemporaryDirectory() as td:
+            hw = os.path.join(td, "hwmon9")
+            os.makedirs(hw)
+            with open(os.path.join(hw, "name"), "w", encoding="utf-8") as fh:
+                fh.write("lenovo_wmi_other\n")
+            for fn, val in [("fan1_target", "2000"), ("fan1_min", "1000"), ("fan1_max", "5000"), ("pwm1_enable", "2")]:
+                with open(os.path.join(hw, fn), "w", encoding="utf-8") as fh:
+                    fh.write(f"{val}\n")
+
+            with patch("core.backend.glob.glob", side_effect=lambda p: [hw] if "hwmon" in p else []):
+                self.backend._scan_hwmon()
+            self.assertEqual(len(self.backend._hwmon_fan_targets), 1)
+
+            self.backend.features.fan_control = True
+            self.backend.paths.cpu_temp_input = "/dev/null"
+            self.backend.settings.set("custom_fan_curve_enabled", True)
+            self.backend.settings.set("custom_fan_curve_points", [[30, 0], [50, 50], [90, 100]])
+            with patch.object(self.backend, "get_gpu_metrics", return_value=MagicMock(available=False)), \
+                 patch.object(self.backend, "_read_file_int", return_value=50000):
+                pwm_pct = self.backend.apply_dynamic_fan_curve_tick(force=True)
+            self.assertEqual(pwm_pct, 50)
+            with open(os.path.join(hw, "fan1_target"), "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "3000")
+            with open(os.path.join(hw, "pwm1_enable"), "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "1")
+
 
 if __name__ == "__main__":
     unittest.main()

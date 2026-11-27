@@ -287,7 +287,7 @@ function initTerminalShowcase() {
     status: `
 <span class="t-dim">$ ducksvantage --status</span>
 <span class="t-cyan">===============================================================</span>
-<span class="t-cyan">       DUCKSVANTAGE v2.0 - DIAGNÓSTICO DO SISTEMA & ACPI       </span>
+<span class="t-cyan">       DUCKSVANTAGE v2.3 - DIAGNÓSTICO DO SISTEMA & ACPI       </span>
 <span class="t-cyan">===============================================================</span>
 <span class="t-green">✔ Hardware Detectado:</span> Lenovo Legion Pro 5 16ARX8
 <span class="t-green">✔ Driver ACPI Ativo:</span>  ideapad_acpi + lenovo-wmi-gamezone

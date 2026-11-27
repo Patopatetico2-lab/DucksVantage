@@ -1,0 +1,41 @@
+name: CI Unit Tests
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Testes Unitários (Python 3.12 / PyQt6 Offscreen)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar bibliotecas de sistema para PyQt6
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1 libxcb-cursor0 fonts-dejavu-core fonts-liberation
+
+      - name: Instalar dependências de teste
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install PyQt6 psutil nvidia-ml-py
+
+      - name: Validar sintaxe e executar suíte de testes
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python3 -m py_compile main.py ui_main.py setup.py core/backend.py
+          python3 -m unittest discover -s tests -v

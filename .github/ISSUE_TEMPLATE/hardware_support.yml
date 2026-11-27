@@ -1,0 +1,32 @@
+name: Suporte a Novo Modelo Lenovo / Recurso
+description: Solicite suporte ou envie os nós ACPI/WMI do seu notebook Lenovo (Legion, LOQ, IdeaPad, Yoga)
+title: "[Hardware]: "
+labels: ["enhancement", "hardware"]
+body:
+  - type: input
+    id: laptop_model
+    attributes:
+      label: Modelo exato do notebook
+      placeholder: "Ex.: Lenovo LOQ 15IAX9E / Legion Pro 5 16IRX9"
+    validations:
+      required: true
+  - type: input
+    id: kernel
+    attributes:
+      label: Distro e versão do Kernel Linux
+      placeholder: "Ex.: Fedora 41 • Kernel 6.12"
+    validations:
+      required: true
+  - type: textarea
+    id: feature_request
+    attributes:
+      label: Qual controle ou sensor não apareceu (ou você gostaria de adicionar)?
+      placeholder: "Ex.: Curva de ventoinhas PWM, Turbo Boost, Conservação 80%, Teclado RGB..."
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: Saída de `ducksvantage --diagnostic`
+      description: No app, vá em **Config. & Sistema** → **Copiar Diagnóstico** e cole abaixo.
+      render: markdown

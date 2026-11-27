@@ -658,6 +658,9 @@ class CpuThermalUndervoltMixin:
             for _, en_p in pwm_nodes:
                 if en_p and os.path.exists(en_p):
                     PermissionsManager.write_sysfs_value(en_p, "2", allow_elevation=False)
+            for _tgt_p, en_p, _min_r, _max_r in list(getattr(self, "_hwmon_fan_targets", []) or []):
+                if en_p and os.path.exists(en_p):
+                    PermissionsManager.write_sysfs_value(en_p, "2", allow_elevation=False)
             if not pwm_nodes and self.paths.fan_mode and os.path.exists(self.paths.fan_mode) and not self._is_wmi_gamezone:
                 PermissionsManager.write_sysfs_value(self.paths.fan_mode, "1", allow_elevation=False)
             self._last_applied_pwm = -1
@@ -699,6 +702,14 @@ class CpuThermalUndervoltMixin:
             if os.path.exists(pwm_p) and (os.access(pwm_p, os.W_OK) or force):
                 PermissionsManager.write_sysfs_value(pwm_p, str(pwm_byte), allow_elevation=False)
 
+        # 1.5 Escrita em nós hwmon fan*_target (ex.: drivers que controlam alvo em RPM)
+        for tgt_p, en_p, min_r, max_r in list(getattr(self, "_hwmon_fan_targets", []) or []):
+            if en_p and os.path.exists(en_p) and os.access(en_p, os.W_OK):
+                PermissionsManager.write_sysfs_value(en_p, "1", allow_elevation=False)
+            rpm_val = 0 if target_pwm_pct == 0 else int(round(min_r + (target_pwm_pct / 100.0) * (max_r - min_r)))
+            if os.path.exists(tgt_p) and (os.access(tgt_p, os.W_OK) or force):
+                PermissionsManager.write_sysfs_value(tgt_p, str(rpm_val), allow_elevation=False)
+
         # 2. Escrita no nó fan_mode do driver ideapad_acpi legado (apenas quando não há lenovo-wmi-gamezone)
         if self.paths.fan_mode and os.path.exists(self.paths.fan_mode) and not self._is_wmi_gamezone:
             if target_pwm_pct == 0 and hottest_temp < 52.0:
@@ -713,6 +724,198 @@ class CpuThermalUndervoltMixin:
                 PermissionsManager.write_sysfs_value(self.paths.fan_mode, ec_mode, allow_elevation=False)
 
         return target_pwm_pct
+
+    def has_cooling_controls(self) -> bool:
+        """Retorna True se o notebook expõe controle de ventoinha (PWM/EC), alvos térmicos WMI ou perfis ACPI."""
+        return bool(
+            self.features.fan_control
+            or self.features.wmi_cpu_temp
+            or self.features.wmi_gpu_temp
+            or self.features.platform_profile
+        )
+
+    def get_wmi_thermal_bounds(self) -> Dict[str, Tuple[int, int, int]]:
+        """Retorna (min_c, max_c, current_c) reais para cpu_temp e gpu_temp do Lenovo WMI Other."""
+        defaults: Dict[str, Tuple[int, int, int]] = {
+            "cpu_temp": (85, 100, int(self.settings.get("custom_cpu_temp_limit", 94) or 94)),
+            "gpu_temp": (75, 87, int(self.settings.get("custom_gpu_temp_limit", 87) or 87)),
+        }
+        wmi_dir = self.paths.lenovo_wmi_attr_dir
+        out: Dict[str, Tuple[int, int, int]] = {}
+        for attr_id, (def_lo, def_hi, def_cur) in defaults.items():
+            lo, hi, cur = def_lo, def_hi, def_cur
+            if wmi_dir:
+                adir = os.path.join(wmi_dir, attr_id)
+                r_lo = self._read_file_int(os.path.join(adir, "min_value"), 0)
+                r_hi = self._read_file_int(os.path.join(adir, "max_value"), 0)
+                r_cur = self._read_file_int(os.path.join(adir, "current_value"), 0)
+                if 40 <= r_lo < r_hi <= 115:
+                    lo, hi = r_lo, r_hi
+                if lo <= r_cur <= hi:
+                    cur = r_cur
+            cur = max(lo, min(hi, cur))
+            out[attr_id] = (lo, hi, cur)
+        return out
+
+    def apply_wmi_thermal_targets(
+        self,
+        cpu_temp_limit: int,
+        gpu_temp_limit: int,
+        allow_elevation: bool = True,
+    ) -> Tuple[bool, str]:
+        """Aplica limites térmicos CPU/GPU no Lenovo WMI Other (ativa modo custom quando necessário)."""
+        if not (self.features.wmi_cpu_temp or self.features.wmi_gpu_temp):
+            return False, "Alvos térmicos WMI não detectados neste dispositivo."
+
+        bounds = self.get_wmi_thermal_bounds()
+        c_lo, c_hi, _ = bounds["cpu_temp"]
+        g_lo, g_hi, _ = bounds["gpu_temp"]
+        cpu_lim = max(c_lo, min(c_hi, int(cpu_temp_limit)))
+        gpu_lim = max(g_lo, min(g_hi, int(gpu_temp_limit)))
+
+        if self.paths.platform_profile:
+            choices = [c.lower().strip() for c in self.get_platform_profile_choices()]
+            if "custom" in choices and self._read_raw_platform_profile() != "custom":
+                ok_c, msg_c = PermissionsManager.write_sysfs_value(
+                    self.paths.platform_profile, "custom", allow_elevation=allow_elevation
+                )
+                if not ok_c:
+                    return False, f"Falha ao ativar perfil custom para alvos térmicos: {msg_c}"
+                self._max_power_active = False
+                self._promoted_max_power_from_low = False
+                self._last_raw_profile = "custom"
+                self._last_profile = "custom"
+                self._sync_platform_profile_cache("custom")
+                time.sleep(0.05)
+
+        pairs: List[Tuple[str, str]] = []
+        wmi_dir = self.paths.lenovo_wmi_attr_dir
+        if wmi_dir:
+            if self.features.wmi_cpu_temp:
+                c_path = os.path.join(wmi_dir, "cpu_temp", "current_value")
+                if os.path.exists(c_path):
+                    pairs.append((c_path, str(cpu_lim)))
+            if self.features.wmi_gpu_temp:
+                g_path = os.path.join(wmi_dir, "gpu_temp", "current_value")
+                if os.path.exists(g_path):
+                    pairs.append((g_path, str(gpu_lim)))
+
+        if not pairs:
+            return False, "Nós WMI cpu_temp/gpu_temp indisponíveis para gravação."
+
+        ok, msg = PermissionsManager.write_multiple_sysfs_values(pairs, allow_elevation=allow_elevation)
+        if not ok:
+            return False, msg
+
+        self.settings.set("custom_cpu_temp_limit", cpu_lim)
+        self.settings.set("custom_gpu_temp_limit", gpu_lim)
+        return True, f"Alvos térmicos do EC aplicados: CPU {cpu_lim}°C | GPU {gpu_lim}°C (perfil Custom)."
+
+    def get_active_cooling_preset(self) -> str:
+        """Retorna o modo de ventilação ativo ('quiet', 'auto', 'cool', 'max' ou 'custom')."""
+        if self.features.fan_control and bool(self.settings.get("custom_fan_curve_enabled", False)):
+            saved = str(self.settings.get("cooling_preset", "custom") or "custom")
+            return saved if saved in ("quiet", "auto", "cool", "max", "custom") else "custom"
+
+        if self.features.platform_profile:
+            prof = self.normalize_profile(self.get_platform_profile())
+            if prof == "max-power":
+                return "max"
+            if prof in ("low-power", "quiet"):
+                return "quiet"
+            if prof == "custom":
+                if self.features.wmi_cpu_temp or self.features.wmi_gpu_temp:
+                    bounds = self.get_wmi_thermal_bounds()
+                    c_lo, _, c_cur = bounds["cpu_temp"]
+                    g_lo, _, g_cur = bounds["gpu_temp"]
+                    if (self.features.wmi_cpu_temp and c_cur <= c_lo + 2) or (self.features.wmi_gpu_temp and g_cur <= g_lo + 2):
+                        return "cool"
+                return "custom"
+            if prof == "performance":
+                saved = str(self.settings.get("cooling_preset", "") or "")
+                if not self.features.max_power_profile and saved != "cool":
+                    return "max"
+                return "cool" if saved == "cool" else "cool"
+            return "auto"
+
+        saved = str(self.settings.get("cooling_preset", "auto") or "auto")
+        return saved if saved in ("quiet", "auto", "cool", "max", "custom") else "auto"
+
+    def apply_cooling_preset(self, preset_id: str, allow_elevation: bool = True) -> Tuple[bool, str]:
+        """Aplica em 1 clique um modo de ventilação real (EC/WMI ou curva PWM)."""
+        if not self.has_cooling_controls():
+            return False, "Nenhum controle de ventilação suportado foi detectado."
+
+        pid = str(preset_id or "auto").lower().strip()
+        if pid not in ("quiet", "auto", "cool", "max"):
+            pid = "auto"
+
+        choices = [c.lower().strip() for c in self.get_platform_profile_choices()] if self.features.platform_profile else []
+
+        if pid == "quiet":
+            if self.features.fan_control and not self.features.platform_profile:
+                pts = self.get_fan_curve_presets()["silent"]
+                ok, msg = self.set_custom_fan_curve(pts, True)
+            else:
+                if self.features.fan_control and bool(self.settings.get("custom_fan_curve_enabled", False)):
+                    self.set_custom_fan_curve(self.get_custom_fan_curve()["points"], False)
+                ok, msg = self.set_platform_profile("low-power", allow_elevation=allow_elevation)
+                if ok:
+                    msg = "Ventoinhas em modo Silencioso (perfil EC Silencioso / 0 RPM em uso leve)."
+            if ok:
+                self.settings.set("cooling_preset", "quiet")
+            return ok, msg
+
+        if pid == "auto":
+            if self.features.fan_control and bool(self.settings.get("custom_fan_curve_enabled", False)):
+                self.set_custom_fan_curve(self.get_custom_fan_curve()["points"], False)
+            if self.features.platform_profile:
+                ok, msg = self.set_platform_profile("balanced", allow_elevation=allow_elevation)
+                if ok:
+                    msg = "Ventoinhas em modo Automático (controle inteligente padrão do EC)."
+            else:
+                ok, msg = True, "Controle automático original das ventoinhas restaurado."
+            if ok:
+                self.settings.set("cooling_preset", "auto")
+            return ok, msg
+
+        if pid == "cool":
+            has_wmi_targets = bool(self.features.wmi_cpu_temp or self.features.wmi_gpu_temp)
+            if has_wmi_targets and (not self.features.platform_profile or "custom" in choices):
+                bounds = self.get_wmi_thermal_bounds()
+                c_lo, _, _ = bounds["cpu_temp"]
+                g_lo, _, _ = bounds["gpu_temp"]
+                ok, msg = self.apply_wmi_thermal_targets(c_lo, g_lo, allow_elevation=allow_elevation)
+                if ok:
+                    if self.features.fan_control:
+                        self.set_custom_fan_curve(self.get_fan_curve_presets()["aggressive"], True, c_lo, g_lo)
+                    msg = f"Modo Mais Frio ativo: EC adiantado com alvos CPU {c_lo}°C / GPU {g_lo}°C."
+            elif self.features.fan_control:
+                cool_pts = [[35, 25], [48, 45], [60, 65], [72, 85], [82, 100], [92, 100]]
+                ok, msg = self.set_custom_fan_curve(cool_pts, True)
+            else:
+                ok, msg = self.set_platform_profile("performance", allow_elevation=allow_elevation)
+                if ok:
+                    msg = "Modo Mais Frio ativo: curva térmica de Desempenho aplicada no EC."
+            if ok:
+                self.settings.set("cooling_preset", "cool")
+            return ok, msg
+
+        # pid == "max"
+        target_prof = "max-power" if self.features.max_power_profile else "performance"
+        if self.features.platform_profile:
+            if self.features.fan_control and bool(self.settings.get("custom_fan_curve_enabled", False)):
+                self.set_custom_fan_curve(self.get_custom_fan_curve()["points"], False)
+            ok, msg = self.set_platform_profile(target_prof, allow_elevation=allow_elevation)
+            if ok:
+                msg = f"Turbo Máximo ativo ({target_prof.upper()} + rotação máxima do EC)."
+        elif self.features.fan_control:
+            ok, msg = self.set_custom_fan_curve(self.get_fan_curve_presets()["aggressive"], True)
+        else:
+            ok, msg = False, "Turbo Máximo indisponível neste dispositivo."
+        if ok:
+            self.settings.set("cooling_preset", "max")
+        return ok, msg
 
     # =========================================================================
     # ELITE 8: Overclock & Undervolt Dinâmico (Intel HX / AMD) + Watchdog Seguro

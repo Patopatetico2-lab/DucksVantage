@@ -6,7 +6,17 @@
 
 <p align="center">
   Gerenciador de energia, perfis térmicos e controles de chassi para notebooks <b>Lenovo (Legion, LOQ, IdeaPad Gaming, IdeaPad e Yoga)</b> no Linux.<br>
-  Escrito em Python + PyQt6. Sem Electron, sem telemetria e direto no <code>/sys/</code>.
+  Escrito em Python + PyQt6. Sem Electron, sem telemetria e direto no <code>/sys/</code>.<br><br>
+  <a href="https://github.com/Patopatetico2-lab/DucksVantage/releases/latest">
+    <img src="https://img.shields.io/github/v/release/Patopatetico2-lab/DucksVantage?label=Release&color=00d2ff" alt="Release">
+  </a>
+  <a href="https://github.com/Patopatetico2-lab/DucksVantage/actions/workflows/ci.yml">
+    <img src="https://github.com/Patopatetico2-lab/DucksVantage/actions/workflows/ci.yml/badge.svg" alt="CI Tests">
+  </a>
+  <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License MIT">
+  <img src="https://img.shields.io/badge/Linux-Arch%20%7C%20Debian%20%7C%20Fedora-informational" alt="Linux">
+  <br><br>
+  <b>Português (BR)</b> • <a href="README.en.md">English Version</a> • <a href="https://patopatetico2-lab.github.io/DucksVantage/">Site Oficial</a>
 </p>
 
 ---
@@ -20,8 +30,8 @@ Eu criei o **Ducksvantage** justamente pra não depender de scripts soltos ou fi
 **Leitura de hardware sem acordar a GPU dedicada**  
 No topo da tela principal ficam os medidores de CPU, GPU e RAM (desenhados direto em `QPainter`). Um detalhe que sempre me incomodou em outros monitores no Linux é que, ao consultar a placa da NVIDIA via `nvidia-smi` ou NVML, eles tiram a GPU do estado de suspensão e drenam a bateria. Aqui o código checa primeiro o status PCI Runtime PM: se a sua RTX estiver dormindo em `D3cold`, ele não cutuca a placa e mantém o consumo zerado. Em memórias DDR5 com sensor `spd5118`, ele também puxa a temperatura dos pentes.
 
-**Modos térmicos e o perfil `max-power`**  
-Em vez de chutar perfis fixos, o app lê `/sys/firmware/acpi/platform_profile_choices`. Além dos clássicos *Silencioso* (`low-power`), *Equilibrado* (`balanced`) e *Desempenho* (`performance`), se você estiver num kernel mais novo (como no CachyOS ou Linux 6.12+ com `lenovo-wmi-gamezone`) que libera o perfil **`max-power`**, o quarto botão aparece sozinho na tela e já entra na rotação do `Fn + Q`. Pra quem gosta de ajuste fino em processadores Intel, dá pra mexer nos limites de potência PL1/PL2 (em Watts via RAPL), cortar o Turbo Boost, trocar o governor e acompanhar a curva das ventoinhas.
+**Modos térmicos, controle fácil de ventoinhas e o perfil `max-power`**  
+Em vez de chutar perfis fixos, o app lê `/sys/firmware/acpi/platform_profile_choices`. Além dos clássicos *Silencioso* (`low-power`), *Equilibrado* (`balanced`) e *Desempenho* (`performance`), se você estiver num kernel mais novo (como no CachyOS ou Linux 6.12+ com `lenovo-wmi-gamezone`) que libera o perfil **`max-power`**, o quarto botão aparece sozinho na tela e já entra na rotação do `Fn + Q`. Na aba **CPU & Térmico**, você escolhe em 1 clique entre **Silencioso**, **Automático**, **Mais Frio** (que antecipa a rotação via alvos térmicos WMI no EC) e **Turbo Máximo** — ou abre o **Modo Avançado** para editar curva PWM, alvos térmicos CPU/GPU WMI e limites PL1/PL2 (em Watts via RAPL).
 
 **Controles rápidos de chassi (Painel Edge)**  
 Fica na lateral direita do dashboard, parecido com o layout antigo da Lenovo:
@@ -51,16 +61,16 @@ Na aba *Sobre* (ou clicando com o botão direito no ícone da bandeja) tem a cha
 
 ## Como instalar
 
-### Baixar instaladores prontos (`v2.2.0`)
+### Baixar instaladores prontos (`v2.3.0`)
 
 Você pode baixar o pacote pronto para a sua distribuição diretamente na página de [**Releases do GitHub**](https://github.com/Patopatetico2-lab/DucksVantage/releases/latest):
 
 | Distribuição | Pacote | Comando de instalação |
 | :--- | :--- | :--- |
-| **Ubuntu / Debian / Pop!_OS / Mint** | `ducksvantage_2.2.0_all.deb` | `sudo apt install ./ducksvantage_2.2.0_all.deb` |
-| **Fedora / Nobara / openSUSE** | `ducksvantage-2.2.0-1.noarch.rpm` | `sudo dnf install ./ducksvantage-2.2.0-1.noarch.rpm` |
-| **Arch Linux / CachyOS / Manjaro** | `ducksvantage-2.2.0-1-any.pkg.tar.zst` | `sudo pacman -U ./ducksvantage-2.2.0-1-any.pkg.tar.zst` |
-| **Qualquer Linux (Portátil)** | `DucksVantage-2.2.0-x86_64.AppImage` | `chmod +x DucksVantage-2.2.0-x86_64.AppImage && ./DucksVantage-2.2.0-x86_64.AppImage` |
+| **Ubuntu / Debian / Pop!_OS / Mint** | `ducksvantage_2.3.0_all.deb` | `sudo apt install ./ducksvantage_2.3.0_all.deb` |
+| **Fedora / Nobara / openSUSE** | `ducksvantage-2.3.0-1.noarch.rpm` | `sudo dnf install ./ducksvantage-2.3.0-1.noarch.rpm` |
+| **Arch Linux / CachyOS / Manjaro** | `ducksvantage-2.3.0-1-any.pkg.tar.zst` | `sudo pacman -U ./ducksvantage-2.3.0-1-any.pkg.tar.zst` |
+| **Qualquer Linux (Portátil)** | `DucksVantage-2.3.0-x86_64.AppImage` | `chmod +x DucksVantage-2.3.0-x86_64.AppImage && ./DucksVantage-2.3.0-x86_64.AppImage` |
 
 > **Nota sobre o `.AppImage`:** os pacotes `.deb`, `.rpm` e `.pkg.tar.zst` já instalam automaticamente as regras UDEV em `/etc/udev/rules.d/`. Ao usar o `.AppImage`, clique em **"Configurar Acesso Sem Senha"** na aba *Sobre* na primeira abertura para gravar as permissões no sistema.
 
@@ -135,25 +145,29 @@ python3 main.py --install-udev
 
 ```text
 ducksvantage/
-├── main.py                  # Entrada principal, flags de terminal e trava de instância única
-├── ui_main.py               # Janela principal, barra lateral, timers e conexão com o tray
+├── main.py                  # Entrada principal, flags CLI e trava de instância única
+├── ui_main.py               # Janela principal (Modo Básico/Avançado), sidebar e timers
 ├── styles.qss               # Tema escuro da interface
-├── install.sh               # Instalador geral + configuração do UDEV e cache de ícones
-├── setup_udev.sh            # Script avulso pra aplicar regras UDEV e atalho .desktop local
-├── test_backend.py          # Teste rápido de leitura dos sensores no terminal
-├── assets/                  # Ícone principal e SVGs da interface
+├── install.sh / uninstall.sh# Instalador e desinstalador universal Linux
+├── assets/                  # Ícone oficial e SVGs da interface
 ├── core/
-│   ├── backend.py           # Leitura e escrita em /sys/, ACPI, RAPL, hwmon, NVML e XDG autostart
-│   ├── models.py            # Estruturas de dados dos sensores
-│   ├── permissions.py       # Checagem de escrita no sysfs e chamada ao pkexec
-│   └── settings.py          # Salva preferências e histórico da bateria em ~/.config/ducksvantage/
+│   ├── backend.py           # Orquestração de hardware (/sys/, ACPI, RAPL, hwmon, NVML, WMI)
+│   ├── dbus_service.py      # Serviço D-Bus (org.ducksvantage.Control) e KRunner
+│   ├── key_mapper.py        # Sanitização e mapeamento de teclas (Copilot F23 / Fn+R)
+│   ├── models.py            # Dataclasses tipadas de sensores e capacidades
+│   ├── permissions.py       # Checagem de escrita no sysfs, UDEV e pkexec sob demanda
+│   ├── settings.py          # Preferências atômicas e histórico em ~/.config/ducksvantage/
+│   └── mixins/              # Módulos térmicos/fan/eco, GPU/MUX, bateria/rede, jogos e extras
 ├── ui/
-│   ├── dashboard.py         # Tela inicial com os medidores e painel rápido
+│   ├── dashboard.py         # Tela inicial (Gauges, Perfil Térmico, Gráfico Vivo e Painel Edge)
 │   ├── gauges.py            # Medidores circulares desenhados via QPainter
-│   ├── osd_overlay.py       # Janela flutuante do Fn+Q
-│   ├── tray_icon.py         # Menu da bandeja do sistema
-│   └── tabs/                # Abas de Desempenho, Bateria e Sobre
-└── packaging/               # Regras UDEV (99-ducksvantage.rules), PKGBUILD, .spec e .desktop
+│   ├── osd_overlay.py       # Pop-up OSD não-intrusivo do Fn+Q
+│   ├── tray_icon.py         # Menu rápido na bandeja do sistema
+│   ├── widgets/             # Widgets reutilizáveis (curva de fan, gráfico térmico, captura de teclas)
+│   └── tabs/                # Abas: CPU & Térmico, GPU & Tela, Automação, Bateria, RGB e Sistema
+├── plasmoid/                # Widget nativo para painel do KDE Plasma 6
+├── packaging/               # Builders .deb, .rpm, Arch PKGBUILD, AppImage e regras UDEV
+└── tests/                   # Suíte automatizada de testes unitários (Qt offscreen)
 ```
 
 ## Sobre as permissões sem `sudo`

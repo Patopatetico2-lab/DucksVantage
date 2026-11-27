@@ -24,12 +24,14 @@ ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.
 class PerformanceTab(QWidget):
     """Aba CPU & Térmico: frequência, TDP, curva de ventoinhas, undervolt e perfis ACPI."""
     switch_advanced_requested = Signal()
+    cooling_changed = Signal(str, str)
 
     def __init__(self, backend, parent=None):
         super().__init__(parent)
         self.backend = backend
         self._advanced_mode = self.backend.is_advanced_mode()
         self.gov_buttons: Dict[str, QPushButton] = {}
+        self.cooling_mode_buttons: Dict[str, QPushButton] = {}
         self._watchdog_seconds = 0
         self._watchdog_timer = QTimer(self)
         self._watchdog_timer.setInterval(1000)
@@ -199,36 +201,49 @@ class PerformanceTab(QWidget):
             ic_tdp.setPixmap(QPixmap(p_tdp).scaled(22, 22, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         tdp_header.addWidget(ic_tdp)
 
+        has_cooling = self.backend.has_cooling_controls()
         tdp_titles = QVBoxLayout()
         tdp_titles.setSpacing(2)
-        if feat.fan_control and feat.custom_tdp:
+        if has_cooling and feat.custom_tdp:
             tdp_title_txt = "Ventoinhas & Limites de Potência"
-            tdp_sub_txt = "Arraste os pontos de controle (°C vs %) e ajuste os limites de energia da CPU."
-        elif feat.fan_control:
-            tdp_title_txt = "Curva de Ventoinhas"
-            tdp_sub_txt = "Arraste os pontos (°C vs %) para ajustar a velocidade das ventoinhas."
+            tdp_sub_txt = (
+                "Controle fácil de ventilação em 1 clique + limites de energia e alvos térmicos."
+            )
+        elif has_cooling:
+            tdp_title_txt = "Ventoinhas & Controle Térmico"
+            tdp_sub_txt = (
+                "Controle fácil em 1 clique da resposta das ventoinhas e alvos térmicos do notebook."
+            )
         else:
             tdp_title_txt = "Limites de Potência (TDP)"
             tdp_sub_txt = "Ajuste de potência sustentada (PL1) e pico boost (PL2) da CPU."
         tdp_t = QLabel(tdp_title_txt)
-        tdp_t.setToolTip("Controle via Embedded Controller (EC) e Intel RAPL")
+        tdp_t.setToolTip("Controle via Embedded Controller (EC), Lenovo WMI e Intel RAPL")
         tdp_t.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.DemiBold))
         tdp_t.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         tdp_titles.addWidget(tdp_t)
 
         tdp_sub = QLabel(tdp_sub_txt)
+        tdp_sub.setWordWrap(True)
         tdp_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         tdp_titles.addWidget(tdp_sub)
-        tdp_header.addLayout(tdp_titles)
-        tdp_header.addStretch()
+        tdp_header.addLayout(tdp_titles, stretch=1)
+
+        self.fan_status_badge = StatusBadge("EC AUTOMÁTICO", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.ACCENT_STEEL)
+        self.fan_status_badge.setVisible(has_cooling)
+        tdp_header.addWidget(self.fan_status_badge)
 
         self.tdp_badge = StatusBadge("PL1: --W | PL2: --W", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.TEXT_WHITE_80)
         self.tdp_badge.setVisible(feat.custom_tdp)
         tdp_header.addWidget(self.tdp_badge)
         tdp_layout.addLayout(tdp_header)
 
-        # Curva de Ventoinhas no EC
+        # Controle Fácil + Curva / Alvos Térmicos das Ventoinhas
         fan_cfg = self.backend.get_custom_fan_curve()
+        wmi_bounds = self.backend.get_wmi_thermal_bounds()
+        c_lo, c_hi, init_cpu_t = wmi_bounds["cpu_temp"]
+        g_lo, g_hi, init_gpu_t = wmi_bounds["gpu_temp"]
+
         self.fan_ctrl_box = QFrame()
         self.fan_ctrl_box.setProperty("class", "subBox")
         fan_ctrl_layout = QVBoxLayout(self.fan_ctrl_box)
@@ -237,19 +252,19 @@ class PerformanceTab(QWidget):
 
         fc_top = QHBoxLayout()
         fc_lbl_v = QVBoxLayout()
-        fc_title = QLabel("Curva de Rotação das Ventoinhas")
-        fc_title.setToolTip("Controle direto via Embedded Controller (EC)")
+        fc_title = QLabel("Modo de Ventilação")
+        fc_title.setToolTip("Controle direto via Embedded Controller (EC) / Lenovo WMI")
         fc_title.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.DemiBold))
         fc_title.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; border: none;")
         fc_lbl_v.addWidget(fc_title)
 
         self.lbl_fan_curve_status = QLabel(
-            "Arraste os pontos ou selecione um preset térmico abaixo."
+            "Escolha em 1 clique como a ventoinha deve se comportar:"
         )
+        self.lbl_fan_curve_status.setWordWrap(True)
         self.lbl_fan_curve_status.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px; border: none;")
         fc_lbl_v.addWidget(self.lbl_fan_curve_status)
-        fc_top.addLayout(fc_lbl_v)
-        fc_top.addStretch()
+        fc_top.addLayout(fc_lbl_v, stretch=1)
 
         self.sw_custom_fan = ToggleSwitch()
         self.sw_custom_fan.setChecked(bool(fan_cfg.get("enabled", False)))
@@ -257,35 +272,56 @@ class PerformanceTab(QWidget):
         fc_top.addWidget(self.sw_custom_fan)
         fan_ctrl_layout.addLayout(fc_top)
 
+        # Botões fáceis de 1 clique (visíveis tanto no Básico quanto no Avançado)
+        quick_cool_row = QHBoxLayout()
+        quick_cool_row.setSpacing(8)
+        cool_modes = [
+            ("quiet", "Silencioso", "Prioriza silêncio e 0 RPM em uso leve"),
+            ("auto", "Automático", "Curva equilibrada padrão do notebook"),
+            ("cool", "Mais Frio", "Adianta a ventoinha para manter CPU e GPU mais frias"),
+            ("max", "Turbo Máximo", "Rotação e refrigeração máximas para jogos pesados"),
+        ]
+        for cm_id, cm_label, cm_tip in cool_modes:
+            btn_cm = QPushButton(cm_label)
+            btn_cm.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_cm.setFixedHeight(32)
+            btn_cm.setToolTip(cm_tip)
+            btn_cm.setFont(QFont(ThemeTokens.FONT_NAME, 9, QFont.Weight.DemiBold))
+            btn_cm.clicked.connect(lambda _c=False, k=cm_id: self._on_quick_cooling_selected(k))
+            quick_cool_row.addWidget(btn_cm, stretch=1)
+            self.cooling_mode_buttons[cm_id] = btn_cm
+        fan_ctrl_layout.addLayout(quick_cool_row)
+
         self.fan_curve_widget = FanCurveWidget()
         self.fan_curve_widget.set_custom_curve(fan_cfg.get("points", []), bool(fan_cfg.get("enabled", False)))
         self.fan_curve_widget.curve_changed.connect(self._on_fan_curve_points_dragged)
         fan_ctrl_layout.addWidget(self.fan_curve_widget)
 
-        # Alvos térmicos WMI
+        # Alvos térmicos WMI (em quantos °C o EC acelera a ventoinha)
         self.wmi_temp_widget = QWidget()
-        wmi_temp_row = QHBoxLayout(self.wmi_temp_widget)
+        wmi_temp_v = QVBoxLayout(self.wmi_temp_widget)
+        wmi_temp_v.setContentsMargins(0, 2, 0, 0)
+        wmi_temp_v.setSpacing(8)
+
+        wmi_temp_row = QHBoxLayout()
         wmi_temp_row.setContentsMargins(0, 0, 0, 0)
         wmi_temp_row.setSpacing(16)
-
-        init_cpu_t = int(fan_cfg.get("cpu_temp_limit", 94))
-        init_gpu_t = int(fan_cfg.get("gpu_temp_limit", 87))
 
         self.wmi_cpu_temp_widget = QWidget()
         wmi_cpu_l = QHBoxLayout(self.wmi_cpu_temp_widget)
         wmi_cpu_l.setContentsMargins(0, 0, 0, 0)
         wmi_cpu_l.setSpacing(8)
-        self.lbl_wmi_cpu_temp = QLabel(f"Limite Térmico CPU: {init_cpu_t}°C")
-        self.lbl_wmi_cpu_temp.setToolTip("Alvo térmico WMI configurado no firmware")
+        self.lbl_wmi_cpu_temp = QLabel(f"Alvo Térmico CPU: {init_cpu_t}°C")
+        self.lbl_wmi_cpu_temp.setToolTip("Temperatura em que o EC acelera a ventoinha (quanto menor, mais fresca a CPU)")
         self.lbl_wmi_cpu_temp.setFont(QFont(ThemeTokens.FONT_NAME, 9, QFont.Weight.DemiBold))
         self.lbl_wmi_cpu_temp.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; min-width: 155px;")
         wmi_cpu_l.addWidget(self.lbl_wmi_cpu_temp)
 
         self.slider_wmi_cpu_temp = QSlider(Qt.Orientation.Horizontal)
-        self.slider_wmi_cpu_temp.setRange(85, 100)
+        self.slider_wmi_cpu_temp.setRange(c_lo, c_hi)
         self.slider_wmi_cpu_temp.setValue(init_cpu_t)
         self.slider_wmi_cpu_temp.valueChanged.connect(
-            lambda v: self.lbl_wmi_cpu_temp.setText(f"Limite Térmico CPU: {v}°C")
+            lambda v: self.lbl_wmi_cpu_temp.setText(f"Alvo Térmico CPU: {v}°C")
         )
         wmi_cpu_l.addWidget(self.slider_wmi_cpu_temp, stretch=1)
         self.wmi_cpu_temp_widget.setVisible(feat.wmi_cpu_temp)
@@ -295,26 +331,43 @@ class PerformanceTab(QWidget):
         wmi_gpu_l = QHBoxLayout(self.wmi_gpu_temp_widget)
         wmi_gpu_l.setContentsMargins(0, 0, 0, 0)
         wmi_gpu_l.setSpacing(8)
-        self.lbl_wmi_gpu_temp = QLabel(f"Limite Térmico GPU: {init_gpu_t}°C")
-        self.lbl_wmi_gpu_temp.setToolTip("Alvo térmico WMI configurado no firmware")
+        self.lbl_wmi_gpu_temp = QLabel(f"Alvo Térmico GPU: {init_gpu_t}°C")
+        self.lbl_wmi_gpu_temp.setToolTip("Temperatura em que o EC acelera a ventoinha da GPU")
         self.lbl_wmi_gpu_temp.setFont(QFont(ThemeTokens.FONT_NAME, 9, QFont.Weight.DemiBold))
         self.lbl_wmi_gpu_temp.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; min-width: 155px;")
         wmi_gpu_l.addWidget(self.lbl_wmi_gpu_temp)
 
         self.slider_wmi_gpu_temp = QSlider(Qt.Orientation.Horizontal)
-        self.slider_wmi_gpu_temp.setRange(75, 87)
+        self.slider_wmi_gpu_temp.setRange(g_lo, g_hi)
         self.slider_wmi_gpu_temp.setValue(init_gpu_t)
         self.slider_wmi_gpu_temp.valueChanged.connect(
-            lambda v: self.lbl_wmi_gpu_temp.setText(f"Limite Térmico GPU: {v}°C")
+            lambda v: self.lbl_wmi_gpu_temp.setText(f"Alvo Térmico GPU: {v}°C")
         )
         wmi_gpu_l.addWidget(self.slider_wmi_gpu_temp, stretch=1)
         self.wmi_gpu_temp_widget.setVisible(feat.wmi_gpu_temp)
         wmi_temp_row.addWidget(self.wmi_gpu_temp_widget, stretch=1)
 
+        wmi_temp_v.addLayout(wmi_temp_row)
+
+        wmi_btn_row = QHBoxLayout()
+        wmi_hint = QLabel("Valores menores antecipam a rotação das ventoinhas no perfil Custom.")
+        wmi_hint.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px; border: none;")
+        wmi_btn_row.addWidget(wmi_hint)
+        wmi_btn_row.addStretch()
+        self.btn_apply_wmi_temps = QPushButton("Aplicar Alvos Térmicos")
+        self.btn_apply_wmi_temps.setProperty("class", "primaryButton")
+        self.btn_apply_wmi_temps.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_apply_wmi_temps.setFixedHeight(28)
+        self.btn_apply_wmi_temps.clicked.connect(self._on_apply_wmi_thermal_targets)
+        wmi_btn_row.addWidget(self.btn_apply_wmi_temps)
+        wmi_temp_v.addLayout(wmi_btn_row)
+
         self.wmi_temp_widget.setVisible(bool(feat.wmi_cpu_temp or feat.wmi_gpu_temp))
         fan_ctrl_layout.addWidget(self.wmi_temp_widget)
 
-        fc_preset_row = QHBoxLayout()
+        self.fc_curve_presets_widget = QWidget()
+        fc_preset_row = QHBoxLayout(self.fc_curve_presets_widget)
+        fc_preset_row.setContentsMargins(0, 0, 0, 0)
         fc_preset_row.setSpacing(8)
         self.btn_fan_passive = None
         for p_key, p_title in [
@@ -340,9 +393,9 @@ class PerformanceTab(QWidget):
         self.btn_apply_fan_curve.setFixedHeight(30)
         self.btn_apply_fan_curve.clicked.connect(self._on_apply_custom_fan_curve)
         fc_preset_row.addWidget(self.btn_apply_fan_curve)
-        fan_ctrl_layout.addLayout(fc_preset_row)
+        fan_ctrl_layout.addWidget(self.fc_curve_presets_widget)
 
-        self.fan_ctrl_box.setVisible(feat.fan_control)
+        self.fan_ctrl_box.setVisible(has_cooling)
         tdp_layout.addWidget(self.fan_ctrl_box)
 
         # Sliders PL1 e PL2 (Intel RAPL)
@@ -412,7 +465,7 @@ class PerformanceTab(QWidget):
 
         self.sliders_box.setVisible(feat.custom_tdp)
         tdp_layout.addWidget(self.sliders_box)
-        self.tdp_card.setVisible(bool(feat.fan_control or feat.custom_tdp))
+        self.tdp_card.setVisible(bool(self.backend.has_cooling_controls() or feat.custom_tdp))
         layout.addWidget(self.tdp_card)
 
         # =====================================================================
@@ -667,8 +720,9 @@ class PerformanceTab(QWidget):
         self.refresh_profile_state()
 
     def set_advanced_mode(self, advanced: bool):
-        """Exibe ou recolhe controles técnicos (Turbo, Governor, Curva PWM, 0 RPM, PL1/PL2 e Undervolt)."""
+        """Exibe ou recolhe controles técnicos (Turbo, Governor, Curva PWM, Alvos WMI, PL1/PL2 e Undervolt)."""
         feat = self.backend.features
+        has_cool = self.backend.has_cooling_controls()
         adv = bool(advanced)
         self._advanced_mode = adv
 
@@ -676,22 +730,27 @@ class PerformanceTab(QWidget):
         self.turbo_box.setVisible(bool(adv and feat.turbo_boost))
         self.gov_box.setVisible(bool(adv and feat.cpu_governor and self.gov_buttons))
 
+        self.fan_status_badge.setVisible(has_cool)
         self.tdp_badge.setVisible(bool(adv and feat.custom_tdp))
-        self.fan_ctrl_box.setVisible(bool(feat.fan_control))
+        self.fan_ctrl_box.setVisible(has_cool)
+        self.sw_custom_fan.setVisible(bool(adv and feat.fan_control))
         self.fan_curve_widget.setVisible(bool(adv and feat.fan_control))
+        self.fc_curve_presets_widget.setVisible(bool(adv and feat.fan_control))
         self.btn_apply_fan_curve.setVisible(bool(adv and feat.fan_control))
         if getattr(self, "btn_fan_passive", None) is not None:
             self.btn_fan_passive.setVisible(bool(adv and feat.fan_control))
         self.wmi_temp_widget.setVisible(bool(adv and (feat.wmi_cpu_temp or feat.wmi_gpu_temp)))
+        self.btn_apply_wmi_temps.setVisible(bool(adv and (feat.wmi_cpu_temp or feat.wmi_gpu_temp) and not feat.fan_control))
         self.sliders_box.setVisible(bool(adv and feat.custom_tdp))
-        self.tdp_card.setVisible(bool(feat.fan_control or (adv and feat.custom_tdp)))
+        self.tdp_card.setVisible(bool(has_cool or (adv and feat.custom_tdp)))
 
-        if feat.fan_control:
-            self.lbl_fan_curve_status.setText(
-                "Arraste os pontos ou selecione um preset térmico abaixo."
-                if adv
-                else "Selecione um modo rápido de ventilação ou ative o Modo Avançado para editar a curva."
-            )
+        if has_cool:
+            if adv and feat.fan_control:
+                self.lbl_fan_curve_status.setText("Escolha um modo rápido ou arraste os pontos da curva PWM.")
+            elif adv and (feat.wmi_cpu_temp or feat.wmi_gpu_temp):
+                self.lbl_fan_curve_status.setText("Escolha um modo rápido ou ajuste os alvos térmicos WMI do EC.")
+            else:
+                self.lbl_fan_curve_status.setText("Escolha em 1 clique como a ventoinha deve se comportar:")
 
         has_cpu_uv = feat.cpu_undervolt
         has_gpu_off = feat.wmi_gpu_ac_offset
@@ -699,8 +758,31 @@ class PerformanceTab(QWidget):
         self.basic_hint_card.setVisible(not adv)
 
     # =========================================================================
-    # Métodos da Curva de Ventoinhas (EC)
+    # Métodos de Ventilação Rápida, Alvos WMI e Curva PWM (EC)
     # =========================================================================
+    def _on_quick_cooling_selected(self, preset_id: str):
+        ok, msg = self.backend.apply_cooling_preset(preset_id)
+        self.lbl_fan_curve_status.setText(msg)
+        if ok:
+            if preset_id in ("quiet", "auto", "max") and self.backend.features.fan_control:
+                self.sw_custom_fan.blockSignals(True)
+                self.sw_custom_fan.setChecked(preset_id in ("cool", "max") and not self.backend.features.platform_profile)
+                self.sw_custom_fan.blockSignals(False)
+            self.refresh_profile_state()
+            self.cooling_changed.emit(preset_id, msg)
+        else:
+            QMessageBox.warning(self, "Controle de Ventoinhas", msg)
+
+    def _on_apply_wmi_thermal_targets(self):
+        cpu_lim = self.slider_wmi_cpu_temp.value()
+        gpu_lim = self.slider_wmi_gpu_temp.value()
+        ok, msg = self.backend.apply_wmi_thermal_targets(cpu_lim, gpu_lim)
+        self.lbl_fan_curve_status.setText(msg)
+        if ok:
+            self.refresh_profile_state()
+            self.cooling_changed.emit("custom", msg)
+        else:
+            QMessageBox.warning(self, "Alvos Térmicos WMI", msg)
     def _on_custom_fan_toggled(self, checked: bool):
         pts = self.fan_curve_widget.get_custom_points()
         self.fan_curve_widget.set_custom_curve(pts, checked)
@@ -895,6 +977,49 @@ class PerformanceTab(QWidget):
 
         self.tdp_badge.setText(f"PL1: {cpu.pl1_w}W | PL2: {cpu.pl2_w}W")
         self.fan_curve_widget.update_state(active_prof, cpu.temperature_c, fan.rpm, fan.second_rpm)
+
+        if hasattr(self, "fan_status_badge"):
+            if fan.rpm > 0 and fan.second_rpm > 0:
+                self.fan_status_badge.setText(f"{fan.rpm} / {fan.second_rpm} RPM • {cpu.temperature_c:.0f}°C")
+            elif fan.rpm > 0:
+                self.fan_status_badge.setText(f"{fan.rpm} RPM • {cpu.temperature_c:.0f}°C")
+            else:
+                self.fan_status_badge.setText(f"EC ATIVO • {cpu.temperature_c:.0f}°C")
+
+        active_cool = self.backend.get_active_cooling_preset()
+        cool_accent_map = {
+            "quiet": ThemeTokens.THERMAL_QUIET,
+            "auto": ThemeTokens.THERMAL_BALANCED,
+            "cool": ThemeTokens.BORDER_CYAN,
+            "max": ThemeTokens.ACCENT_STEEL,
+        }
+        for cid, cbtn in self.cooling_mode_buttons.items():
+            is_c_active = (cid == active_cool)
+            c_acc = cool_accent_map.get(cid, ThemeTokens.ACCENT_STEEL)
+            if is_c_active:
+                cbtn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {ThemeTokens.BG_CARD_ACTIVE};
+                        color: {ThemeTokens.TEXT_WHITE_100};
+                        border: 1.5px solid {c_acc};
+                        border-radius: 6px;
+                        padding: 0px 8px;
+                    }}
+                """)
+            else:
+                cbtn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {ThemeTokens.BG_CARD_HOVER};
+                        color: {ThemeTokens.TEXT_LIGHT_GRAY};
+                        border: 1px solid {ThemeTokens.BORDER_DEFAULT};
+                        border-radius: 6px;
+                        padding: 0px 8px;
+                    }}
+                    QPushButton:hover {{
+                        border-color: {c_acc};
+                        color: {ThemeTokens.TEXT_WHITE_100};
+                    }}
+                """)
 
         for gname, btn in self.gov_buttons.items():
             is_active = (gname == cpu.governor)

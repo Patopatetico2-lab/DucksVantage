@@ -13,7 +13,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 from core.permissions import PermissionsManager
 
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
 GITHUB_REPO = "Patopatetico2-lab/DucksVantage"
 
 

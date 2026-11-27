@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ducksvantage"
-version = "2.2.0"
+version = "2.3.0"
 description = "Universal Lenovo Vantage replacement for Linux (Legion, LOQ, IdeaPad Gaming, IdeaPad & Yoga)"
 readme = "README.md"
 license = { text = "MIT" }

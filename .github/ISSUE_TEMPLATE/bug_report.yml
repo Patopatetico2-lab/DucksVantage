@@ -1,0 +1,41 @@
+name: Reportar Bug / Problema
+description: Relate uma falha no DucksVantage com os dados técnicos do seu notebook Lenovo
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Para acelerar a correção, abra o **DucksVantage** → **Config. & Sistema** → clique em **Copiar Diagnóstico (Markdown)** e cole abaixo (ele não inclui dados pessoais).
+  - type: textarea
+    id: description
+    attributes:
+      label: O que aconteceu?
+      description: Descreva o comportamento observado e o que você esperava que acontecesse.
+    validations:
+      required: true
+  - type: dropdown
+    id: package_format
+    attributes:
+      label: Como você instalou o DucksVantage?
+      options:
+        - Pacote .deb (Ubuntu / Debian / Mint / Pop!_OS)
+        - Pacote .rpm (Fedora / Nobara / openSUSE)
+        - Pacote Arch (.pkg.tar.zst / PKGBUILD)
+        - AppImage portátil
+        - Código-fonte (install.sh / git clone)
+    validations:
+      required: true
+  - type: input
+    id: distro_desktop
+    attributes:
+      label: Distribuição Linux e Ambiente Desktop
+      placeholder: "Ex.: CachyOS • KDE Plasma 6.2 (Wayland) ou Ubuntu 24.04 • GNOME"
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: Relatório de Diagnóstico do DucksVantage
+      description: Cole aqui o texto copiado pelo botão "Copiar Diagnóstico" (ou `python3 main.py --diagnostic`).
+      render: markdown

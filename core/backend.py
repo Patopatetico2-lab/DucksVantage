@@ -229,6 +229,7 @@ class HardwareBackend(
         self._last_applied_pwm: int = -1
         self._last_emergency_reset: str = ""
         self._hwmon_pwm_nodes: List[Tuple[str, Optional[str]]] = []
+        self._hwmon_fan_targets: List[Tuple[str, Optional[str], int, int]] = []
         self._fan_fullspeed_path: Optional[str] = None
 
         # Estado de Alertas Inteligentes da Bateria
@@ -532,6 +533,7 @@ class HardwareBackend(
         self.features.fan_control = bool(
             self.paths.hwmon_pwm1
             or self._hwmon_pwm_nodes
+            or self._hwmon_fan_targets
             or self._fan_fullspeed_path
             or (self.paths.fan_mode and not self._is_wmi_gamezone)
         )
@@ -804,6 +806,7 @@ class HardwareBackend(
     def _scan_hwmon(self) -> None:
         """Mapeia sensores térmicos e de rotação em /sys/class/hwmon/."""
         self._hwmon_pwm_nodes = []
+        self._hwmon_fan_targets = []
         hwmon_dirs = sorted(glob.glob("/sys/class/hwmon/hwmon*"))
         cpu_sensor_names = ("coretemp", "k10temp", "zenpower", "cpu_thermal", "acpitz")
         fan_sensor_names = ("yogafan", "legion", "ideapad", "thinkpad", "asus", "dell_smm")
@@ -853,6 +856,16 @@ class HardwareBackend(
                         self.paths.hwmon_pwm1 = pwm_p
                     if en_real and not self.paths.hwmon_pwm1_enable:
                         self.paths.hwmon_pwm1_enable = en_real
+                else:
+                    m_ft = re.fullmatch(r"fan(\d+)_target", fn)
+                    if m_ft:
+                        fidx = m_ft.group(1)
+                        tgt_p = os.path.join(hdir, fn)
+                        en_p = os.path.join(hdir, f"pwm{fidx}_enable")
+                        en_real = en_p if os.path.exists(en_p) else None
+                        min_rpm = max(0, self._read_file_int(os.path.join(hdir, f"fan{fidx}_min"), default=1200))
+                        max_rpm = max(min_rpm + 100, self._read_file_int(os.path.join(hdir, f"fan{fidx}_max"), default=5400))
+                        self._hwmon_fan_targets.append((tgt_p, en_real, min_rpm, max_rpm))
 
     def _scan_gpus(self) -> None:
         """Identifica GPUs dedicadas (NVIDIA/AMD) e integradas (Intel/AMD) via DRM e NVML."""
@@ -1338,6 +1351,19 @@ class HardwareBackend(
                         PermissionsManager.write_sysfs_value(en_p, "1", allow_elevation=allow_elevation)
                     if os.path.exists(pwm_p) and (allow_elevation or os.access(pwm_p, os.W_OK)):
                         PermissionsManager.write_sysfs_value(pwm_p, "255", allow_elevation=allow_elevation)
+                else:
+                    if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
+                        PermissionsManager.write_sysfs_value(en_p, "2", allow_elevation=allow_elevation)
+            return
+
+        fan_targets = list(getattr(self, "_hwmon_fan_targets", []) or [])
+        if fan_targets:
+            for tgt_p, en_p, _min_r, max_r in fan_targets:
+                if enable:
+                    if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
+                        PermissionsManager.write_sysfs_value(en_p, "1", allow_elevation=allow_elevation)
+                    if os.path.exists(tgt_p) and (allow_elevation or os.access(tgt_p, os.W_OK)):
+                        PermissionsManager.write_sysfs_value(tgt_p, str(max_r), allow_elevation=allow_elevation)
                 else:
                     if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
                         PermissionsManager.write_sysfs_value(en_p, "2", allow_elevation=allow_elevation)

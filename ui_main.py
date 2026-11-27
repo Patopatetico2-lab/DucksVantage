@@ -434,6 +434,7 @@ class MainWindow(QMainWindow):
         self.tray_manager.quit_requested.connect(self._quit_app)
 
         # 8. GPU MUX Switch, Taxa de Atualização, VRR/Dock, LCD Overdrive, Presets e RGB
+        self.performance_tab.cooling_changed.connect(self._on_cooling_preset_changed)
         self.gpu_display_tab.gpu_mux_changed.connect(self._on_gpu_mux_changed)
         self.gpu_display_tab.refresh_rate_changed.connect(self._on_refresh_rate_changed)
         self.gpu_display_tab.vrr_policy_changed.connect(self._on_vrr_policy_changed)
@@ -728,6 +729,31 @@ class MainWindow(QMainWindow):
             self._on_profile_changed(profile_id)
         else:
             QMessageBox.warning(self, "Permissão Necessária", f"Não foi possível alterar o perfil:\n{msg}")
+
+    def _on_cooling_preset_changed(self, preset_id: str, msg: str):
+        title_map = {
+            "quiet": "Ventoinhas: Silencioso",
+            "auto": "Ventoinhas: Automático",
+            "cool": "Ventoinhas: Mais Frio",
+            "max": "Ventoinhas: Turbo Máximo",
+            "custom": "Ventoinhas: Alvos Térmicos EC",
+        }
+        accent_map = {
+            "quiet": ThemeTokens.THERMAL_QUIET,
+            "auto": ThemeTokens.THERMAL_BALANCED,
+            "cool": ThemeTokens.BORDER_CYAN,
+            "max": ThemeTokens.ACCENT_STEEL,
+            "custom": ThemeTokens.THERMAL_CUSTOM,
+        }
+        self.osd.notify_feature_osd(
+            title=title_map.get(preset_id, "Controle de Ventoinhas"),
+            subtitle=msg[:58],
+            icon_name="fan_curve.svg",
+            accent_color=accent_map.get(preset_id, ThemeTokens.ACCENT_STEEL),
+        )
+        self._update_header_profile_pill()
+        self.dashboard_tab.update_telemetry()
+        self.tray_manager.update_tray_state()
 
     def _on_profile_changed(self, profile_id: str):
         norm_prof = self.backend.normalize_profile(profile_id)
