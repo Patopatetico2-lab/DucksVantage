@@ -134,11 +134,20 @@ else
     kbuildsycoca5 --noincremental >/dev/null 2>&1 || true
 fi
 
-# 5. Instalar e Ativar Regras UDEV para Acesso Direto ao Kernel sem Sudo
+# 5. Instalar e Ativar Regras UDEV e parâmetros WMI para Acesso Direto ao Kernel sem Sudo
 echo "[5/5] Configurando regras UDEV universais em ${UDEV_RULE_DST}..."
-mkdir -p /etc/udev/rules.d
+mkdir -p /etc/udev/rules.d /etc/modprobe.d
 cp "${UDEV_RULE_SRC}" "${UDEV_RULE_DST}"
 chmod 0644 "${UDEV_RULE_DST}"
+printf '%s\n' \
+    '# Ducksvantage - Telemetria RPM e controles de ventoinha Lenovo WMI' \
+    'options lenovo_wmi_other expose_all_fans=1 relax_fan_constraint=1' \
+    > /etc/modprobe.d/99-ducksvantage.conf
+chmod 0644 /etc/modprobe.d/99-ducksvantage.conf
+if grep -q 'N' /sys/module/lenovo_wmi_other/parameters/expose_all_fans 2>/dev/null; then
+    modprobe -r lenovo_wmi_other 2>/dev/null || true
+    modprobe lenovo_wmi_other expose_all_fans=1 relax_fan_constraint=1 2>/dev/null || true
+fi
 
 # Aplicar permissões imediatas na sessão atual sem exigir reboot
 chmod 0666 /sys/firmware/acpi/platform_profile 2>/dev/null || true

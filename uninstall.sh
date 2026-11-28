@@ -48,6 +48,7 @@ if [ "$EUID" -eq 0 ]; then
     rm -f /usr/share/icons/hicolor/scalable/apps/ducksvantage.svg
     rm -f /etc/udev/rules.d/99-ducksvantage.rules
     rm -f /etc/udev/rules.d/99-lenovo-loq-control.rules
+    rm -f /etc/modprobe.d/99-ducksvantage.conf
     if command -v udevadm >/dev/null 2>&1; then
         udevadm control --reload-rules 2>/dev/null || true
     fi

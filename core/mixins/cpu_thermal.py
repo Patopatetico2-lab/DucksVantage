@@ -590,6 +590,166 @@ class CpuThermalUndervoltMixin:
                 return int(round(p0 + ratio * (p1 - p0)))
         return pts[-1][1]
 
+    def has_continuous_fan_control(self) -> bool:
+        """Retorna True se o kernel expõe PWM contínuo (0..255) para velocidade gradual via slider."""
+        return bool(self._hwmon_pwm_nodes or self.paths.hwmon_pwm1)
+
+    @staticmethod
+    def _clamp_safe_fan_pct(target_pct: int, hottest_temp: float, gpu_temp: float = 0.0) -> int:
+        """Guardrail térmico obrigatório: impede rotação baixa ou 0 RPM sob alta temperatura."""
+        pct = max(0, min(100, int(target_pct)))
+        if hottest_temp >= 85.0 or gpu_temp >= 82.0:
+            return max(pct, 95)
+        if hottest_temp >= 78.0:
+            return max(pct, 75)
+        if hottest_temp >= 70.0:
+            return max(pct, 55)
+        if hottest_temp >= 52.0 and pct == 0:
+            return 25
+        return pct
+
+    def _write_fan_speed_pct(
+        self,
+        target_pct: Optional[int],
+        hottest_temp: float,
+        force: bool = False,
+        allow_elevation: bool = False,
+        gpu_temp: float = 0.0,
+    ) -> Tuple[bool, Optional[int]]:
+        """
+        Aplica velocidade manual/curva em todos os nós reais disponíveis ou restaura o EC automático (None).
+        """
+        pwm_nodes = list(self._hwmon_pwm_nodes)
+        if not pwm_nodes and self.paths.hwmon_pwm1:
+            pwm_nodes = [(self.paths.hwmon_pwm1, self.paths.hwmon_pwm1_enable)]
+        fan_targets = list(getattr(self, "_hwmon_fan_targets", []) or [])
+        fs_path = getattr(self, "_fan_fullspeed_path", None)
+
+        if target_pct is None:
+            wrote_any = False
+            for _, en_p in pwm_nodes:
+                if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
+                    ok, _ = PermissionsManager.write_sysfs_value(en_p, "2", allow_elevation=allow_elevation)
+                    wrote_any = wrote_any or ok
+            for tgt_p, en_p, _min_r, _max_r in fan_targets:
+                if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
+                    ok, _ = PermissionsManager.write_sysfs_value(en_p, "2", allow_elevation=allow_elevation)
+                    wrote_any = wrote_any or ok
+                elif os.path.exists(tgt_p) and (allow_elevation or os.access(tgt_p, os.W_OK)):
+                    ok, _ = PermissionsManager.write_sysfs_value(tgt_p, "0", allow_elevation=allow_elevation)
+                    wrote_any = wrote_any or ok
+            if fs_path and os.path.exists(fs_path) and (allow_elevation or os.access(fs_path, os.W_OK)):
+                ok, _ = PermissionsManager.write_sysfs_value(fs_path, "0", allow_elevation=allow_elevation)
+                wrote_any = wrote_any or ok
+            if self.paths.fan_mode and os.path.exists(self.paths.fan_mode) and (allow_elevation or os.access(self.paths.fan_mode, os.W_OK)):
+                ok, _ = PermissionsManager.write_sysfs_value(self.paths.fan_mode, "0", allow_elevation=allow_elevation)
+                wrote_any = wrote_any or ok
+            self._last_applied_pwm = -1
+            self._fan_override_applied_by_app = False
+            return True if wrote_any or not (pwm_nodes or fan_targets or fs_path or self.paths.fan_mode) else False, None
+
+        effective_pct = self._clamp_safe_fan_pct(target_pct, hottest_temp, gpu_temp)
+        self._last_applied_pwm = effective_pct
+        pwm_byte = int(round((effective_pct / 100.0) * 255))
+        wrote_any = False
+
+        # 1. Escrita direta em nós hwmon pwm*
+        for pwm_p, en_p in pwm_nodes:
+            if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
+                PermissionsManager.write_sysfs_value(en_p, "1", allow_elevation=allow_elevation)
+            if os.path.exists(pwm_p) and (allow_elevation or os.access(pwm_p, os.W_OK) or force):
+                ok, _ = PermissionsManager.write_sysfs_value(pwm_p, str(pwm_byte), allow_elevation=allow_elevation)
+                wrote_any = wrote_any or ok
+
+        # 2. Escrita em nós hwmon fan*_target (quando suportado pelo EC)
+        for tgt_p, en_p, min_r, max_r in fan_targets:
+            if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
+                PermissionsManager.write_sysfs_value(en_p, "1", allow_elevation=allow_elevation)
+            rpm_val = 0 if effective_pct == 0 else int(round(min_r + (effective_pct / 100.0) * (max_r - min_r)))
+            if os.path.exists(tgt_p) and (allow_elevation or os.access(tgt_p, os.W_OK) or force):
+                ok, _ = PermissionsManager.write_sysfs_value(tgt_p, str(rpm_val), allow_elevation=allow_elevation)
+                wrote_any = wrote_any or ok
+
+        # 3. Nó fan_fullspeed (legion_laptop)
+        if fs_path and os.path.exists(fs_path) and (allow_elevation or os.access(fs_path, os.W_OK)):
+            ok, _ = PermissionsManager.write_sysfs_value(fs_path, "1" if effective_pct >= 90 else "0", allow_elevation=allow_elevation)
+            wrote_any = wrote_any or ok
+
+        # 4. Controle real Lenovo VPC2004:00/fan_mode (LOQ / IdeaPad: 2 = Full Speed ~5600 RPM, 0 = EC Auto)
+        if self.paths.fan_mode and os.path.exists(self.paths.fan_mode):
+            ec_mode = "2" if effective_pct >= 75 else "0"
+            cur_fm = self._read_file_int(self.paths.fan_mode, default=-1)
+            need_write = force or (ec_mode == "2" and cur_fm != 3) or (ec_mode == "0" and cur_fm == 3)
+            if need_write and (allow_elevation or os.access(self.paths.fan_mode, os.W_OK)):
+                ok, _ = PermissionsManager.write_sysfs_value(self.paths.fan_mode, ec_mode, allow_elevation=allow_elevation)
+                wrote_any = wrote_any or ok
+
+        self._fan_override_applied_by_app = bool(wrote_any)
+        return wrote_any, effective_pct
+
+    def get_manual_fan_speed(self) -> Dict[str, Any]:
+        """Retorna o estado da velocidade manual direta e o último PWM aplicado."""
+        enabled = bool(self.settings.get("manual_fan_enabled", False))
+        speed_pct = max(0, min(100, int(self.settings.get("manual_fan_speed_pct", 100) or 0)))
+        return {
+            "enabled": enabled,
+            "speed_pct": speed_pct,
+            "last_pwm": max(0, self._last_applied_pwm),
+            "continuous_pwm": self.has_continuous_fan_control(),
+            "binary_boost_only": bool(self.paths.fan_mode and not self.has_continuous_fan_control()),
+        }
+
+    def set_manual_fan_speed(
+        self,
+        enabled: bool,
+        speed_pct: int = 100,
+        allow_elevation: bool = True,
+    ) -> Tuple[bool, str]:
+        """
+        Ativa/desativa a velocidade manual fixa da ventoinha (ex.: 25%..100%) com guardrail térmico
+        e suporte real a EC PWM / fan*_target / VPC2004 fan_mode (~5600 RPM em >= 75%).
+        """
+        if not enabled:
+            self.settings.set("manual_fan_enabled", False)
+            if not bool(self.settings.get("custom_fan_curve_enabled", False)):
+                self._write_fan_speed_pct(None, 40.0, force=True, allow_elevation=allow_elevation)
+            return True, "Controle manual desativado. Ventoinha de volta ao automático do EC."
+
+        clamped_pct = max(25, min(100, int(speed_pct)))
+        self.settings.set("custom_fan_curve_enabled", False)
+        self.settings.set("manual_fan_enabled", True)
+        self.settings.set("manual_fan_speed_pct", clamped_pct)
+        if clamped_pct >= 90:
+            self.settings.set("cooling_preset", "max")
+        else:
+            self.settings.set("cooling_preset", "manual")
+
+        cpu_temp = (
+            self._read_file_int(self.paths.cpu_temp_input, 45000) / 1000.0
+            if self.paths.cpu_temp_input
+            else 45.0
+        )
+        gpu_m = self.get_gpu_metrics()
+        gpu_temp = gpu_m.temperature_c if gpu_m.available else 0.0
+        hottest = max(cpu_temp, gpu_temp)
+
+        ok, eff = self._write_fan_speed_pct(
+            clamped_pct, hottest, force=True, allow_elevation=allow_elevation, gpu_temp=gpu_temp
+        )
+        if not ok:
+            self.settings.set("manual_fan_enabled", False)
+            return False, "Sem permissão de escrita no controlador de ventoinha (repare as regras UDEV)."
+
+        eff_val = eff if eff is not None else clamped_pct
+        if self.paths.fan_mode and not self.has_continuous_fan_control():
+            if eff_val >= 75:
+                return True, f"Ventoinha forçada no máximo via EC ({eff_val}% • acelerando até ~5600 RPM)."
+            return True, (
+                f"Alvo {eff_val}% definido (< 75%: EC permanece em curva automática; "
+                "use 75%–100% ou Turbo Máximo para 5600 RPM)."
+            )
+        return True, f"Velocidade manual aplicada no EC: {eff_val}% PWM."
+
     def set_custom_fan_curve(
         self,
         points: List[List[int]],
@@ -616,6 +776,8 @@ class CpuThermalUndervoltMixin:
 
         self.settings.set("custom_fan_curve_points", clean_pts)
         self.settings.set("custom_fan_curve_enabled", bool(enabled))
+        if enabled:
+            self.settings.set("manual_fan_enabled", False)
         self.settings.set("custom_cpu_temp_limit", cpu_temp_limit)
         self.settings.set("custom_gpu_temp_limit", gpu_temp_limit)
 
@@ -652,26 +814,17 @@ class CpuThermalUndervoltMixin:
             )
         else:
             # Restaurar controle automático do EC
-            pwm_nodes = list(self._hwmon_pwm_nodes)
-            if not pwm_nodes and self.paths.hwmon_pwm1:
-                pwm_nodes = [(self.paths.hwmon_pwm1, self.paths.hwmon_pwm1_enable)]
-            for _, en_p in pwm_nodes:
-                if en_p and os.path.exists(en_p):
-                    PermissionsManager.write_sysfs_value(en_p, "2", allow_elevation=False)
-            for _tgt_p, en_p, _min_r, _max_r in list(getattr(self, "_hwmon_fan_targets", []) or []):
-                if en_p and os.path.exists(en_p):
-                    PermissionsManager.write_sysfs_value(en_p, "2", allow_elevation=False)
-            if not pwm_nodes and self.paths.fan_mode and os.path.exists(self.paths.fan_mode) and not self._is_wmi_gamezone:
-                PermissionsManager.write_sysfs_value(self.paths.fan_mode, "1", allow_elevation=False)
-            self._last_applied_pwm = -1
+            self._write_fan_speed_pct(None, 40.0, force=True, allow_elevation=False)
             return True, "Curva customizada desativada. Controle automático original do EC restaurado."
 
     def apply_dynamic_fan_curve_tick(self, force: bool = False) -> Optional[int]:
         """
-        Avalia a temperatura atual de CPU/GPU contra a curva de ventoinhas customizada
+        Avalia velocidade manual fixa ou a temperatura atual de CPU/GPU contra a curva customizada
         e atualiza o PWM / Fan Mode no Embedded Controller da Lenovo de forma não-bloqueante.
         """
-        if not bool(self.settings.get("custom_fan_curve_enabled", False)) and not force:
+        manual_on = bool(self.settings.get("manual_fan_enabled", False))
+        curve_on = bool(self.settings.get("custom_fan_curve_enabled", False))
+        if not manual_on and not curve_on and not force:
             return None
 
         cpu_temp = 45.0
@@ -681,49 +834,36 @@ class CpuThermalUndervoltMixin:
         gpu_temp = gpu_m.temperature_c if gpu_m.available else 0.0
         hottest_temp = max(cpu_temp, gpu_temp)
 
+        if manual_on:
+            target_pct = max(25, min(100, int(self.settings.get("manual_fan_speed_pct", 100) or 100)))
+            safe_pct = self._clamp_safe_fan_pct(target_pct, hottest_temp, gpu_temp)
+            reassert_fm = bool(
+                safe_pct >= 75
+                and self.paths.fan_mode
+                and os.path.exists(self.paths.fan_mode)
+                and self._read_file_int(self.paths.fan_mode, default=-1) != 3
+            )
+            if not force and not reassert_fm and self._last_applied_pwm >= 0 and abs(safe_pct - self._last_applied_pwm) < 4:
+                return self._last_applied_pwm
+            _, eff = self._write_fan_speed_pct(safe_pct, hottest_temp, force=bool(force or reassert_fm), allow_elevation=False, gpu_temp=gpu_temp)
+            return eff
+
         pts = self.settings.get("custom_fan_curve_points", DEFAULT_FAN_CURVE_POINTS)
         target_pwm_pct = self.interpolate_fan_pwm(pts, hottest_temp)
+        safe_pct = self._clamp_safe_fan_pct(target_pwm_pct, hottest_temp, gpu_temp)
+        reassert_fm = bool(
+            safe_pct >= 75
+            and self.paths.fan_mode
+            and os.path.exists(self.paths.fan_mode)
+            and self._read_file_int(self.paths.fan_mode, default=-1) != 3
+        )
 
         # Evitar escritas redundantes no EC se a variação for menor que 4% (histerese térmica)
-        if not force and self._last_applied_pwm >= 0 and abs(target_pwm_pct - self._last_applied_pwm) < 4:
+        if not force and not reassert_fm and self._last_applied_pwm >= 0 and abs(safe_pct - self._last_applied_pwm) < 4:
             return self._last_applied_pwm
 
-        self._last_applied_pwm = target_pwm_pct
-        pwm_byte = int(round((target_pwm_pct / 100.0) * 255))
-
-        # 1. Escrita direta em todos os nós hwmon pwm* expostos pelo kernel
-        pwm_nodes = list(self._hwmon_pwm_nodes)
-        if not pwm_nodes and self.paths.hwmon_pwm1:
-            pwm_nodes = [(self.paths.hwmon_pwm1, self.paths.hwmon_pwm1_enable)]
-
-        for pwm_p, en_p in pwm_nodes:
-            if en_p and os.path.exists(en_p) and os.access(en_p, os.W_OK):
-                PermissionsManager.write_sysfs_value(en_p, "1", allow_elevation=False)
-            if os.path.exists(pwm_p) and (os.access(pwm_p, os.W_OK) or force):
-                PermissionsManager.write_sysfs_value(pwm_p, str(pwm_byte), allow_elevation=False)
-
-        # 1.5 Escrita em nós hwmon fan*_target (ex.: drivers que controlam alvo em RPM)
-        for tgt_p, en_p, min_r, max_r in list(getattr(self, "_hwmon_fan_targets", []) or []):
-            if en_p and os.path.exists(en_p) and os.access(en_p, os.W_OK):
-                PermissionsManager.write_sysfs_value(en_p, "1", allow_elevation=False)
-            rpm_val = 0 if target_pwm_pct == 0 else int(round(min_r + (target_pwm_pct / 100.0) * (max_r - min_r)))
-            if os.path.exists(tgt_p) and (os.access(tgt_p, os.W_OK) or force):
-                PermissionsManager.write_sysfs_value(tgt_p, str(rpm_val), allow_elevation=False)
-
-        # 2. Escrita no nó fan_mode do driver ideapad_acpi legado (apenas quando não há lenovo-wmi-gamezone)
-        if self.paths.fan_mode and os.path.exists(self.paths.fan_mode) and not self._is_wmi_gamezone:
-            if target_pwm_pct == 0 and hottest_temp < 52.0:
-                ec_mode = "0"
-            elif target_pwm_pct < 55:
-                ec_mode = "1"
-            elif target_pwm_pct < 85:
-                ec_mode = "4"
-            else:
-                ec_mode = "2"
-            if os.access(self.paths.fan_mode, os.W_OK) or force:
-                PermissionsManager.write_sysfs_value(self.paths.fan_mode, ec_mode, allow_elevation=False)
-
-        return target_pwm_pct
+        _, eff = self._write_fan_speed_pct(safe_pct, hottest_temp, force=bool(force or reassert_fm), allow_elevation=False, gpu_temp=gpu_temp)
+        return eff
 
     def has_cooling_controls(self) -> bool:
         """Retorna True se o notebook expõe controle de ventoinha (PWM/EC), alvos térmicos WMI ou perfis ACPI."""
@@ -812,7 +952,14 @@ class CpuThermalUndervoltMixin:
         return True, f"Alvos térmicos do EC aplicados: CPU {cpu_lim}°C | GPU {gpu_lim}°C (perfil Custom)."
 
     def get_active_cooling_preset(self) -> str:
-        """Retorna o modo de ventilação ativo ('quiet', 'auto', 'cool', 'max' ou 'custom')."""
+        """Retorna o modo de ventilação ativo ('quiet', 'auto', 'cool', 'max', 'manual' ou 'custom')."""
+        if self.features.fan_control and bool(self.settings.get("manual_fan_enabled", False)):
+            pct = int(self.settings.get("manual_fan_speed_pct", 100) or 100)
+            saved = str(self.settings.get("cooling_preset", "") or "")
+            if pct >= 90 and saved == "max":
+                return "max"
+            return "manual"
+
         if self.features.fan_control and bool(self.settings.get("custom_fan_curve_enabled", False)):
             saved = str(self.settings.get("cooling_preset", "custom") or "custom")
             return saved if saved in ("quiet", "auto", "cool", "max", "custom") else "custom"
@@ -835,14 +982,14 @@ class CpuThermalUndervoltMixin:
                 saved = str(self.settings.get("cooling_preset", "") or "")
                 if not self.features.max_power_profile and saved != "cool":
                     return "max"
-                return "cool" if saved == "cool" else "cool"
+                return "cool"
             return "auto"
 
         saved = str(self.settings.get("cooling_preset", "auto") or "auto")
-        return saved if saved in ("quiet", "auto", "cool", "max", "custom") else "auto"
+        return saved if saved in ("quiet", "auto", "cool", "max", "custom", "manual") else "auto"
 
     def apply_cooling_preset(self, preset_id: str, allow_elevation: bool = True) -> Tuple[bool, str]:
-        """Aplica em 1 clique um modo de ventilação real (EC/WMI ou curva PWM)."""
+        """Aplica em 1 clique um modo de ventilação real (EC VPC2004, PWM/Target ou WMI)."""
         if not self.has_cooling_controls():
             return False, "Nenhum controle de ventilação suportado foi detectado."
 
@@ -853,12 +1000,14 @@ class CpuThermalUndervoltMixin:
         choices = [c.lower().strip() for c in self.get_platform_profile_choices()] if self.features.platform_profile else []
 
         if pid == "quiet":
+            self.settings.set("manual_fan_enabled", False)
             if self.features.fan_control and not self.features.platform_profile:
                 pts = self.get_fan_curve_presets()["silent"]
                 ok, msg = self.set_custom_fan_curve(pts, True)
             else:
                 if self.features.fan_control and bool(self.settings.get("custom_fan_curve_enabled", False)):
                     self.set_custom_fan_curve(self.get_custom_fan_curve()["points"], False)
+                self._write_fan_speed_pct(None, 40.0, force=True, allow_elevation=False)
                 ok, msg = self.set_platform_profile("low-power", allow_elevation=allow_elevation)
                 if ok:
                     msg = "Ventoinhas em modo Silencioso (perfil EC Silencioso / 0 RPM em uso leve)."
@@ -867,8 +1016,10 @@ class CpuThermalUndervoltMixin:
             return ok, msg
 
         if pid == "auto":
+            self.settings.set("manual_fan_enabled", False)
             if self.features.fan_control and bool(self.settings.get("custom_fan_curve_enabled", False)):
                 self.set_custom_fan_curve(self.get_custom_fan_curve()["points"], False)
+            self._write_fan_speed_pct(None, 40.0, force=True, allow_elevation=False)
             if self.features.platform_profile:
                 ok, msg = self.set_platform_profile("balanced", allow_elevation=allow_elevation)
                 if ok:
@@ -880,7 +1031,10 @@ class CpuThermalUndervoltMixin:
             return ok, msg
 
         if pid == "cool":
+            self.settings.set("manual_fan_enabled", False)
+            self._write_fan_speed_pct(None, 40.0, force=True, allow_elevation=False)
             has_wmi_targets = bool(self.features.wmi_cpu_temp or self.features.wmi_gpu_temp)
+            cool_curve = [[30, 55], [45, 65], [60, 80], [72, 92], [82, 100], [92, 100]]
             if has_wmi_targets and (not self.features.platform_profile or "custom" in choices):
                 bounds = self.get_wmi_thermal_bounds()
                 c_lo, _, _ = bounds["cpu_temp"]
@@ -888,11 +1042,10 @@ class CpuThermalUndervoltMixin:
                 ok, msg = self.apply_wmi_thermal_targets(c_lo, g_lo, allow_elevation=allow_elevation)
                 if ok:
                     if self.features.fan_control:
-                        self.set_custom_fan_curve(self.get_fan_curve_presets()["aggressive"], True, c_lo, g_lo)
-                    msg = f"Modo Mais Frio ativo: EC adiantado com alvos CPU {c_lo}°C / GPU {g_lo}°C."
+                        self.set_custom_fan_curve(cool_curve, True, c_lo, g_lo)
+                    msg = f"Modo Mais Frio ativo: EC adiantado (CPU {c_lo}°C / GPU {g_lo}°C + curva proativa)."
             elif self.features.fan_control:
-                cool_pts = [[35, 25], [48, 45], [60, 65], [72, 85], [82, 100], [92, 100]]
-                ok, msg = self.set_custom_fan_curve(cool_pts, True)
+                ok, msg = self.set_custom_fan_curve(cool_curve, True)
             else:
                 ok, msg = self.set_platform_profile("performance", allow_elevation=allow_elevation)
                 if ok:
@@ -903,14 +1056,20 @@ class CpuThermalUndervoltMixin:
 
         # pid == "max"
         target_prof = "max-power" if self.features.max_power_profile else "performance"
+        self.settings.set("custom_fan_curve_enabled", False)
         if self.features.platform_profile:
-            if self.features.fan_control and bool(self.settings.get("custom_fan_curve_enabled", False)):
-                self.set_custom_fan_curve(self.get_custom_fan_curve()["points"], False)
             ok, msg = self.set_platform_profile(target_prof, allow_elevation=allow_elevation)
-            if ok:
-                msg = f"Turbo Máximo ativo ({target_prof.upper()} + rotação máxima do EC)."
+            if ok and self.features.fan_control:
+                self.settings.set("manual_fan_enabled", True)
+                self.settings.set("manual_fan_speed_pct", 100)
+                ok_f, msg_f = self.set_manual_fan_speed(True, 100, allow_elevation=allow_elevation)
+                if ok_f:
+                    msg = f"Turbo Máximo ativo ({target_prof.upper()} + rotação máxima real ~5600 RPM)."
+                else:
+                    self.settings.set("manual_fan_enabled", False)
+                    msg = f"Turbo Máximo ativo ({target_prof.upper()})."
         elif self.features.fan_control:
-            ok, msg = self.set_custom_fan_curve(self.get_fan_curve_presets()["aggressive"], True)
+            ok, msg = self.set_manual_fan_speed(True, 100, allow_elevation=allow_elevation)
         else:
             ok, msg = False, "Turbo Máximo indisponível neste dispositivo."
         if ok:

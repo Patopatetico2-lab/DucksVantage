@@ -300,11 +300,14 @@ class FanCurveWidget(QWidget):
         painter.setPen(QColor(accent_hex))
         painter.drawText(int(pad_left + 4), 22, curve_title)
 
-        rpm_label = (
-            f"Fan 1: {self.fan1_rpm} RPM | Fan 2: {self.fan2_rpm} RPM ({self.cpu_temp_c:.1f}°C)"
-            if (self.fan1_rpm > 0 or self.fan2_rpm > 0)
-            else f"Operação Atual: {self.cpu_temp_c:.1f}°C -> {int(round(live_pwm))}% PWM (~{int(live_rpm)} RPM)"
-        )
+        if self.fan1_rpm > 0 and self.fan2_rpm > 0:
+            rpm_label = f"Fan 1: {self.fan1_rpm} RPM | Fan 2: {self.fan2_rpm} RPM ({self.cpu_temp_c:.1f}°C)"
+        elif self.fan1_rpm > 0:
+            rpm_label = f"Ventoinha: {self.fan1_rpm} RPM ({self.cpu_temp_c:.1f}°C)"
+        elif self.fan2_rpm > 0:
+            rpm_label = f"Ventoinha 2: {self.fan2_rpm} RPM ({self.cpu_temp_c:.1f}°C)"
+        else:
+            rpm_label = f"Operação Atual: {self.cpu_temp_c:.1f}°C -> {int(round(live_pwm))}% PWM (~{int(live_rpm)} RPM)"
         painter.setPen(QColor(ThemeTokens.STATUS_GREEN))
         painter.drawText(
             int(pad_left), 8, int(plot_w), 18,

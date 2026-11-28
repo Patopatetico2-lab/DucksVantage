@@ -3,6 +3,17 @@
 set -e
 
 if [ "$1" = "configure" ]; then
+    mkdir -p /etc/modprobe.d
+    printf '%s\n' \
+        '# Ducksvantage - Telemetria RPM e controles de ventoinha Lenovo WMI' \
+        'options lenovo_wmi_other expose_all_fans=1 relax_fan_constraint=1' \
+        > /etc/modprobe.d/99-ducksvantage.conf
+    chmod 0644 /etc/modprobe.d/99-ducksvantage.conf
+    if grep -q 'N' /sys/module/lenovo_wmi_other/parameters/expose_all_fans 2>/dev/null; then
+        modprobe -r lenovo_wmi_other 2>/dev/null || true
+        modprobe lenovo_wmi_other expose_all_fans=1 relax_fan_constraint=1 2>/dev/null || true
+    fi
+
     if command -v udevadm >/dev/null 2>&1; then
         udevadm control --reload-rules || true
         udevadm trigger || true

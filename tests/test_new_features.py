@@ -889,6 +889,92 @@ class TestNewFeatures(unittest.TestCase):
             with open(os.path.join(hw, "pwm1_enable"), "r", encoding="utf-8") as fh:
                 self.assertEqual(fh.read().strip(), "1")
 
+    def test_scan_hwmon_prefers_lenovo_wmi_other_over_yogafan_zero(self):
+        """_scan_hwmon e get_fan_metrics priorizam lenovo_wmi_other com RPM > 0 sobre yogafan 0 RPM."""
+        with tempfile.TemporaryDirectory() as td:
+            hw_yf = os.path.join(td, "hwmon3")
+            hw_wmi = os.path.join(td, "hwmon7")
+            os.makedirs(hw_yf)
+            os.makedirs(hw_wmi)
+            with open(os.path.join(hw_yf, "name"), "w", encoding="utf-8") as fh:
+                fh.write("yogafan\n")
+            with open(os.path.join(hw_yf, "fan1_input"), "w", encoding="utf-8") as fh:
+                fh.write("0\n")
+            with open(os.path.join(hw_wmi, "name"), "w", encoding="utf-8") as fh:
+                fh.write("lenovo_wmi_other\n")
+            with open(os.path.join(hw_wmi, "fan1_input"), "w", encoding="utf-8") as fh:
+                fh.write("2100\n")
+
+            with patch("core.backend.glob.glob", side_effect=lambda p: [hw_yf, hw_wmi] if "hwmon" in p else []):
+                self.backend._scan_hwmon()
+            self.assertEqual(self.backend.paths.fan1_input, os.path.join(hw_wmi, "fan1_input"))
+            fm = self.backend.get_fan_metrics()
+            self.assertEqual(fm.rpm, 2100)
+
+    def test_loq_fan_mode_manual_guardrail_and_auto_reset(self):
+        """VPC2004 fan_mode + manual_fan_speed respeitam guardrail térmico e zeram fan1_target/fan_mode em Auto."""
+        from core.qt_compat import QApplication
+        from ui.tabs.performance_tab import PerformanceTab
+
+        _app = QApplication.instance() or QApplication(["ducksvantage", "-platform", "offscreen"])
+
+        with tempfile.TemporaryDirectory() as td:
+            fm_file = os.path.join(td, "fan_mode")
+            pp_file = os.path.join(td, "profile")
+            pp_choices = os.path.join(td, "choices")
+            tgt_file = os.path.join(td, "fan1_target")
+            for p, val in [
+                (fm_file, "133\n"),
+                (pp_file, "balanced\n"),
+                (pp_choices, "low-power balanced performance max-power custom\n"),
+                (tgt_file, "0\n"),
+            ]:
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write(val)
+
+            self.backend.features.fan_control = True
+            self.backend.features.platform_profile = True
+            self.backend.features.max_power_profile = True
+            self.backend._is_wmi_gamezone = True
+            self.backend.paths.fan_mode = fm_file
+            self.backend.paths.platform_profile = pp_file
+            self.backend.paths.platform_profile_choices = pp_choices
+            self.backend._platform_profile_paths = [pp_file]
+            self.backend._hwmon_pwm_nodes = []
+            self.backend._hwmon_fan_targets = [(tgt_file, None, 1500, 5400)]
+
+            # Turbo Máximo aciona max-power + fan_mode="2" + fan1_target=5400
+            ok_max, _ = self.backend.apply_cooling_preset("max", allow_elevation=False)
+            self.assertTrue(ok_max)
+            with open(fm_file, "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "2")
+            with open(tgt_file, "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "5400")
+
+            # Guardrail térmico >= 85°C força >= 95% mesmo se usuário pediu 30%
+            self.backend.paths.cpu_temp_input = "/dev/null"
+            with patch.object(self.backend, "get_gpu_metrics", return_value=MagicMock(available=False)), \
+                 patch.object(self.backend, "_read_file_int", return_value=86000):
+                self.backend.set_manual_fan_speed(True, 30, allow_elevation=False)
+                applied = self.backend.apply_dynamic_fan_curve_tick(force=True)
+            self.assertGreaterEqual(applied, 95)
+
+            # Automático limpa fan_mode="0" e fan1_target="0"
+            ok_auto, _ = self.backend.apply_cooling_preset("auto", allow_elevation=False)
+            self.assertTrue(ok_auto)
+            with open(fm_file, "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "0")
+            with open(tgt_file, "r", encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "0")
+
+            # PerformanceTab exibe slider manual tanto no Básico quanto no Avançado
+            tab = PerformanceTab(self.backend)
+            tab.set_advanced_mode(False)
+            self.assertFalse(tab.manual_fan_box.isHidden())
+            tab.set_advanced_mode(True)
+            self.assertFalse(tab.manual_fan_box.isHidden())
+            tab.close()
+
 
 if __name__ == "__main__":
     unittest.main()

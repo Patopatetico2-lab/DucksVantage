@@ -122,6 +122,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "ui_mode": "basic",
     "custom_pl1_w": 45,
     "custom_pl2_w": 70,
+    "manual_fan_enabled": False,
+    "manual_fan_speed_pct": 100,
     "custom_fan_curve_enabled": False,
     "custom_fan_curve_points": DEFAULT_FAN_CURVE_POINTS,
     "custom_cpu_temp_limit": 94,

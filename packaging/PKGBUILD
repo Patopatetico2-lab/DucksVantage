@@ -1,6 +1,6 @@
 # Maintainer: Patopatetico2-lab
 pkgname=ducksvantage
-pkgver=2.3.0
+pkgver=2.3.1
 pkgrel=1
 pkgdesc="Universal Lenovo Vantage replacement for Linux (Legion, LOQ, IdeaPad Gaming, IdeaPad & Yoga)"
 arch=('any')

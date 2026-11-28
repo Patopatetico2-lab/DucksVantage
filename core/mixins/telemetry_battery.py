@@ -647,14 +647,36 @@ class TelemetryBatteryNetworkMixin:
             metrics.ec_fan_mode = self._read_file_int(self.paths.fan_mode, default=-1)
         if self.paths.fan1_input:
             metrics.available = True
-            metrics.rpm = self._read_file_int(self.paths.fan1_input, default=0)
+            rpm1 = self._read_file_int(self.paths.fan1_input, default=0)
+            cands1 = list(getattr(self, "_fan1_candidates", []) or [])
+            if rpm1 <= 0 and self.paths.fan1_input in cands1:
+                for cand_p in cands1:
+                    val = self._read_file_int(cand_p, default=0)
+                    if val > 0:
+                        rpm1 = val
+                        self.paths.fan1_input = cand_p
+                        break
+            metrics.rpm = rpm1
+
             if self.paths.fan2_input:
-                metrics.second_rpm = self._read_file_int(self.paths.fan2_input, default=0)
+                rpm2 = self._read_file_int(self.paths.fan2_input, default=0)
+                cands2 = list(getattr(self, "_fan2_candidates", []) or [])
+                if rpm2 <= 0 and self.paths.fan2_input in cands2:
+                    for cand_p in cands2:
+                        val = self._read_file_int(cand_p, default=0)
+                        if val > 0:
+                            rpm2 = val
+                            self.paths.fan2_input = cand_p
+                            break
+                metrics.second_rpm = rpm2
+
             metrics.name = f"Refrigeração {self.system_info.laptop_line}"
             if metrics.rpm > 0 and metrics.second_rpm > 0:
                 metrics.status_label = f"Fan 1: {metrics.rpm} RPM | Fan 2: {metrics.second_rpm} RPM"
             elif metrics.rpm > 0:
                 metrics.status_label = f"{metrics.rpm} RPM (Ativa)"
+            elif metrics.ec_fan_mode == 3 and self.features.fan_control:
+                metrics.status_label = "Turbo Máximo (Acelerando EC)"
             else:
                 cpu_temp_c = 0.0
                 if self.paths.cpu_temp_input:

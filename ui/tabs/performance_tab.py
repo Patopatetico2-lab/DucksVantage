@@ -292,6 +292,62 @@ class PerformanceTab(QWidget):
             self.cooling_mode_buttons[cm_id] = btn_cm
         fan_ctrl_layout.addLayout(quick_cool_row)
 
+        # Controle Manual Direto (25%..100%) — fácil e visível no Básico e no Avançado
+        manual_cfg = self.backend.get_manual_fan_speed()
+        init_man_pct = max(25, min(100, int(manual_cfg.get("speed_pct", 100) or 100)))
+        self.manual_fan_box = QWidget()
+        man_v = QVBoxLayout(self.manual_fan_box)
+        man_v.setContentsMargins(0, 2, 0, 2)
+        man_v.setSpacing(6)
+
+        man_row = QHBoxLayout()
+        man_row.setContentsMargins(0, 0, 0, 0)
+        man_row.setSpacing(10)
+
+        self.lbl_manual_fan = QLabel(f"Velocidade Manual: {init_man_pct}% • Atual: -- RPM")
+        self.lbl_manual_fan.setFont(QFont(ThemeTokens.FONT_NAME, 9, QFont.Weight.DemiBold))
+        self.lbl_manual_fan.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; min-width: 215px; border: none;")
+        man_row.addWidget(self.lbl_manual_fan)
+
+        self.slider_manual_fan = QSlider(Qt.Orientation.Horizontal)
+        self.slider_manual_fan.setRange(25, 100)
+        self.slider_manual_fan.setSingleStep(5)
+        self.slider_manual_fan.setPageStep(5)
+        self.slider_manual_fan.setValue(init_man_pct)
+        self.slider_manual_fan.valueChanged.connect(self._on_manual_fan_slider_changed)
+        self.slider_manual_fan.sliderReleased.connect(self._on_manual_fan_apply)
+        man_row.addWidget(self.slider_manual_fan, stretch=1)
+
+        self.btn_apply_manual_fan = QPushButton("Aplicar")
+        self.btn_apply_manual_fan.setProperty("class", "primaryButton")
+        self.btn_apply_manual_fan.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_apply_manual_fan.setFixedHeight(28)
+        self.btn_apply_manual_fan.clicked.connect(self._on_manual_fan_apply)
+        man_row.addWidget(self.btn_apply_manual_fan)
+
+        self.btn_auto_manual_fan = QPushButton("Auto EC")
+        self.btn_auto_manual_fan.setProperty("class", "secondaryButton")
+        self.btn_auto_manual_fan.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_auto_manual_fan.setFixedHeight(28)
+        self.btn_auto_manual_fan.clicked.connect(lambda _c=False: self._on_quick_cooling_selected("auto"))
+        man_row.addWidget(self.btn_auto_manual_fan)
+        man_v.addLayout(man_row)
+
+        hint_extra = (
+            " • Acima de 75% força rotação máxima (~5600 RPM) no EC"
+            if manual_cfg.get("binary_boost_only", False)
+            else ""
+        )
+        self.lbl_manual_fan_hint = QLabel(
+            f"Proteção térmica automática ativa acima de 78°C{hint_extra}."
+        )
+        self.lbl_manual_fan_hint.setWordWrap(True)
+        self.lbl_manual_fan_hint.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px; border: none;")
+        man_v.addWidget(self.lbl_manual_fan_hint)
+
+        self.manual_fan_box.setVisible(bool(feat.fan_control))
+        fan_ctrl_layout.addWidget(self.manual_fan_box)
+
         self.fan_curve_widget = FanCurveWidget()
         self.fan_curve_widget.set_custom_curve(fan_cfg.get("points", []), bool(fan_cfg.get("enabled", False)))
         self.fan_curve_widget.curve_changed.connect(self._on_fan_curve_points_dragged)
@@ -733,6 +789,7 @@ class PerformanceTab(QWidget):
         self.fan_status_badge.setVisible(has_cool)
         self.tdp_badge.setVisible(bool(adv and feat.custom_tdp))
         self.fan_ctrl_box.setVisible(has_cool)
+        self.manual_fan_box.setVisible(bool(feat.fan_control))
         self.sw_custom_fan.setVisible(bool(adv and feat.fan_control))
         self.fan_curve_widget.setVisible(bool(adv and feat.fan_control))
         self.fc_curve_presets_widget.setVisible(bool(adv and feat.fan_control))
@@ -746,9 +803,11 @@ class PerformanceTab(QWidget):
 
         if has_cool:
             if adv and feat.fan_control:
-                self.lbl_fan_curve_status.setText("Escolha um modo rápido ou arraste os pontos da curva PWM.")
+                self.lbl_fan_curve_status.setText("Escolha um modo rápido, defina a velocidade manual ou ajuste a curva PWM.")
             elif adv and (feat.wmi_cpu_temp or feat.wmi_gpu_temp):
                 self.lbl_fan_curve_status.setText("Escolha um modo rápido ou ajuste os alvos térmicos WMI do EC.")
+            elif feat.fan_control:
+                self.lbl_fan_curve_status.setText("Escolha em 1 clique ou ajuste a velocidade manual da ventoinha:")
             else:
                 self.lbl_fan_curve_status.setText("Escolha em 1 clique como a ventoinha deve se comportar:")
 
@@ -764,14 +823,36 @@ class PerformanceTab(QWidget):
         ok, msg = self.backend.apply_cooling_preset(preset_id)
         self.lbl_fan_curve_status.setText(msg)
         if ok:
-            if preset_id in ("quiet", "auto", "max") and self.backend.features.fan_control:
+            if self.backend.features.fan_control:
+                curve_on = bool(self.backend.get_custom_fan_curve().get("enabled", False))
                 self.sw_custom_fan.blockSignals(True)
-                self.sw_custom_fan.setChecked(preset_id in ("cool", "max") and not self.backend.features.platform_profile)
+                self.sw_custom_fan.setChecked(curve_on)
                 self.sw_custom_fan.blockSignals(False)
+                if preset_id == "max":
+                    self.slider_manual_fan.blockSignals(True)
+                    self.slider_manual_fan.setValue(100)
+                    self.slider_manual_fan.blockSignals(False)
             self.refresh_profile_state()
             self.cooling_changed.emit(preset_id, msg)
         else:
             QMessageBox.warning(self, "Controle de Ventoinhas", msg)
+
+    def _on_manual_fan_slider_changed(self, pct: int):
+        rpm_txt = f"{self._last_live_rpm} RPM" if getattr(self, "_last_live_rpm", 0) > 0 else "-- RPM"
+        self.lbl_manual_fan.setText(f"Velocidade Manual: {pct}% • Atual: {rpm_txt}")
+
+    def _on_manual_fan_apply(self):
+        pct = self.slider_manual_fan.value()
+        ok, msg = self.backend.set_manual_fan_speed(True, pct)
+        self.lbl_fan_curve_status.setText(msg)
+        if ok:
+            self.sw_custom_fan.blockSignals(True)
+            self.sw_custom_fan.setChecked(False)
+            self.sw_custom_fan.blockSignals(False)
+            self.refresh_profile_state()
+            self.cooling_changed.emit("max" if pct >= 90 else "custom", msg)
+        else:
+            QMessageBox.warning(self, "Velocidade Manual da Ventoinha", msg)
 
     def _on_apply_wmi_thermal_targets(self):
         cpu_lim = self.slider_wmi_cpu_temp.value()
@@ -978,11 +1059,19 @@ class PerformanceTab(QWidget):
         self.tdp_badge.setText(f"PL1: {cpu.pl1_w}W | PL2: {cpu.pl2_w}W")
         self.fan_curve_widget.update_state(active_prof, cpu.temperature_c, fan.rpm, fan.second_rpm)
 
+        self._last_live_rpm = int(fan.rpm or 0)
+        if hasattr(self, "lbl_manual_fan"):
+            man_pct = self.slider_manual_fan.value()
+            rpm_live = f"{fan.rpm} RPM" if fan.rpm > 0 else ("~5600 RPM" if fan.ec_fan_mode == 3 else "-- RPM")
+            self.lbl_manual_fan.setText(f"Velocidade Manual: {man_pct}% • Atual: {rpm_live}")
+
         if hasattr(self, "fan_status_badge"):
             if fan.rpm > 0 and fan.second_rpm > 0:
                 self.fan_status_badge.setText(f"{fan.rpm} / {fan.second_rpm} RPM • {cpu.temperature_c:.0f}°C")
             elif fan.rpm > 0:
                 self.fan_status_badge.setText(f"{fan.rpm} RPM • {cpu.temperature_c:.0f}°C")
+            elif fan.ec_fan_mode == 3 and self.backend.features.fan_control:
+                self.fan_status_badge.setText(f"TURBO 5600 RPM • {cpu.temperature_c:.0f}°C")
             else:
                 self.fan_status_badge.setText(f"EC ATIVO • {cpu.temperature_c:.0f}°C")
 

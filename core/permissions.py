@@ -12,6 +12,11 @@ from typing import Tuple, List
 
 UDEV_RULE_PATH = "/etc/udev/rules.d/99-ducksvantage.rules"
 LEGACY_UDEV_RULE_PATH = "/etc/udev/rules.d/99-lenovo-loq-control.rules"
+MODPROBE_CONF_PATH = "/etc/modprobe.d/99-ducksvantage.conf"
+MODPROBE_CONF_CONTENT = (
+    "# Ducksvantage - Telemetria RPM e controles de ventoinha Lenovo WMI\n"
+    "options lenovo_wmi_other expose_all_fans=1 relax_fan_constraint=1\n"
+)
 
 UDEV_RULE_CONTENT = """# ====================================================================
 # Ducksvantage - Regras UDEV Universais Lenovo (Legion, LOQ, IdeaPad, Yoga)
@@ -92,8 +97,9 @@ class PermissionsManager:
                 "net/*/device/power/control",
                 "Ideapad extra buttons",
                 "power/wakeup",
+                "fan*_target",
             )
-            return all(m in content for m in required_markers)
+            return all(m in content for m in required_markers) and os.path.exists(MODPROBE_CONF_PATH)
         except OSError:
             return False
 
@@ -104,9 +110,12 @@ class PermissionsManager:
     @staticmethod
     def install_udev_rules(custom_paths: List[str] = None) -> Tuple[bool, str]:
         cmd_parts = [
-            "mkdir -p /etc/udev/rules.d",
+            "mkdir -p /etc/udev/rules.d /etc/modprobe.d",
             f"cat > '{UDEV_RULE_PATH}'",
             f"chmod 644 '{UDEV_RULE_PATH}'",
+            f"printf '%s\\n' '# Ducksvantage - Telemetria RPM e controles de ventoinha Lenovo WMI' 'options lenovo_wmi_other expose_all_fans=1 relax_fan_constraint=1' > '{MODPROBE_CONF_PATH}'",
+            f"chmod 644 '{MODPROBE_CONF_PATH}'",
+            "(grep -q 'N' /sys/module/lenovo_wmi_other/parameters/expose_all_fans 2>/dev/null && modprobe -r lenovo_wmi_other 2>/dev/null && modprobe lenovo_wmi_other expose_all_fans=1 relax_fan_constraint=1 2>/dev/null) || true",
             "udevadm control --reload-rules",
             "udevadm trigger",
             "chmod 0666 /sys/firmware/acpi/platform_profile 2>/dev/null || true",

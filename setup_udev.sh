@@ -56,9 +56,19 @@ fi
 # 2. Instalar regras UDEV se executado como root / sudo
 if [ "$EUID" -eq 0 ]; then
     echo "[+] Instalando regras UDEV universais do Ducksvantage em $RULE_DEST..."
-    mkdir -p /etc/udev/rules.d
+    mkdir -p /etc/udev/rules.d /etc/modprobe.d
     cp "$RULE_SRC" "$RULE_DEST"
     chmod 0644 "$RULE_DEST"
+
+    printf '%s\n' \
+        '# Ducksvantage - Telemetria RPM e controles de ventoinha Lenovo WMI' \
+        'options lenovo_wmi_other expose_all_fans=1 relax_fan_constraint=1' \
+        > /etc/modprobe.d/99-ducksvantage.conf
+    chmod 0644 /etc/modprobe.d/99-ducksvantage.conf
+    if grep -q 'N' /sys/module/lenovo_wmi_other/parameters/expose_all_fans 2>/dev/null; then
+        modprobe -r lenovo_wmi_other 2>/dev/null || true
+        modprobe lenovo_wmi_other expose_all_fans=1 relax_fan_constraint=1 2>/dev/null || true
+    fi
 
     echo "[+] Recarregando o subsistema UDEV..."
     udevadm control --reload-rules 2>/dev/null || true

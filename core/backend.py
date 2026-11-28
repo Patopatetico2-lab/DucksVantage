@@ -230,7 +230,10 @@ class HardwareBackend(
         self._last_emergency_reset: str = ""
         self._hwmon_pwm_nodes: List[Tuple[str, Optional[str]]] = []
         self._hwmon_fan_targets: List[Tuple[str, Optional[str], int, int]] = []
+        self._fan1_candidates: List[str] = []
+        self._fan2_candidates: List[str] = []
         self._fan_fullspeed_path: Optional[str] = None
+        self._fan_override_applied_by_app: bool = False
 
         # Estado de Alertas Inteligentes da Bateria
         self._alerted_80_this_session: bool = False
@@ -324,6 +327,16 @@ class HardwareBackend(
 
     def close(self):
         """Fecha com segurança descritores de arquivo evdev e processos filhos ativos."""
+        try:
+            if (
+                bool(self.settings.get("manual_fan_enabled", False))
+                or bool(getattr(self, "_fan_override_applied_by_app", False))
+            ):
+                self._write_fan_speed_pct(None, 40.0, force=True, allow_elevation=False)
+                self.settings.set("manual_fan_enabled", False)
+        except Exception:
+            pass
+
         for fd in list(self._input_fds):
             try:
                 os.close(fd)
@@ -535,7 +548,7 @@ class HardwareBackend(
             or self._hwmon_pwm_nodes
             or self._hwmon_fan_targets
             or self._fan_fullspeed_path
-            or (self.paths.fan_mode and not self._is_wmi_gamezone)
+            or self.paths.fan_mode
         )
 
         # 6. Bateria e Fonte AC (/sys/class/power_supply/)
@@ -807,11 +820,24 @@ class HardwareBackend(
         """Mapeia sensores térmicos e de rotação em /sys/class/hwmon/."""
         self._hwmon_pwm_nodes = []
         self._hwmon_fan_targets = []
+        self._fan1_candidates = []
+        self._fan2_candidates = []
         hwmon_dirs = sorted(glob.glob("/sys/class/hwmon/hwmon*"))
         cpu_sensor_names = ("coretemp", "k10temp", "zenpower", "cpu_thermal", "acpitz")
-        fan_sensor_names = ("yogafan", "legion", "ideapad", "thinkpad", "asus", "dell_smm")
+        fan_sensor_priority = (
+            "lenovo_wmi_other",
+            "legion",
+            "lenovo_ec",
+            "thinkpad",
+            "ideapad",
+            "asus",
+            "dell_smm",
+            "yogafan",
+        )
+        fan1_ranked: List[Tuple[int, int, str]] = []
+        fan2_ranked: List[Tuple[int, int, str]] = []
 
-        for hdir in hwmon_dirs:
+        for idx, hdir in enumerate(hwmon_dirs):
             name = (self._read_file_text(os.path.join(hdir, "name")) or "").lower()
 
             # Temperatura da CPU
@@ -832,15 +858,14 @@ class HardwareBackend(
                 if os.path.exists(t1):
                     self.paths.ram_temp_input = t1
 
-            # Ventoinhas (Fan 1, Fan 2 e todos os nós PWM)
+            # Ventoinhas (Fan 1, Fan 2 e todos os nós PWM ordenados por prioridade)
+            prio = next((i for i, k in enumerate(fan_sensor_priority) if k in name), len(fan_sensor_priority))
             f1 = os.path.join(hdir, "fan1_input")
             f2 = os.path.join(hdir, "fan2_input")
             if os.path.exists(f1):
-                if any(k in name for k in fan_sensor_names) or not self.paths.fan1_input:
-                    self.paths.fan1_input = f1
+                fan1_ranked.append((prio, idx, f1))
             if os.path.exists(f2):
-                if any(k in name for k in fan_sensor_names) or not self.paths.fan2_input:
-                    self.paths.fan2_input = f2
+                fan2_ranked.append((prio, idx, f2))
 
             try:
                 dir_entries = sorted(os.listdir(hdir))
@@ -866,6 +891,17 @@ class HardwareBackend(
                         min_rpm = max(0, self._read_file_int(os.path.join(hdir, f"fan{fidx}_min"), default=1200))
                         max_rpm = max(min_rpm + 100, self._read_file_int(os.path.join(hdir, f"fan{fidx}_max"), default=5400))
                         self._hwmon_fan_targets.append((tgt_p, en_real, min_rpm, max_rpm))
+
+        if fan1_ranked:
+            fan1_ranked.sort()
+            self._fan1_candidates = [p for _, _, p in fan1_ranked]
+            pos1 = next((p for p in self._fan1_candidates if self._read_file_int(p, 0) > 0), None)
+            self.paths.fan1_input = pos1 or self._fan1_candidates[0]
+        if fan2_ranked:
+            fan2_ranked.sort()
+            self._fan2_candidates = [p for _, _, p in fan2_ranked]
+            pos2 = next((p for p in self._fan2_candidates if self._read_file_int(p, 0) > 0), None)
+            self.paths.fan2_input = pos2 or self._fan2_candidates[0]
 
     def _scan_gpus(self) -> None:
         """Identifica GPUs dedicadas (NVIDIA/AMD) e integradas (Intel/AMD) via DRM e NVML."""
@@ -1328,51 +1364,58 @@ class HardwareBackend(
 
     def _apply_max_power_fan_boost(self, enable: bool, allow_elevation: bool = False) -> None:
         """
-        Quando o perfil 'max-power' é ativado (e não há curva customizada ativa), aciona o modo de
-        rotação máxima nos nós reais de hardware suportados (fan_fullspeed, hwmon pwm* ou fan_mode legado).
+        Quando o perfil 'max-power' é ativado (e não há curva/velocidade manual ativa), aciona o modo de
+        rotação máxima nos nós reais de hardware suportados (fan_fullspeed, hwmon pwm*, fan*_target e VPC fan_mode).
         """
-        if bool(self.settings.get("custom_fan_curve_enabled", False)):
+        if bool(self.settings.get("manual_fan_enabled", False)) or bool(self.settings.get("custom_fan_curve_enabled", False)):
             return
 
+        wrote_any = False
         if self._fan_fullspeed_path and os.path.exists(self._fan_fullspeed_path):
             target = "1" if enable else "0"
             if allow_elevation or os.access(self._fan_fullspeed_path, os.W_OK):
-                PermissionsManager.write_sysfs_value(self._fan_fullspeed_path, target, allow_elevation=allow_elevation)
-            return
+                ok_fs, _ = PermissionsManager.write_sysfs_value(self._fan_fullspeed_path, target, allow_elevation=allow_elevation)
+                wrote_any = wrote_any or ok_fs
 
         pwm_nodes = list(self._hwmon_pwm_nodes)
         if not pwm_nodes and self.paths.hwmon_pwm1:
             pwm_nodes = [(self.paths.hwmon_pwm1, self.paths.hwmon_pwm1_enable)]
 
-        if pwm_nodes:
-            for pwm_p, en_p in pwm_nodes:
-                if enable:
-                    if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
-                        PermissionsManager.write_sysfs_value(en_p, "1", allow_elevation=allow_elevation)
-                    if os.path.exists(pwm_p) and (allow_elevation or os.access(pwm_p, os.W_OK)):
-                        PermissionsManager.write_sysfs_value(pwm_p, "255", allow_elevation=allow_elevation)
-                else:
-                    if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
-                        PermissionsManager.write_sysfs_value(en_p, "2", allow_elevation=allow_elevation)
-            return
+        for pwm_p, en_p in pwm_nodes:
+            if enable:
+                if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
+                    PermissionsManager.write_sysfs_value(en_p, "1", allow_elevation=allow_elevation)
+                if os.path.exists(pwm_p) and (allow_elevation or os.access(pwm_p, os.W_OK)):
+                    ok_pw, _ = PermissionsManager.write_sysfs_value(pwm_p, "255", allow_elevation=allow_elevation)
+                    wrote_any = wrote_any or ok_pw
+            else:
+                if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
+                    ok_en, _ = PermissionsManager.write_sysfs_value(en_p, "2", allow_elevation=allow_elevation)
+                    wrote_any = wrote_any or ok_en
 
-        fan_targets = list(getattr(self, "_hwmon_fan_targets", []) or [])
-        if fan_targets:
-            for tgt_p, en_p, _min_r, max_r in fan_targets:
-                if enable:
-                    if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
-                        PermissionsManager.write_sysfs_value(en_p, "1", allow_elevation=allow_elevation)
-                    if os.path.exists(tgt_p) and (allow_elevation or os.access(tgt_p, os.W_OK)):
-                        PermissionsManager.write_sysfs_value(tgt_p, str(max_r), allow_elevation=allow_elevation)
-                else:
-                    if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
-                        PermissionsManager.write_sysfs_value(en_p, "2", allow_elevation=allow_elevation)
-            return
+        for tgt_p, en_p, _min_r, max_r in list(getattr(self, "_hwmon_fan_targets", []) or []):
+            if enable:
+                if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
+                    PermissionsManager.write_sysfs_value(en_p, "1", allow_elevation=allow_elevation)
+                if os.path.exists(tgt_p) and (allow_elevation or os.access(tgt_p, os.W_OK)):
+                    ok_tg, _ = PermissionsManager.write_sysfs_value(tgt_p, str(max_r), allow_elevation=allow_elevation)
+                    wrote_any = wrote_any or ok_tg
+            else:
+                if en_p and os.path.exists(en_p) and (allow_elevation or os.access(en_p, os.W_OK)):
+                    ok_en, _ = PermissionsManager.write_sysfs_value(en_p, "2", allow_elevation=allow_elevation)
+                    wrote_any = wrote_any or ok_en
+                elif os.path.exists(tgt_p) and (allow_elevation or os.access(tgt_p, os.W_OK)):
+                    ok_tg, _ = PermissionsManager.write_sysfs_value(tgt_p, "0", allow_elevation=allow_elevation)
+                    wrote_any = wrote_any or ok_tg
 
-        if self.paths.fan_mode and os.path.exists(self.paths.fan_mode) and not self._is_wmi_gamezone:
-            target = "2" if enable else "1"
+        if self.paths.fan_mode and os.path.exists(self.paths.fan_mode):
+            target = "2" if enable else "0"
             if allow_elevation or os.access(self.paths.fan_mode, os.W_OK):
-                PermissionsManager.write_sysfs_value(self.paths.fan_mode, target, allow_elevation=allow_elevation)
+                ok_fm, _ = PermissionsManager.write_sysfs_value(self.paths.fan_mode, target, allow_elevation=allow_elevation)
+                wrote_any = wrote_any or ok_fm
+
+        if wrote_any:
+            self._fan_override_applied_by_app = bool(enable)
 
     def _sync_cpu_epp_for_profile(self, profile: str) -> bool:
         """
