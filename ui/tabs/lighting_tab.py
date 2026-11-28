@@ -225,6 +225,27 @@ class LightingTab(QWidget):
         main_layout.addWidget(scroll)
         self.set_advanced_mode(self._advanced_mode)
 
+    def refresh_from_settings(self):
+        """Sincroniza efeito, brilho, velocidade e cores das zonas após reset ou importação."""
+        state = self.backend.get_rgb_keyboard_state()
+        self._zone_colors = list(state.get("zones", ["#00d2ff"] * 4))
+        idx = self.combo_mode.findData(state.get("mode", "static"))
+        if idx >= 0:
+            self.combo_mode.blockSignals(True)
+            self.combo_mode.setCurrentIndex(idx)
+            self.combo_mode.blockSignals(False)
+        br = int(state.get("brightness", 2))
+        spd = int(state.get("speed", 2))
+        self.slider_brightness.blockSignals(True)
+        self.slider_brightness.setValue(br)
+        self.slider_brightness.blockSignals(False)
+        self.lbl_brightness.setText(f"Brilho: {br} / 2")
+        self.slider_speed.blockSignals(True)
+        self.slider_speed.setValue(spd)
+        self.slider_speed.blockSignals(False)
+        self.lbl_speed.setText(f"Velocidade: {spd} / 4")
+        self._refresh_zone_buttons()
+
     def set_advanced_mode(self, advanced: bool):
         """No Modo Básico exibe efeitos, brilho e presets rápidos; no Avançado libera velocidade e 4 zonas HEX."""
         self._advanced_mode = bool(advanced)

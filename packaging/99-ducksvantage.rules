@@ -9,8 +9,8 @@
 SUBSYSTEM=="platform-profile", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/firmware/acpi/platform_profile /sys/class/platform-profile/*/profile 2>/dev/null || true'"
 SUBSYSTEM=="acpi", ACTION=="add|change", TEST=="/sys/firmware/acpi/platform_profile", RUN+="/bin/chmod 0666 /sys/firmware/acpi/platform_profile"
 
-# 2. Driver ideapad_acpi / ideapad_laptop (Modo de Conservação ~80%, Fn-Lock, Camera E-Shutter, USB Charging, Fan Mode)
-SUBSYSTEM=="platform", DRIVER=="ideapad_acpi", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/conservation_mode /sys/bus/platform/drivers/ideapad_acpi/VPC*/fn_lock /sys/bus/platform/drivers/ideapad_acpi/VPC*/camera_power /sys/bus/platform/drivers/ideapad_acpi/VPC*/usb_charging /sys/bus/platform/drivers/ideapad_acpi/VPC*/fan_mode 2>/dev/null || true'"
+# 2. Driver ideapad_acpi / ideapad_laptop (Conservação ~80%, Rapid Charge, Fn-Lock, Câmera, USB, Touchpad, Fan Mode, Overdrive, GPU Mode)
+SUBSYSTEM=="platform", KERNEL=="VPC*", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/bus/platform/drivers/ideapad_acpi/VPC*/conservation_mode /sys/bus/platform/drivers/ideapad_acpi/VPC*/rapid_charge /sys/bus/platform/drivers/ideapad_acpi/VPC*/fn_lock /sys/bus/platform/drivers/ideapad_acpi/VPC*/camera_power /sys/bus/platform/drivers/ideapad_acpi/VPC*/usb_charging /sys/bus/platform/drivers/ideapad_acpi/VPC*/touchpad /sys/bus/platform/drivers/ideapad_acpi/VPC*/fan_mode /sys/bus/platform/drivers/ideapad_acpi/VPC*/lcd_overdrive /sys/bus/platform/drivers/ideapad_acpi/VPC*/gpu_mode 2>/dev/null || true'"
 
 # 3. Retroiluminação do Teclado (LEDs platform::kbd_backlight)
 SUBSYSTEM=="leds", KERNEL=="*kbd_backlight*", ACTION=="add|change", RUN+="/bin/chmod 0666 /sys/class/leds/%k/brightness"
@@ -21,16 +21,17 @@ SUBSYSTEM=="cpu", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/device
 # 5. Limites de Potência Custom TDP (Intel RAPL PL1 / PL2)
 SUBSYSTEM=="powercap", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/class/powercap/intel-rapl*/constraint_*_power_limit_uw 2>/dev/null || true'"
 
-# 6. Bateria (Rapid Charge / Standard charge_types) e PCI Runtime PM (NVIDIA D3cold)
+# 6. Bateria (Rapid Charge / Standard charge_types) e PCI Runtime PM (D3cold)
 SUBSYSTEM=="power_supply", KERNEL=="BAT*", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/class/power_supply/%k/charge_types 2>/dev/null || true'"
-SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys%p/power/control 2>/dev/null || true'"
+SUBSYSTEM=="pci", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/bus/pci/devices/*/power/control 2>/dev/null || true'"
 
 # 7. Dispositivos de Entrada de Teclado (Mapeamento da Tecla Copilot F8/F23, Ideapad extra buttons e Atalhos)
 SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", MODE="0644", GROUP="input"
 SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="Ideapad extra buttons", MODE="0644", GROUP="input"
+SUBSYSTEM=="input", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0644 /dev/input/by-path/*kbd* /dev/input/by-path/*VPC* 2>/dev/null || true'"
 
 # 8. Atributos Térmicos Lenovo WMI Other (CPU/GPU Temp Limits, AC Offset) e Curva PWM Hwmon
-SUBSYSTEM=="firmware-attributes", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/class/firmware-attributes/lenovo-wmi-other-*/attributes/*/current_value 2>/dev/null || true'"
+SUBSYSTEM=="firmware-attributes", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/class/firmware-attributes/*/attributes/*/current_value 2>/dev/null || true'"
 SUBSYSTEM=="hwmon", ACTION=="add|change", RUN+="/bin/sh -c 'chmod 0666 /sys/class/hwmon/hwmon*/pwm* /sys/class/hwmon/hwmon*/fan*_target 2>/dev/null || true'"
 
 # 9. Controle de Economia de Energia de Rede (Wi-Fi / Ethernet Runtime PM)

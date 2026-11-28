@@ -682,7 +682,8 @@ class BatteryTab(QWidget):
         self.slider_bat_temp_thr = QSlider(Qt.Orientation.Horizontal)
         self.slider_bat_temp_thr.setRange(36, 50)
         self.slider_bat_temp_thr.setValue(init_temp_thr)
-        self.slider_bat_temp_thr.valueChanged.connect(self._on_battery_alert_settings_changed)
+        self.slider_bat_temp_thr.valueChanged.connect(self._on_battery_temp_slider_label_only)
+        self.slider_bat_temp_thr.sliderReleased.connect(self._on_battery_alert_settings_changed)
         al_row2.addWidget(self.slider_bat_temp_thr, stretch=1)
 
         self.sw_bat_temp_alert = ToggleSwitch()
@@ -854,6 +855,13 @@ class BatteryTab(QWidget):
         self.lbl_wifi_ps_desc.setText(msg)
         self.refresh_display()
 
+    def _on_battery_temp_slider_label_only(self, thr_c: int):
+        bat = self.backend.get_battery_info()
+        if getattr(bat, "temperature_available", False):
+            self.lbl_bat_temp_thr.setText(
+                f"Alerta Térmico da Bateria em Jogos: {int(thr_c)}°C (Atual: {bat.temperature_c:.1f}°C)"
+            )
+
     def _on_battery_alert_settings_changed(self, _val=None):
         alert_80_on = self.sw_bat_alerts.isChecked()
         temp_alert_on = self.sw_bat_temp_alert.isChecked() if hasattr(self, "sw_bat_temp_alert") else alert_80_on
@@ -864,14 +872,22 @@ class BatteryTab(QWidget):
             thr_c,
             temp_alert_enabled=temp_alert_on,
         )
-        bat = self.backend.get_battery_info()
-        if getattr(bat, "temperature_available", False):
-            self.lbl_bat_temp_thr.setText(
-                f"Alerta Térmico da Bateria em Jogos: {int(thr_c)}°C (Atual: {bat.temperature_c:.1f}°C)"
-            )
+        self._on_battery_temp_slider_label_only(int(thr_c))
 
     def refresh_display(self):
         """Atualiza os controles, os 6 cards elétricos e o gráfico Battery Health Historian."""
+        alert_cfg = self.backend.get_battery_alert_settings()
+        self.sw_bat_alerts.blockSignals(True)
+        self.sw_bat_alerts.setChecked(bool(alert_cfg.get("alert_80_enabled", True)))
+        self.sw_bat_alerts.blockSignals(False)
+        if hasattr(self, "sw_bat_temp_alert"):
+            self.sw_bat_temp_alert.blockSignals(True)
+            self.sw_bat_temp_alert.setChecked(bool(alert_cfg.get("temp_alert_enabled", True)))
+            self.sw_bat_temp_alert.blockSignals(False)
+        self.slider_bat_temp_thr.blockSignals(True)
+        self.slider_bat_temp_thr.setValue(int(alert_cfg.get("temp_alert_c", 42) or 42))
+        self.slider_bat_temp_thr.blockSignals(False)
+
         bat = self.backend.get_battery_info()
 
         # 1. Modo de Conservação
@@ -1016,6 +1032,12 @@ class BatteryTab(QWidget):
             return
         st = self.backend.get_one_time_full_charge_status()
         self.one_time_row_widget.setVisible(bool(st["supported"]))
+        if hasattr(self, "combo_one_time_mode"):
+            m_idx = self.combo_one_time_mode.findData(st["mode"])
+            if m_idx >= 0:
+                self.combo_one_time_mode.blockSignals(True)
+                self.combo_one_time_mode.setCurrentIndex(m_idx)
+                self.combo_one_time_mode.blockSignals(False)
         if not st["supported"]:
             return
         if st["active"]:

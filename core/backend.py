@@ -234,6 +234,8 @@ class HardwareBackend(
         self._fan2_candidates: List[str] = []
         self._fan_fullspeed_path: Optional[str] = None
         self._fan_override_applied_by_app: bool = False
+        self._last_vpc_boost_pulse_ts: float = 0.0
+        self._boot_rapl_limits_uw: Optional[Tuple[int, int]] = None
 
         # Estado de Alertas Inteligentes da Bateria
         self._alerted_80_this_session: bool = False
@@ -328,12 +330,9 @@ class HardwareBackend(
     def close(self):
         """Fecha com segurança descritores de arquivo evdev e processos filhos ativos."""
         try:
-            if (
-                bool(self.settings.get("manual_fan_enabled", False))
-                or bool(getattr(self, "_fan_override_applied_by_app", False))
-            ):
+            if bool(getattr(self, "_fan_override_applied_by_app", False)):
                 self._write_fan_speed_pct(None, 40.0, force=True, allow_elevation=False)
-                self.settings.set("manual_fan_enabled", False)
+                self._fan_override_applied_by_app = False
         except Exception:
             pass
 
@@ -520,6 +519,11 @@ class HardwareBackend(
             self.paths.rapl_pl1 = p_pl1
             self.paths.rapl_pl2 = p_pl2
             self.features.custom_tdp = True
+            if getattr(self, "_boot_rapl_limits_uw", None) is None:
+                b1 = self._read_file_int(p_pl1, 45_000_000)
+                b2 = self._read_file_int(p_pl2, 70_000_000)
+                if b1 > 0 and b2 > 0:
+                    self._boot_rapl_limits_uw = (b1, b2)
 
         mmio_pl1 = "/sys/class/powercap/intel-rapl-mmio:0/constraint_0_power_limit_uw"
         mmio_pl2 = "/sys/class/powercap/intel-rapl-mmio:0/constraint_1_power_limit_uw"
@@ -887,10 +891,15 @@ class HardwareBackend(
                         fidx = m_ft.group(1)
                         tgt_p = os.path.join(hdir, fn)
                         en_p = os.path.join(hdir, f"pwm{fidx}_enable")
+                        if not os.path.exists(en_p):
+                            en_p = os.path.join(hdir, f"fan{fidx}_enable")
                         en_real = en_p if os.path.exists(en_p) else None
-                        min_rpm = max(0, self._read_file_int(os.path.join(hdir, f"fan{fidx}_min"), default=1200))
-                        max_rpm = max(min_rpm + 100, self._read_file_int(os.path.join(hdir, f"fan{fidx}_max"), default=5400))
-                        self._hwmon_fan_targets.append((tgt_p, en_real, min_rpm, max_rpm))
+                        # fan*_target sem fan*_enable/pwm*_enable (ex: lenovo_wmi_other 0x04030001 sem 0x04020000)
+                        # é sobrescrito pelo EC a cada ~100ms e não fornece controle contínuo real.
+                        if en_real:
+                            min_rpm = max(0, self._read_file_int(os.path.join(hdir, f"fan{fidx}_min"), default=1200))
+                            max_rpm = max(min_rpm + 100, self._read_file_int(os.path.join(hdir, f"fan{fidx}_max"), default=5400))
+                            self._hwmon_fan_targets.append((tgt_p, en_real, min_rpm, max_rpm))
 
         if fan1_ranked:
             fan1_ranked.sort()
@@ -1409,10 +1418,17 @@ class HardwareBackend(
                     wrote_any = wrote_any or ok_tg
 
         if self.paths.fan_mode and os.path.exists(self.paths.fan_mode):
-            target = "2" if enable else "0"
-            if allow_elevation or os.access(self.paths.fan_mode, os.W_OK):
-                ok_fm, _ = PermissionsManager.write_sysfs_value(self.paths.fan_mode, target, allow_elevation=allow_elevation)
-                wrote_any = wrote_any or ok_fm
+            if enable:
+                if allow_elevation or os.access(self.paths.fan_mode, os.W_OK):
+                    ok_fm, _ = PermissionsManager.write_sysfs_value(self.paths.fan_mode, "2", allow_elevation=allow_elevation)
+                    if ok_fm:
+                        self._last_vpc_boost_pulse_ts = time.time()
+                    wrote_any = wrote_any or ok_fm
+            else:
+                cur_fm = self._read_file_int(self.paths.fan_mode, default=-1)
+                if cur_fm not in (0, 133) and (allow_elevation or os.access(self.paths.fan_mode, os.W_OK)):
+                    ok_fm, _ = PermissionsManager.write_sysfs_value(self.paths.fan_mode, "0", allow_elevation=allow_elevation)
+                    wrote_any = wrote_any or ok_fm
 
         if wrote_any:
             self._fan_override_applied_by_app = bool(enable)
@@ -1586,6 +1602,18 @@ class HardwareBackend(
                 self._last_profile = current_prof
                 self._apply_max_power_fan_boost(current_prof == "max-power", allow_elevation=False)
 
+            if current_prof not in ("max-power", "custom"):
+                self.settings.update_many({
+                    "manual_fan_enabled": False,
+                    "custom_fan_curve_enabled": False,
+                    "cooling_preset": "quiet" if current_prof in ("low-power", "quiet") else (
+                        "auto" if current_prof == "balanced" else "cool"
+                    ),
+                })
+                self._write_fan_speed_pct(None, 40.0, force=True, allow_elevation=False)
+            elif current_prof == "max-power":
+                self.settings.set("cooling_preset", "max")
+
             self._sync_cpu_epp_for_profile(current_prof)
             events.append({
                 "type": "profile_changed",
@@ -1606,8 +1634,13 @@ class HardwareBackend(
                 "ac_online": (current_ac == 1)
             })
 
-            # Transição Automática de Energia (AC vs Bateria)
-            if self.get_auto_power_transition() and self.features.platform_profile:
+            # Transição Automática de Energia (AC vs Bateria) — não sobrescreve Eco-Mode ou Jogo ativo
+            if (
+                self.get_auto_power_transition()
+                and self.features.platform_profile
+                and not self.get_eco_travel_mode()
+                and not self.get_active_game()
+            ):
                 if current_ac == 0:
                     target = self.get_battery_profile()
                     self.set_platform_profile(target, allow_elevation=False)
@@ -1709,7 +1742,12 @@ class HardwareBackend(
             ordered.append("max-power")
         return ordered
 
-    def set_platform_profile(self, profile: str, allow_elevation: bool = True) -> Tuple[bool, str]:
+    def set_platform_profile(
+        self,
+        profile: str,
+        allow_elevation: bool = True,
+        preserve_fan_override: bool = False,
+    ) -> Tuple[bool, str]:
         """
         Escreve o perfil térmico desejado ('low-power', 'balanced', 'performance' ou 'max-power')
         em /sys/firmware/acpi/platform_profile e sincroniza o estado ativo da interface e do Fn+Q.
@@ -1731,11 +1769,32 @@ class HardwareBackend(
                 kernel_target = "max-power"
             elif kernel_target == "max-power" and "performance" in choices:
                 kernel_target = "performance"
+                norm_profile = "performance"
             else:
                 return False, f"Perfil '{profile}' não suportado. Opções: {choices}"
 
         ok, msg = PermissionsManager.write_sysfs_value(self.paths.platform_profile, kernel_target, allow_elevation=allow_elevation)
         if ok:
+            if not preserve_fan_override and norm_profile not in ("max-power", "custom"):
+                had_override = bool(
+                    self.settings.get("manual_fan_enabled", False)
+                    or self.settings.get("custom_fan_curve_enabled", False)
+                    or getattr(self, "_fan_override_applied_by_app", False)
+                )
+                self.settings.update_many({
+                    "manual_fan_enabled": False,
+                    "custom_fan_curve_enabled": False,
+                    "cooling_preset": (
+                        "quiet"
+                        if norm_profile in ("low-power", "quiet")
+                        else ("auto" if norm_profile == "balanced" else "cool")
+                    ),
+                })
+                if had_override:
+                    self._write_fan_speed_pct(None, 40.0, force=True, allow_elevation=False)
+            elif norm_profile == "max-power":
+                self.settings.set("cooling_preset", "max")
+
             raw_after = self._read_raw_platform_profile()
             self._max_power_active = (norm_profile == "max-power")
             self._promoted_max_power_from_low = False

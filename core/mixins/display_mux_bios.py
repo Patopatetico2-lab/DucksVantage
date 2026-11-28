@@ -756,7 +756,7 @@ class DisplayMuxBiosMixin:
             return txt in ("1", "enabled", "on", "true")
         return False
 
-    def set_lcd_overdrive(self, enabled: bool) -> Tuple[bool, str]:
+    def set_lcd_overdrive(self, enabled: bool, allow_elevation: bool = True) -> Tuple[bool, str]:
         """Ativa ou desativa a aceleração de tempo de resposta dos pixels do LCD."""
         if self.paths.lcd_overdrive and os.path.exists(self.paths.lcd_overdrive):
             poss_file = os.path.join(os.path.dirname(self.paths.lcd_overdrive), "possible_values")
@@ -765,7 +765,9 @@ class DisplayMuxBiosMixin:
                 val = "Enabled" if enabled else "Disabled"
             else:
                 val = "1" if enabled else "0"
-            ok, msg = PermissionsManager.write_sysfs_value(self.paths.lcd_overdrive, val, allow_elevation=True)
+            ok, msg = PermissionsManager.write_sysfs_value(
+                self.paths.lcd_overdrive, val, allow_elevation=allow_elevation
+            )
             if ok:
                 return True, f"LCD Overdrive {'ativado' if enabled else 'desativado'} com sucesso."
             return False, f"Falha ao aplicar LCD Overdrive: {msg}"

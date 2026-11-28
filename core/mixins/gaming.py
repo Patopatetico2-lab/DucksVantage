@@ -24,6 +24,8 @@ class GamingAutoSwitchMixin:
     def set_game_auto_switch(self, enable: bool) -> None:
         self.settings.set("game_auto_switch", bool(enable))
         if not enable:
+            if self._active_game_name:
+                self._restore_active_game_side_effects()
             self._active_game_name = None
             self._active_rule_exec = None
             self._pre_game_refresh_hz = None
@@ -36,21 +38,100 @@ class GamingAutoSwitchMixin:
             self._game_changed_tdp = False
             self._game_changed_fan_curve = False
             self._game_changed_vrr = False
-            if getattr(self, "_game_changed_wifi", False):
-                prev_wifi_ps = getattr(self, "_pre_game_wifi_ps", None)
-                self._game_changed_wifi = False
-                self._pre_game_wifi_ps = None
-                if prev_wifi_ps is not None:
-                    try:
-                        self.set_wifi_power_saving(bool(prev_wifi_ps), allow_elevation=False)
-                    except Exception:
-                        pass
+            self._game_changed_wifi = False
+            self._pre_game_wifi_ps = None
             self._game_locked_touchpad = False
             self._game_session_start_ts = 0.0
             self._game_peak_cpu_c = 0.0
             self._game_peak_gpu_c = 0.0
             self._game_power_sum_w = 0.0
             self._game_power_samples = 0
+
+    def _restore_active_game_side_effects(self) -> Tuple[bool, List[str]]:
+        """Restaura perfil, governor e ajustes extras aplicados durante jogo/regra ativa."""
+        restore_prof = self._pre_game_profile or "balanced"
+        if restore_prof in ("performance", "max-power"):
+            restore_prof = "balanced" if self._get_ac_online() == 1 else "low-power"
+
+        ok_restore, _ = self.set_platform_profile(restore_prof, allow_elevation=False)
+        if self.features.cpu_governor:
+            avail_g = self.get_available_cpu_governors()
+            prev_gov = getattr(self, "_pre_game_governor", "") or "powersave"
+            if prev_gov not in avail_g:
+                prev_gov = "powersave" if "powersave" in avail_g else (avail_g[0] if avail_g else "powersave")
+            self.set_cpu_governor(prev_gov, allow_elevation=False)
+
+        extras: List[str] = []
+        if self._game_changed_turbo:
+            prev_tb = self._pre_game_turbo
+            self._game_changed_turbo = False
+            self._pre_game_turbo = None
+            if prev_tb is not None and self.features.turbo_boost:
+                self.set_cpu_turbo(prev_tb, allow_elevation=False)
+
+        if self._game_changed_tdp:
+            prev_tdp = self._pre_game_tdp
+            self._game_changed_tdp = False
+            self._pre_game_tdp = None
+            if prev_tdp is not None and self.features.custom_tdp:
+                self.set_cpu_tdp_limits(prev_tdp[0], prev_tdp[1], allow_elevation=False)
+
+        if getattr(self, "_game_changed_fan_curve", False):
+            prev_fc = getattr(self, "_pre_game_fan_curve", None)
+            self._game_changed_fan_curve = False
+            self._pre_game_fan_curve = None
+            if isinstance(prev_fc, dict) and self.features.fan_control:
+                self.set_custom_fan_curve(
+                    prev_fc.get("points", []),
+                    bool(prev_fc.get("enabled", False)),
+                    prev_fc.get("cpu_temp_limit"),
+                    prev_fc.get("gpu_temp_limit"),
+                )
+
+        if self._game_changed_refresh:
+            prev_hz = self._pre_game_refresh_hz
+            self._game_changed_refresh = False
+            self._pre_game_refresh_hz = None
+            if prev_hz:
+                try:
+                    ok_rhz, _ = self.set_refresh_rate(prev_hz)
+                    if ok_rhz:
+                        extras.append(f"{prev_hz} Hz")
+                except Exception:
+                    pass
+
+        if self._game_locked_touchpad:
+            self._game_locked_touchpad = False
+            try:
+                ok_rtp, _ = self.set_touchpad_status(False, allow_elevation=False)
+                if ok_rtp:
+                    extras.append("Touchpad Liberado")
+            except Exception:
+                pass
+
+        if getattr(self, "_game_changed_vrr", False):
+            prev_vrr = getattr(self, "_pre_game_vrr_policy", None)
+            self._game_changed_vrr = False
+            self._pre_game_vrr_policy = None
+            if prev_vrr:
+                try:
+                    self.set_vrr_policy(prev_vrr)
+                except Exception:
+                    pass
+
+        if getattr(self, "_game_changed_wifi", False):
+            prev_wifi_ps = getattr(self, "_pre_game_wifi_ps", None)
+            self._game_changed_wifi = False
+            self._pre_game_wifi_ps = None
+            if prev_wifi_ps is not None:
+                try:
+                    ok_rwf, _ = self.set_wifi_power_saving(bool(prev_wifi_ps), allow_elevation=False)
+                    if ok_rwf:
+                        extras.append("Wi-Fi Eco")
+                except Exception:
+                    pass
+
+        return ok_restore, extras
 
     def get_game_target_profile(self) -> str:
         """Retorna o perfil térmico preferido ao detectar jogos ('performance' ou 'max-power')."""
@@ -173,9 +254,15 @@ class GamingAutoSwitchMixin:
             "steam", "steamwebhelper", "steamservice", "steam-runtime",
             "steam-runtime-launch-client", "steam-runtime-launcher-service",
             "steam-runtime-launcher-interface-0", "steam-runtime-supervisor",
-            "srt-logger",
+            "steam-launch-wrapper", "_v2-entry-point", "srt-logger",
             "heroic", "lutris", "wineserver", "services.exe", "winedevice.exe",
             "explorer.exe", "plugplay.exe", "svchost.exe", "rpcss.exe",
+            "lsass.exe", "csrss.exe", "smss.exe", "wininit.exe", "winlogon.exe",
+            "spoolsv.exe", "dwm.exe", "fontdrvhost.exe", "sihost.exe",
+            "taskhostw.exe", "ctfmon.exe", "dllhost.exe", "audiodg.exe",
+            "searchindexer.exe", "wmiprvse.exe",
+            "vcredist_x64.exe", "vcredist_x86.exe", "vc_redist.x64.exe", "vc_redist.x86.exe",
+            "dxsetup.exe", "dotnetfx35.exe",
             "tabtip.exe", "conhost.exe", "start.exe", "wineboot.exe",
             "rundll32.exe", "msiexec.exe", "regsvr32.exe", "regedit.exe",
             "cmd.exe", "taskmgr.exe", "steam.exe", "steamwebhelper.exe",
@@ -195,7 +282,7 @@ class GamingAutoSwitchMixin:
         def _is_ignored_bin(bin_low: str) -> bool:
             return (
                 bin_low in ignored_bins
-                or bin_low.startswith(("steam-runtime-", "srt-", "pv-", "pressure-vessel"))
+                or bin_low.startswith(("_v2-entry", "steam-runtime-", "srt-", "pv-", "pressure-vessel"))
             )
 
         runtime_wrappers = {
@@ -233,18 +320,35 @@ class GamingAutoSwitchMixin:
                     cmd_str = " ".join(cmdline)
                     cmd_low = cmd_str.lower()
 
-                    # 1. Steam Reaper com AppId (ex: reaper SteamLaunch AppId=...)
+                    # 1. Steam Reaper com AppId (ex: reaper SteamLaunch AppId=... -- .../_v2-entry-point -- .../Game.exe)
                     if p_low == "reaper" and "appid=" in cmd_low:
                         m = re.search(r"appid=(\d+)", cmd_low)
                         app_id = m.group(1) if m else "Steam"
-                        if "--" in cmdline:
-                            idx = cmdline.index("--")
-                            if idx + 1 < len(cmdline):
-                                g_bin = os.path.basename(cmdline[idx + 1].replace("\\", "/"))
-                                if not _is_ignored_bin(g_bin.lower()):
-                                    found_game = f"{g_bin} (Steam #{app_id})"
-                                    break
-                        found_game = f"Steam Game (AppID {app_id})"
+                        tail_args = cmdline[cmdline.index("--") + 1:] if "--" in cmdline else cmdline
+                        wrapper_tokens = {"waitforexitandrun", "run", "run-in-container", "verb", "--"}
+                        best_bin = None
+                        for raw_a in reversed(tail_args):
+                            norm_a = raw_a.replace("\\", "/").strip()
+                            if not norm_a or norm_a.startswith("-") or "=" in norm_a:
+                                continue
+                            if "/windows/system32/" in norm_a.lower() or "/windows/syswow64/" in norm_a.lower():
+                                continue
+                            cand_b = os.path.basename(norm_a)
+                            c_low = cand_b.lower()
+                            if (
+                                not cand_b
+                                or c_low in wrapper_tokens
+                                or c_low in runtime_wrappers
+                                or _is_ignored_bin(c_low)
+                            ):
+                                continue
+                            if c_low.endswith((".exe", ".x86_64", ".bin")) or ("/" in norm_a):
+                                best_bin = cand_b
+                                break
+                        if best_bin:
+                            found_game = f"{best_bin} (Steam #{app_id})"
+                        else:
+                            found_game = f"Steam Game (AppID {app_id})"
                         break
 
                     # 2. Gamescope ou GameModeRun ativo
@@ -287,6 +391,7 @@ class GamingAutoSwitchMixin:
                     # 5. Executável Windows .exe rodando via Wine / Proton / UMU (ex: C:\Games\...)
                     is_wine_proc = p_low.endswith(".exe") or "wine" in p_low or "wine" in exe_low or "proton" in cmd_low or "umu" in cmd_low
                     if is_wine_proc:
+                        cmd_norm_w = cmd_low.replace("\\", "/")
                         for arg in reversed(cmdline):
                             arg_norm = arg.replace("\\", "/")
                             arg_low = arg_norm.lower()
@@ -297,7 +402,13 @@ class GamingAutoSwitchMixin:
                             if c_low.endswith(".exe") and not _is_ignored_bin(c_low) and c_low not in runtime_wrappers:
                                 found_game = clean_arg
                                 break
-                        if not found_game and p_low.endswith(".exe") and not _is_ignored_bin(p_low):
+                        if (
+                            not found_game
+                            and p_low.endswith(".exe")
+                            and not _is_ignored_bin(p_low)
+                            and "/windows/system32/" not in cmd_norm_w
+                            and "/windows/syswow64/" not in cmd_norm_w
+                        ):
                             found_game = pname
                         if found_game:
                             break
@@ -691,83 +802,8 @@ class GamingAutoSwitchMixin:
             self._game_power_sum_w = 0.0
             self._game_power_samples = 0
 
-            restore_prof = self._pre_game_profile
-            if restore_prof in ("performance", "max-power"):
-                restore_prof = "balanced" if self._get_ac_online() == 1 else "low-power"
-
-            ok_restore, _ = self.set_platform_profile(restore_prof, allow_elevation=False)
-            if self.features.cpu_governor:
-                self.set_cpu_governor("powersave", allow_elevation=False)
-
-            extras: List[str] = []
-            if self._game_changed_turbo:
-                prev_tb = self._pre_game_turbo
-                self._game_changed_turbo = False
-                self._pre_game_turbo = None
-                if prev_tb is not None and self.features.turbo_boost:
-                    self.set_cpu_turbo(prev_tb, allow_elevation=False)
-
-            if self._game_changed_tdp:
-                prev_tdp = self._pre_game_tdp
-                self._game_changed_tdp = False
-                self._pre_game_tdp = None
-                if prev_tdp is not None and self.features.custom_tdp:
-                    self.set_cpu_tdp_limits(prev_tdp[0], prev_tdp[1], allow_elevation=False)
-
-            if getattr(self, "_game_changed_fan_curve", False):
-                prev_fc = getattr(self, "_pre_game_fan_curve", None)
-                self._game_changed_fan_curve = False
-                self._pre_game_fan_curve = None
-                if isinstance(prev_fc, dict) and self.features.fan_control:
-                    self.set_custom_fan_curve(
-                        prev_fc.get("points", []),
-                        bool(prev_fc.get("enabled", False)),
-                        prev_fc.get("cpu_temp_limit"),
-                        prev_fc.get("gpu_temp_limit"),
-                    )
-
-            if self._game_changed_refresh:
-                prev_hz = self._pre_game_refresh_hz
-                self._game_changed_refresh = False
-                self._pre_game_refresh_hz = None
-                if prev_hz:
-                    try:
-                        ok_rhz, _ = self.set_refresh_rate(prev_hz)
-                        if ok_rhz:
-                            extras.append(f"{prev_hz} Hz")
-                    except Exception:
-                        pass
-
-            if self._game_locked_touchpad:
-                self._game_locked_touchpad = False
-                try:
-                    ok_rtp, _ = self.set_touchpad_status(False, allow_elevation=False)
-                    if ok_rtp:
-                        extras.append("Touchpad Liberado")
-                except Exception:
-                    pass
-
-            if getattr(self, "_game_changed_vrr", False):
-                prev_vrr = getattr(self, "_pre_game_vrr_policy", None)
-                self._game_changed_vrr = False
-                self._pre_game_vrr_policy = None
-                if prev_vrr:
-                    try:
-                        self.set_vrr_policy(prev_vrr)
-                    except Exception:
-                        pass
-
-            if getattr(self, "_game_changed_wifi", False):
-                prev_wifi_ps = getattr(self, "_pre_game_wifi_ps", None)
-                self._game_changed_wifi = False
-                self._pre_game_wifi_ps = None
-                if prev_wifi_ps is not None:
-                    try:
-                        ok_rwf, _ = self.set_wifi_power_saving(bool(prev_wifi_ps), allow_elevation=False)
-                        if ok_rwf:
-                            extras.append("Wi-Fi Eco")
-                    except Exception:
-                        pass
+            ok_restore, extras = self._restore_active_game_side_effects()
+            restore_prof = self.get_platform_profile()
 
             return {
                 "type": "game_stopped",

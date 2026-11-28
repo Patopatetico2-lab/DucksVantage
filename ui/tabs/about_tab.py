@@ -44,6 +44,7 @@ class AboutTab(QWidget):
     permissions_updated = Signal()
     autostart_toggled = Signal(bool)
     preferences_changed = Signal()
+    settings_reset_completed = Signal(str)
     test_osd_requested = Signal()
     fn_lock_toggled = Signal(bool)
     usb_charging_toggled = Signal(bool)
@@ -106,16 +107,16 @@ class AboutTab(QWidget):
         sys = self.backend.system_info
         title_box = QVBoxLayout()
         title = QLabel(f"Ducksvantage • {sys.display_model_name} ({sys.product_name})")
+        title.setWordWrap(True)
         title.setFont(QFont(ThemeTokens.FONT_NAME, 13, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         title_box.addWidget(title)
 
         subtitle = QLabel("Substituto universal e leve do Lenovo Vantage para notebooks Legion, LOQ, IdeaPad e Yoga no Linux.")
+        subtitle.setWordWrap(True)
         subtitle.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         title_box.addWidget(subtitle)
-        info_header.addLayout(title_box)
-
-        info_header.addStretch()
+        info_header.addLayout(title_box, stretch=1)
 
         ver_badge = StatusBadge(f"DUCKSVANTAGE v{APP_VERSION}", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.ACCENT_STEEL)
         info_header.addWidget(ver_badge)
@@ -264,11 +265,13 @@ class AboutTab(QWidget):
 
         pref_titles = QVBoxLayout()
         self.prefs_title_lbl = QLabel("Preferências do Aplicativo, Pop-up OSD & Backup")
+        self.prefs_title_lbl.setWordWrap(True)
         self.prefs_title_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 13, QFont.Weight.Bold))
         self.prefs_title_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         pref_titles.addWidget(self.prefs_title_lbl)
 
         pt_s = QLabel("Personalize o overlay OSD no Wayland/X11, perfis de tomada/bateria e exporte suas configurações.")
+        pt_s.setWordWrap(True)
         pt_s.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         pref_titles.addWidget(pt_s)
         prefs_header.addLayout(pref_titles, stretch=1)
@@ -283,6 +286,7 @@ class AboutTab(QWidget):
 
         osd_row1 = QHBoxLayout()
         osd_lbl = QLabel("Exibir Pop-up Flutuante (OSD) ao trocar Fn+Q, Jogos ou Brilho")
+        osd_lbl.setWordWrap(True)
         osd_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.Bold))
         osd_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         osd_row1.addWidget(osd_lbl, stretch=1)
@@ -345,6 +349,7 @@ class AboutTab(QWidget):
 
         min_row = QHBoxLayout()
         min_lbl = QLabel("Minimizar para a bandeja do sistema ao clicar em Fechar (X)")
+        min_lbl.setWordWrap(True)
         min_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; font-size: 11px;")
         min_row.addWidget(min_lbl, stretch=1)
         self.sw_minimize_to_tray = ToggleSwitch(checked=self.backend.get_minimize_to_tray())
@@ -370,14 +375,14 @@ class AboutTab(QWidget):
         ab_top.addWidget(self.sw_auto_power)
         ab_v.addLayout(ab_top)
 
-        ab_row = QHBoxLayout()
-        ab_row.setContentsMargins(0, 0, 0, 0)
-        ab_row.setSpacing(10)
+        ab_grid = QGridLayout()
+        ab_grid.setContentsMargins(0, 0, 0, 0)
+        ab_grid.setHorizontalSpacing(12)
+        ab_grid.setVerticalSpacing(8)
+        ab_grid.setColumnStretch(1, 1)
 
         ac_l = QLabel("Perfil na Tomada (AC):")
         ac_l.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
-        ab_row.addWidget(ac_l)
-
         self.combo_ac_profile = QComboBox()
         self.combo_ac_profile.setFixedHeight(28)
         self.combo_ac_profile.setStyleSheet(self.combo_osd_position.styleSheet())
@@ -401,10 +406,11 @@ class AboutTab(QWidget):
 
         self.combo_ac_profile.currentIndexChanged.connect(self._on_pref_changed)
         self.combo_battery_profile.currentIndexChanged.connect(self._on_pref_changed)
-        ab_row.addWidget(self.combo_ac_profile, stretch=1)
-        ab_row.addWidget(bat_l)
-        ab_row.addWidget(self.combo_battery_profile, stretch=1)
-        ab_v.addLayout(ab_row)
+        ab_grid.addWidget(ac_l, 0, 0)
+        ab_grid.addWidget(self.combo_ac_profile, 0, 1)
+        ab_grid.addWidget(bat_l, 1, 0)
+        ab_grid.addWidget(self.combo_battery_profile, 1, 1)
+        ab_v.addLayout(ab_grid)
         self.ac_bat_prefs_widget.setVisible(bool(feat.platform_profile and feat.battery and supported_profiles))
         prefs_layout.addWidget(self.ac_bat_prefs_widget)
 
@@ -574,6 +580,50 @@ class AboutTab(QWidget):
         backup_row.addStretch()
         prefs_layout.addWidget(self.backup_widget)
 
+        # Linha 5: Restauração Completa de Fábrica (Visível em Básico e Avançado)
+        self.reset_box = QFrame()
+        self.reset_box.setProperty("class", "subBox")
+        rst_row = QHBoxLayout(self.reset_box)
+        rst_row.setContentsMargins(14, 12, 14, 12)
+        rst_row.setSpacing(12)
+
+        rst_titles = QVBoxLayout()
+        rst_titles.setSpacing(2)
+        rst_lbl = QLabel("Restaurar Padrão de Fábrica")
+        rst_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.Bold))
+        rst_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; border: none;")
+        rst_titles.addWidget(rst_lbl)
+
+        rst_desc = QLabel(
+            "Desfaz alterações feitas no aplicativo (ventoinha, brilho, perfis, limites e atalhos) e restaura os padrões originais."
+        )
+        rst_desc.setWordWrap(True)
+        rst_desc.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px; border: none;")
+        rst_titles.addWidget(rst_desc)
+        rst_row.addLayout(rst_titles, stretch=1)
+
+        self.btn_factory_reset = QPushButton("Resetar Configurações")
+        self.btn_factory_reset.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_factory_reset.setFixedHeight(32)
+        self.btn_factory_reset.setStyleSheet(f"""
+            QPushButton {{
+                background-color: #2f1a1c;
+                color: #fca5a5;
+                border: 1px solid {ThemeTokens.LEGION_RED};
+                border-radius: 6px;
+                padding: 4px 14px;
+                font-weight: 600;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                background-color: {ThemeTokens.LEGION_RED};
+                color: {ThemeTokens.TEXT_WHITE_100};
+            }}
+        """)
+        self.btn_factory_reset.clicked.connect(self._on_factory_reset_clicked)
+        rst_row.addWidget(self.btn_factory_reset)
+        prefs_layout.addWidget(self.reset_box)
+
         prefs_page_layout.addWidget(self.prefs_card)
 
         # =====================================================================
@@ -595,6 +645,7 @@ class AboutTab(QWidget):
 
         u_titles = QVBoxLayout()
         u_title = QLabel("Permissões do Sistema (Acesso Direto sem Senha)")
+        u_title.setWordWrap(True)
         u_title.setToolTip("Regras UDEV em /etc/udev/rules.d/99-ducksvantage.rules para escrita direta em /sys/")
         u_title.setFont(QFont(ThemeTokens.FONT_NAME, 13, QFont.Weight.Bold))
         u_title.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
@@ -606,9 +657,7 @@ class AboutTab(QWidget):
         self.udev_desc_lbl.setWordWrap(True)
         self.udev_desc_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         u_titles.addWidget(self.udev_desc_lbl)
-        udev_top.addLayout(u_titles)
-
-        udev_top.addStretch()
+        udev_top.addLayout(u_titles, stretch=1)
 
         self.perm_badge = StatusBadge("VERIFICANDO", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.TEXT_WHITE_80)
         udev_top.addWidget(self.perm_badge)
@@ -650,6 +699,7 @@ class AboutTab(QWidget):
         kde_top = QHBoxLayout()
         kde_titles = QVBoxLayout()
         kt_lbl = QLabel("Integração Nativa KDE Plasma 6 (Widget na Barra & KRunner)")
+        kt_lbl.setWordWrap(True)
         kt_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.DemiBold))
         kt_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         kde_titles.addWidget(kt_lbl)
@@ -963,19 +1013,82 @@ class AboutTab(QWidget):
         if self._update_worker and self._update_worker.isRunning():
             self._update_worker.wait(1500)
 
+    def refresh_preferences_ui(self):
+        """Sincroniza combos e switches de preferências com o backend após reset ou importação."""
+        self.sw_osd_enabled.blockSignals(True)
+        self.sw_osd_enabled.setChecked(self.backend.get_osd_enabled())
+        self.sw_osd_enabled.blockSignals(False)
+
+        self.combo_osd_position.blockSignals(True)
+        p_idx = self.combo_osd_position.findData(self.backend.get_osd_position())
+        if p_idx >= 0:
+            self.combo_osd_position.setCurrentIndex(p_idx)
+        self.combo_osd_position.blockSignals(False)
+
+        self.combo_osd_duration.blockSignals(True)
+        d_idx = self.combo_osd_duration.findData(self.backend.get_osd_duration_ms())
+        if d_idx >= 0:
+            self.combo_osd_duration.setCurrentIndex(d_idx)
+        self.combo_osd_duration.blockSignals(False)
+
+        self.sw_minimize_to_tray.blockSignals(True)
+        self.sw_minimize_to_tray.setChecked(self.backend.get_minimize_to_tray())
+        self.sw_minimize_to_tray.blockSignals(False)
+
+        self.combo_ac_profile.blockSignals(True)
+        ac_i = self.combo_ac_profile.findData(self.backend.get_ac_profile())
+        if ac_i >= 0:
+            self.combo_ac_profile.setCurrentIndex(ac_i)
+        self.combo_ac_profile.blockSignals(False)
+
+        self.combo_battery_profile.blockSignals(True)
+        bat_i = self.combo_battery_profile.findData(self.backend.get_battery_profile())
+        if bat_i >= 0:
+            self.combo_battery_profile.setCurrentIndex(bat_i)
+        self.combo_battery_profile.blockSignals(False)
+
+        self.update_autostart_status()
+        self.update_permission_status()
+        self.update_kde_integration_status()
+        self.refresh_hardware_toggles()
+
+    def _on_factory_reset_clicked(self):
+        ans = QMessageBox.question(
+            self,
+            "Resetar Configurações de Fábrica",
+            "Deseja restaurar todas as configurações do Ducksvantage e controles de hardware "
+            "(ventoinhas, Modo Viagem, brilho, perfis térmicos, TDP, bateria e atalhos) para o padrão de fábrica?\n\n"
+            "• O histórico de saúde da bateria será preservado.\n"
+            "• O modo da GPU MUX não será alterado para evitar reinicialização.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        ok, msg = self.backend.reset_all_settings_to_default(allow_elevation=False)
+        self.refresh_preferences_ui()
+        self.settings_reset_completed.emit(msg)
+        if ok:
+            QMessageBox.information(self, "Configurações Restauradas", msg)
+        else:
+            QMessageBox.warning(self, "Restauração Parcial", msg)
+
     def _on_pref_changed(self, _val=None):
-        self.backend.set_osd_enabled(self.sw_osd_enabled.isChecked())
+        batch = {
+            "osd_enabled": self.sw_osd_enabled.isChecked(),
+            "minimize_to_tray": self.sw_minimize_to_tray.isChecked(),
+        }
         pos = self.combo_osd_position.currentData()
-        if pos:
-            self.backend.set_osd_position(str(pos))
+        if pos in ("bottom-center", "top-center", "top-right"):
+            batch["osd_position"] = str(pos)
         dur = self.combo_osd_duration.currentData()
         if dur is not None:
-            self.backend.set_osd_duration_ms(int(dur))
-        self.backend.set_minimize_to_tray(self.sw_minimize_to_tray.isChecked())
+            batch["osd_duration_ms"] = max(1000, min(4000, int(dur)))
         if self.combo_ac_profile.count() > 0 and self.combo_ac_profile.currentData():
-            self.backend.set_ac_profile(str(self.combo_ac_profile.currentData()))
+            batch["ac_profile"] = self.backend.normalize_profile(str(self.combo_ac_profile.currentData()))
         if self.combo_battery_profile.count() > 0 and self.combo_battery_profile.currentData():
-            self.backend.set_battery_profile(str(self.combo_battery_profile.currentData()))
+            batch["battery_profile"] = self.backend.normalize_profile(str(self.combo_battery_profile.currentData()))
+        self.backend.settings.update_many(batch)
         self.preferences_changed.emit()
 
     def _export_settings_action(self):

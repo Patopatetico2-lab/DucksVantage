@@ -31,6 +31,8 @@ class ToggleSwitch(QWidget):
             self.toggled.emit(self._checked)
 
     def mousePressEvent(self, event):
+        if not self.isEnabled():
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self.setChecked(not self._checked)
         super().mousePressEvent(event)
@@ -38,6 +40,8 @@ class ToggleSwitch(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if not self.isEnabled():
+            painter.setOpacity(0.45)
 
         # Fundo do trilho
         track_color = QColor(ThemeTokens.ACCENT_STEEL) if self._checked else QColor("#2b2f36")
@@ -57,13 +61,13 @@ class StatusBadge(QFrame):
     """Pílula / Indicador discreto de status."""
     def __init__(self, text: str, bg_color: str = ThemeTokens.BG_CARD_HOVER, text_color: str = ThemeTokens.TEXT_WHITE_80, parent=None):
         super().__init__(parent)
-        self.layout = QHBoxLayout(self)
-        self.layout.setContentsMargins(8, 3, 8, 3)
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(8, 3, 8, 3)
 
         self.label = QLabel(text)
         self.label.setFont(QFont(ThemeTokens.FONT_NAME, 9, QFont.Weight.DemiBold))
         self.label.setStyleSheet(f"color: {text_color}; background: transparent;")
-        self.layout.addWidget(self.label)
+        self._layout.addWidget(self.label)
 
         self.setColor(bg_color, text_color)
 
@@ -73,10 +77,10 @@ class StatusBadge(QFrame):
     def setColor(self, bg_color: str, text_color: str = "#f4f5f7"):
         self.label.setStyleSheet(f"color: {text_color}; background: transparent; border: none;")
         if bg_color == "transparent":
-            self.layout.setContentsMargins(2, 2, 2, 2)
+            self._layout.setContentsMargins(2, 2, 2, 2)
             self.setStyleSheet("StatusBadge { background-color: transparent; border: none; }")
         else:
-            self.layout.setContentsMargins(8, 3, 8, 3)
+            self._layout.setContentsMargins(8, 3, 8, 3)
             self.setStyleSheet(f"""
                 StatusBadge {{
                     background-color: {bg_color};

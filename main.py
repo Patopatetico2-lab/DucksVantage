@@ -27,8 +27,9 @@ def _terminate_previous_instances() -> None:
         "--status", "--json", "--diagnostic", "--list-presets",
         "--cycle-profile", "--cycle-hz", "--apply-preset",
         "--profile", "--conservation", "--install-udev", "--autostart",
-        "--eco",
+        "--eco", "--reset-defaults",
     }
+    terminated = []
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
             if proc.info["pid"] == my_pid:
@@ -47,8 +48,16 @@ def _terminate_previous_instances() -> None:
             if any(arg in cli_flags or any(arg.startswith(f + "=") for f in cli_flags) for arg in cmd_list):
                 continue
             proc.terminate()
+            terminated.append(proc)
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
+    if terminated:
+        _, alive = psutil.wait_procs(terminated, timeout=1.5)
+        for p in alive:
+            try:
+                p.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
 
 
 def run_cli_mode(args, backend: HardwareBackend):
@@ -98,6 +107,8 @@ def run_cli_mode(args, backend: HardwareBackend):
             print(json.dumps({"ok": ok, "profile": new_prof}, ensure_ascii=False))
         else:
             print(f"[{'OK' if ok else 'ERRO'}] Perfil: {new_prof}")
+        if not ok:
+            sys.exit(1)
         return
 
     if getattr(args, "cycle_hz", False):
@@ -106,6 +117,8 @@ def run_cli_mode(args, backend: HardwareBackend):
             print(json.dumps({"ok": ok, "hz": new_hz, "message": msg}, ensure_ascii=False))
         else:
             print(f"[{'OK' if ok else 'ERRO'}] {new_hz} Hz: {msg}")
+        if not ok:
+            sys.exit(1)
         return
 
     if getattr(args, "apply_preset", None):
@@ -118,13 +131,22 @@ def run_cli_mode(args, backend: HardwareBackend):
         if not match:
             msg = f"Preset '{query}' não encontrado."
             print(json.dumps({"ok": False, "message": msg}, ensure_ascii=False) if use_json else f"[ERRO] {msg}")
-            return
+            sys.exit(1)
         ok, msg = backend.apply_user_preset(str(match["id"]), allow_elevation=False)
         if use_json:
             print(json.dumps({"ok": ok, "preset": match["name"], "message": msg}, ensure_ascii=False))
         else:
             print(f"[{'OK' if ok else 'ERRO'}] Preset '{match['name']}': {msg}")
+        if not ok:
+            sys.exit(1)
         return
+
+    had_error = False
+    if getattr(args, "reset_defaults", False):
+        ok, msg = backend.reset_all_settings_to_default(allow_elevation=False)
+        print(json.dumps({"ok": ok, "message": msg}, ensure_ascii=False) if use_json else f"[{'OK' if ok else 'ERRO'}] Reset: {msg}")
+        if not ok:
+            had_error = True
 
     if args.profile:
         target = args.profile.lower().strip()
@@ -142,27 +164,40 @@ def run_cli_mode(args, backend: HardwareBackend):
         }
         prof = mapping.get(target, backend.normalize_profile(target))
         ok, msg = backend.set_platform_profile(prof)
-        print(f"[{'OK' if ok else 'ERRO'}] Perfil '{prof}': {msg}")
+        print(json.dumps({"ok": ok, "profile": prof, "message": msg}, ensure_ascii=False) if use_json else f"[{'OK' if ok else 'ERRO'}] Perfil '{prof}': {msg}")
+        if not ok:
+            had_error = True
 
     if args.conservation:
         enable = args.conservation.lower() in ("1", "true", "on", "sim", "ativar")
         ok, msg = backend.set_conservation_mode(enable)
-        print(f"[{'OK' if ok else 'ERRO'}] Modo de Conservação ({'Ativado' if enable else 'Desativado'}): {msg}")
+        print(json.dumps({"ok": ok, "conservation": enable, "message": msg}, ensure_ascii=False) if use_json else f"[{'OK' if ok else 'ERRO'}] Modo de Conservação ({'Ativado' if enable else 'Desativado'}): {msg}")
+        if not ok:
+            had_error = True
 
     if args.install_udev:
         ok, msg = PermissionsManager.install_udev_rules(backend.get_active_writable_paths())
-        print(f"[{'OK' if ok else 'ERRO'}] Instalação UDEV: {msg}")
+        print(json.dumps({"ok": ok, "message": msg}, ensure_ascii=False) if use_json else f"[{'OK' if ok else 'ERRO'}] Instalação UDEV: {msg}")
+        if not ok:
+            had_error = True
 
     if args.autostart:
         enable = args.autostart.lower() in ("1", "true", "on", "sim", "ativar")
         ok, msg = backend.set_autostart_enabled(enable)
-        print(f"[{'OK' if ok else 'ERRO'}] Autostart XDG ({'Ativado' if enable else 'Desativado'}): {msg}")
+        print(json.dumps({"ok": ok, "autostart": enable, "message": msg}, ensure_ascii=False) if use_json else f"[{'OK' if ok else 'ERRO'}] Autostart XDG ({'Ativado' if enable else 'Desativado'}): {msg}")
+        if not ok:
+            had_error = True
 
     if getattr(args, "eco", None):
         arg_e = str(args.eco).lower()
         target_e = (not backend.get_eco_travel_mode()) if arg_e == "toggle" else (arg_e in ("1", "true", "on"))
         ok, msg = backend.set_eco_travel_mode(target_e)
         print(json.dumps({"ok": ok, "eco_mode": target_e, "message": msg}, ensure_ascii=False) if use_json else f"[{'OK' if ok else 'ERRO'}] Eco-Mode: {msg}")
+        if not ok:
+            had_error = True
+
+    if had_error:
+        sys.exit(1)
 
 
 def main():
@@ -201,13 +236,14 @@ def main():
     parser.add_argument("--list-presets", action="store_true", help="Lista todos os presets personalizados salvos")
     parser.add_argument("--diagnostic", action="store_true", help="Imprime o relatório técnico de diagnóstico de hardware")
     parser.add_argument("--eco", type=str, choices=["on", "off", "toggle"], help="Ativa/desativa/alterna o Modo Viagem")
+    parser.add_argument("--reset-defaults", action="store_true", help="Restaura configurações e hardware ao padrão de fábrica")
     parser.add_argument("--json", action="store_true", help="Formata saída CLI compatível em JSON (status, presets, ações)")
     args = parser.parse_args()
 
     if (
         args.status or args.profile or args.conservation or args.install_udev or args.autostart
         or args.cycle_profile or args.cycle_hz or args.apply_preset or args.list_presets or args.diagnostic
-        or args.eco
+        or args.eco or getattr(args, "reset_defaults", False)
     ):
         backend = HardwareBackend()
         try:

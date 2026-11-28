@@ -93,7 +93,7 @@ class TelemetryBatteryNetworkMixin:
             return False
         return self._read_file_int(self.paths.conservation_mode, default=0) == 1
 
-    def set_conservation_mode(self, enable: bool) -> Tuple[bool, str]:
+    def set_conservation_mode(self, enable: bool, allow_elevation: bool = True) -> Tuple[bool, str]:
         """
         Ativa/desativa o Modo de Conservação (~80%).
         Regra de Exclusão Mútua: se ativar Conservação, desativa Rapid Charge.
@@ -102,10 +102,12 @@ class TelemetryBatteryNetworkMixin:
             return False, "Modo de Conservação não suportado neste modelo."
 
         if enable and self.get_rapid_charge():
-            self.set_rapid_charge(False)
+            self.set_rapid_charge(False, allow_elevation=allow_elevation)
 
         val = "1" if enable else "0"
-        ok, msg = PermissionsManager.write_sysfs_value(self.paths.conservation_mode, val)
+        ok, msg = PermissionsManager.write_sysfs_value(
+            self.paths.conservation_mode, val, allow_elevation=allow_elevation
+        )
         if ok:
             self._last_conservation = enable
             if enable and bool(self.settings.get("one_time_full_charge_active", False)):
@@ -127,7 +129,7 @@ class TelemetryBatteryNetworkMixin:
             return False
         return bool(self.settings.get("rapid_charge", False))
 
-    def set_rapid_charge(self, enable: bool) -> Tuple[bool, str]:
+    def set_rapid_charge(self, enable: bool, allow_elevation: bool = True) -> Tuple[bool, str]:
         """
         Ativa/desativa o Carregamento Rápido (Rapid Charge).
         Regra de Exclusão Mútua: se ativar Rapid Charge, desativa Modo de Conservação.
@@ -137,17 +139,25 @@ class TelemetryBatteryNetworkMixin:
 
         if enable and self.get_conservation_mode():
             if self.paths.conservation_mode:
-                PermissionsManager.write_sysfs_value(self.paths.conservation_mode, "0")
+                PermissionsManager.write_sysfs_value(
+                    self.paths.conservation_mode, "0", allow_elevation=allow_elevation
+                )
                 self._last_conservation = False
 
         if self.paths.rapid_charge and os.path.exists(self.paths.rapid_charge):
-            ok, msg = PermissionsManager.write_sysfs_value(self.paths.rapid_charge, "1" if enable else "0")
+            ok, msg = PermissionsManager.write_sysfs_value(
+                self.paths.rapid_charge, "1" if enable else "0", allow_elevation=allow_elevation
+            )
             if ok:
                 self.settings.set("rapid_charge", enable)
             return ok, msg
 
         if self.paths.charge_types and os.path.exists(self.paths.charge_types):
-            ok, msg = PermissionsManager.write_sysfs_value(self.paths.charge_types, "Fast" if enable else "Standard")
+            ok, msg = PermissionsManager.write_sysfs_value(
+                self.paths.charge_types,
+                "Fast" if enable else "Standard",
+                allow_elevation=allow_elevation,
+            )
             if ok:
                 self.settings.set("rapid_charge", enable)
                 return True, f"Carregamento Rápido {'ativado' if enable else 'desativado'}."
@@ -176,10 +186,12 @@ class TelemetryBatteryNetworkMixin:
             return True
         return self._read_file_int(self.paths.camera_power, default=1) == 1
 
-    def set_camera_power(self, enable: bool) -> Tuple[bool, str]:
+    def set_camera_power(self, enable: bool, allow_elevation: bool = True) -> Tuple[bool, str]:
         if not self.paths.camera_power:
             return False, "Obturador eletrônico da câmera não suportado via sysfs."
-        ok, msg = PermissionsManager.write_sysfs_value(self.paths.camera_power, "1" if enable else "0")
+        ok, msg = PermissionsManager.write_sysfs_value(
+            self.paths.camera_power, "1" if enable else "0", allow_elevation=allow_elevation
+        )
         if ok:
             self._last_camera = enable
         return ok, msg
@@ -189,10 +201,12 @@ class TelemetryBatteryNetworkMixin:
             return False
         return self._read_file_int(self.paths.usb_charging, default=0) == 1
 
-    def set_usb_charging(self, enable: bool) -> Tuple[bool, str]:
+    def set_usb_charging(self, enable: bool, allow_elevation: bool = True) -> Tuple[bool, str]:
         if not self.paths.usb_charging:
             return False, "Always-On USB Charging não suportado neste modelo."
-        return PermissionsManager.write_sysfs_value(self.paths.usb_charging, "1" if enable else "0")
+        return PermissionsManager.write_sysfs_value(
+            self.paths.usb_charging, "1" if enable else "0", allow_elevation=allow_elevation
+        )
 
     def get_kbd_backlight(self) -> int:
         """Retorna o nível atual de brilho do teclado (0=Desligado, 1=Baixo, 2=Alto)."""
@@ -407,6 +421,31 @@ class TelemetryBatteryNetworkMixin:
                     clock_mhz = int(pynvml.nvmlDeviceGetClockInfo(handle, pynvml.NVML_CLOCK_GRAPHICS))
                 except Exception:
                     clock_mhz = 0
+                try:
+                    pstate_str = f"P{int(pynvml.nvmlDeviceGetPerformanceState(handle))}"
+                except Exception:
+                    pstate_str = "P0"
+
+                thr_reasons: List[str] = []
+                try:
+                    mask = int(pynvml.nvmlDeviceGetCurrentClocksThrottleReasons(handle))
+                    flag_map = (
+                        ("nvmlClocksEventReasonHwThermalSlowdown", "thermal_hw"),
+                        ("nvmlClocksThrottleReasonHwThermalSlowdown", "thermal_hw"),
+                        ("nvmlClocksEventReasonSwThermalSlowdown", "thermal_sw"),
+                        ("nvmlClocksThrottleReasonSwThermalSlowdown", "thermal_sw"),
+                        ("nvmlClocksEventReasonHwPowerBrakeSlowdown", "power_brake"),
+                        ("nvmlClocksThrottleReasonHwPowerBrakeSlowdown", "power_brake"),
+                        ("nvmlClocksEventReasonSwPowerCap", "power_cap"),
+                        ("nvmlClocksThrottleReasonSwPowerCap", "power_cap"),
+                    )
+                    for attr_name, tag in flag_map:
+                        bit_v = getattr(pynvml, attr_name, 0)
+                        if bit_v and (mask & int(bit_v)) and tag not in thr_reasons:
+                            thr_reasons.append(tag)
+                except Exception:
+                    pass
+                self._cached_gpu_throttle_reasons = thr_reasons
 
                 self._cached_gpu_name = name
                 self._cached_gpu_short = self._format_short_gpu_name(name)
@@ -422,7 +461,8 @@ class TelemetryBatteryNetworkMixin:
                     memory_used_mb=int(mem.used // (1024 * 1024)),
                     memory_total_mb=int(mem.total // (1024 * 1024)),
                     power_draw_w=round(power_w, 1),
-                    pstate="P0"
+                    pstate=pstate_str,
+                    throttle_reasons=thr_reasons,
                 )
             except Exception:
                 pass
@@ -895,8 +935,9 @@ class TelemetryBatteryNetworkMixin:
                     for line in res_nm.stdout.splitlines():
                         if ":" in line:
                             c_name, c_dev = line.rsplit(":", 1)
-                            if c_dev.strip() == wifi_if and c_name.strip():
-                                conn_name = c_name.strip()
+                            clean_conn = c_name.replace("\\:", ":").strip()
+                            if c_dev.strip() == wifi_if and clean_conn:
+                                conn_name = clean_conn
                                 break
                     if conn_name:
                         nm_ps_val = "3" if enable_saving else "2"

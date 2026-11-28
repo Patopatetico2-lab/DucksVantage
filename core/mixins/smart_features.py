@@ -70,27 +70,48 @@ class SmartFeaturesMixin:
         return bool(self.settings.get("usb_wakeup_blocked", False))
 
     def set_usb_wakeup_blocked(self, blocked: bool, allow_elevation: bool = True) -> Tuple[bool, str]:
-        """Bloqueia ('disabled') ou reabilita ('enabled') wakeup dos dispositivos USB no sysfs."""
+        """Bloqueia ('disabled') ou reabilita ('enabled') wakeup apenas nos dispositivos USB alterados."""
         devs = self.get_usb_wakeup_devices()
         if not devs:
             self.settings.set("usb_wakeup_blocked", bool(blocked))
             return False, "Nenhum dispositivo USB com suporte a wakeup foi detectado."
 
         target_val = "disabled" if blocked else "enabled"
-        pairs = [(d["path"], target_val) for d in devs if d["enabled"] == bool(blocked)]
+        if blocked:
+            changed_devs = [d for d in devs if d["enabled"]]
+            pairs = [(d["path"], target_val) for d in changed_devs]
+            if not pairs:
+                self.settings.set("usb_wakeup_blocked", True)
+                return True, f"Wake-on-USB já estava bloqueado em {len(devs)} dispositivo(s)."
+            ok, msg = PermissionsManager.write_multiple_sysfs_values(pairs, allow_elevation=allow_elevation)
+            if ok:
+                saved_ids = [d["bus_id"] for d in changed_devs]
+                self.settings.update_many({
+                    "usb_wakeup_blocked": True,
+                    "usb_wakeup_disabled_ids": saved_ids,
+                })
+                return True, f"Wake-on-USB bloqueado (seguro na mochila) em {len(pairs)} dispositivo(s)."
+            return False, msg
+
+        saved_ids = set(self.settings.get("usb_wakeup_disabled_ids", []) or [])
+        if saved_ids:
+            pairs = [(d["path"], target_val) for d in devs if not d["enabled"] and d["bus_id"] in saved_ids]
+        else:
+            pairs = [(d["path"], target_val) for d in devs if not d["enabled"]]
         if not pairs:
-            self.settings.set("usb_wakeup_blocked", bool(blocked))
-            return True, (
-                f"Wake-on-USB já estava {'bloqueado' if blocked else 'liberado'} em {len(devs)} dispositivo(s)."
-            )
+            self.settings.update_many({
+                "usb_wakeup_blocked": False,
+                "usb_wakeup_disabled_ids": [],
+            })
+            return True, f"Wake-on-USB já estava liberado em {len(devs)} dispositivo(s)."
 
         ok, msg = PermissionsManager.write_multiple_sysfs_values(pairs, allow_elevation=allow_elevation)
         if ok:
-            self.settings.set("usb_wakeup_blocked", bool(blocked))
-            return True, (
-                f"Wake-on-USB {'bloqueado (seguro na mochila)' if blocked else 'liberado'} "
-                f"em {len(pairs)} dispositivo(s)."
-            )
+            self.settings.update_many({
+                "usb_wakeup_blocked": False,
+                "usb_wakeup_disabled_ids": [],
+            })
+            return True, f"Wake-on-USB liberado em {len(pairs)} dispositivo(s)."
         return False, msg
 
     # =========================================================================

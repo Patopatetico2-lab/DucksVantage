@@ -121,14 +121,15 @@ class FanCurveWidget(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             pos = event.position() if hasattr(event, "position") else QPointF(event.pos())
-            pts = self.custom_points
-            for idx, (t, pwm) in enumerate(pts):
+            vis_pts = self.custom_points if self.custom_enabled else self._get_active_curve_pwm()[0]
+            for idx, (t, pwm) in enumerate(vis_pts):
                 px = self._temp_to_x(t)
                 py = self._pwm_to_y(pwm)
                 if ((pos.x() - px) ** 2 + (pos.y() - py) ** 2) <= 196.0:
-                    self._drag_index = idx
                     if not self.custom_enabled:
+                        self.custom_points = [[int(pt[0]), int(pt[1])] for pt in vis_pts]
                         self.custom_enabled = True
+                    self._drag_index = idx
                     self.update()
                     return
         super().mousePressEvent(event)
@@ -149,9 +150,10 @@ class FanCurveWidget(QWidget):
             self.update()
             return
 
-        # Atualizar hover sobre os pontos de controle
+        # Atualizar hover sobre os pontos visíveis (custom ou curva ativa do perfil)
+        vis_pts = self.custom_points if self.custom_enabled else self._get_active_curve_pwm()[0]
         found_hover = -1
-        for idx, (t, pwm) in enumerate(self.custom_points):
+        for idx, (t, pwm) in enumerate(vis_pts):
             px = self._temp_to_x(t)
             py = self._pwm_to_y(pwm)
             if ((pos.x() - px) ** 2 + (pos.y() - py) ** 2) <= 196.0:

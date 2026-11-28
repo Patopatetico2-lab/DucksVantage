@@ -47,6 +47,7 @@ class AutomationTab(QWidget):
     custom_action_requested = Signal(str, str)
     preset_applied = Signal(str, str)
     presets_updated = Signal()
+    game_auto_toggled = Signal(bool)
     switch_advanced_requested = Signal()
 
     def __init__(self, backend, parent=None):
@@ -111,10 +112,10 @@ class AutomationTab(QWidget):
         presets_titles.addWidget(pt_title)
 
         pt_sub = QLabel("Salve o estado atual (Perfil, Governor, Turbo, TDP e Hz) e aplique com 1 clique.")
+        pt_sub.setWordWrap(True)
         pt_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         presets_titles.addWidget(pt_sub)
-        presets_header.addLayout(presets_titles)
-        presets_header.addStretch()
+        presets_header.addLayout(presets_titles, stretch=1)
 
         self.presets_count_badge = StatusBadge("0 PRESETS", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.ACCENT_STEEL)
         presets_header.addWidget(self.presets_count_badge)
@@ -198,6 +199,11 @@ class AutomationTab(QWidget):
 
         self.app_rules_badge = StatusBadge("AUTO-SWITCH ATIVO", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.STATUS_GREEN)
         rules_header.addWidget(self.app_rules_badge)
+
+        self.sw_game_auto_master = ToggleSwitch(checked=self.backend.get_game_auto_switch())
+        self.sw_game_auto_master.setToolTip("Ativar ou desativar o Auto-Switch automático em jogos")
+        self.sw_game_auto_master.toggled.connect(self.game_auto_toggled.emit)
+        rules_header.addWidget(self.sw_game_auto_master)
         rules_layout.addLayout(rules_header)
 
         self.game_switch_opts_box = QFrame()
@@ -225,12 +231,12 @@ class AutomationTab(QWidget):
         gt_row.setContentsMargins(0, 0, 0, 0)
         gt_row.setSpacing(10)
         gt_lbl = QLabel("Perfil térmico ao detectar jogos (Steam, Heroic, Sober, Wine):")
+        gt_lbl.setWordWrap(True)
         gt_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
-        gt_row.addWidget(gt_lbl)
-        gt_row.addStretch()
+        gt_row.addWidget(gt_lbl, stretch=1)
 
         self.combo_game_target_profile = QComboBox()
-        self.combo_game_target_profile.setMinimumWidth(220)
+        self.combo_game_target_profile.setMinimumWidth(190)
         self.combo_game_target_profile.setFixedHeight(28)
         if "performance" in supported_profiles or not supported_profiles:
             self.combo_game_target_profile.addItem("Modo Desempenho (Performance)", "performance")
@@ -248,6 +254,7 @@ class AutomationTab(QWidget):
         gr_row = QHBoxLayout(self.game_refresh_row_widget)
         gr_row.setContentsMargins(0, 0, 0, 0)
         gr_lbl = QLabel("Elevar taxa do painel (Hz) para o máximo durante o jogo")
+        gr_lbl.setWordWrap(True)
         gr_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         gr_row.addWidget(gr_lbl, stretch=1)
         self.sw_game_refresh_max = ToggleSwitch(checked=self.backend.get_game_auto_refresh_max())
@@ -260,6 +267,7 @@ class AutomationTab(QWidget):
         gtp_row = QHBoxLayout(self.game_touchpad_row_widget)
         gtp_row.setContentsMargins(0, 0, 0, 0)
         gtp_lbl = QLabel("Bloquear Touchpad automaticamente enquanto um jogo estiver aberto")
+        gtp_lbl.setWordWrap(True)
         gtp_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         gtp_row.addWidget(gtp_lbl, stretch=1)
         self.sw_game_lock_touchpad = ToggleSwitch(checked=self.backend.get_game_auto_lock_touchpad())
@@ -272,6 +280,7 @@ class AutomationTab(QWidget):
         gwf_row = QHBoxLayout(self.game_wifi_row_widget)
         gwf_row.setContentsMargins(0, 0, 0, 0)
         gwf_lbl = QLabel("Ativar Wi-Fi em Baixa Latência (Power Save OFF) durante jogos e restaurar ao fechar")
+        gwf_lbl.setWordWrap(True)
         gwf_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         gwf_row.addWidget(gwf_lbl, stretch=1)
         self.sw_game_wifi_low_latency = ToggleSwitch(checked=self.backend.get_game_auto_wifi_low_latency())
@@ -285,12 +294,12 @@ class AutomationTab(QWidget):
         gp_row.setContentsMargins(0, 0, 0, 0)
         gp_row.setSpacing(10)
         gp_lbl = QLabel("Ou aplicar um Preset personalizado ao abrir jogos:")
+        gp_lbl.setWordWrap(True)
         gp_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
-        gp_row.addWidget(gp_lbl)
-        gp_row.addStretch()
+        gp_row.addWidget(gp_lbl, stretch=1)
 
         self.combo_game_target_preset = QComboBox()
-        self.combo_game_target_preset.setMinimumWidth(220)
+        self.combo_game_target_preset.setMinimumWidth(190)
         self.combo_game_target_preset.setFixedHeight(28)
         self._populate_game_preset_combo()
         self.combo_game_target_preset.currentIndexChanged.connect(self._on_game_target_preset_changed)
@@ -304,12 +313,12 @@ class AutomationTab(QWidget):
         gvrr_l.setSpacing(10)
 
         vrr_g_lbl = QLabel("Política VRR (Adaptive Sync) ao abrir jogos:")
+        vrr_g_lbl.setWordWrap(True)
         vrr_g_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
-        gvrr_l.addWidget(vrr_g_lbl)
-        gvrr_l.addStretch()
+        gvrr_l.addWidget(vrr_g_lbl, stretch=1)
 
         self.combo_game_vrr = QComboBox()
-        self.combo_game_vrr.setMinimumWidth(220)
+        self.combo_game_vrr.setMinimumWidth(190)
         self.combo_game_vrr.setFixedHeight(28)
         for v_txt, v_id in [("Manter atual", "keep"), ("Automático", "automatic"), ("Sempre ativo", "always"), ("Desligado", "never")]:
             self.combo_game_vrr.addItem(v_txt, v_id)
@@ -357,41 +366,47 @@ class AutomationTab(QWidget):
         self.add_rule_box = QFrame()
         add_rule_box = self.add_rule_box
         add_rule_box.setProperty("class", "subBox")
-        add_row = QHBoxLayout(add_rule_box)
-        add_row.setContentsMargins(14, 10, 14, 10)
-        add_row.setSpacing(10)
+        add_v = QVBoxLayout(add_rule_box)
+        add_v.setContentsMargins(14, 10, 14, 10)
+        add_v.setSpacing(8)
 
+        add_row1 = QHBoxLayout()
+        add_row1.setSpacing(8)
         self.combo_app_exec = QComboBox()
         self.combo_app_exec.setEditable(True)
-        self.combo_app_exec.setMinimumWidth(200)
+        self.combo_app_exec.setMinimumWidth(150)
         self.combo_app_exec.setFixedHeight(30)
         self._populate_running_apps_combo()
-        add_row.addWidget(self.combo_app_exec, stretch=1)
+        add_row1.addWidget(self.combo_app_exec, stretch=1)
 
         self.btn_refresh_procs = QPushButton("Atualizar")
         self.btn_refresh_procs.setProperty("class", "secondaryButton")
         self.btn_refresh_procs.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_refresh_procs.setFixedHeight(30)
         self.btn_refresh_procs.clicked.connect(self._populate_running_apps_combo)
-        add_row.addWidget(self.btn_refresh_procs)
+        add_row1.addWidget(self.btn_refresh_procs)
 
         self.edit_app_label = QLineEdit()
         self.edit_app_label.setPlaceholderText("Descrição opcional (ex: Blender 3D)")
         self.edit_app_label.setFixedHeight(30)
-        add_row.addWidget(self.edit_app_label, stretch=1)
+        add_row1.addWidget(self.edit_app_label, stretch=1)
+        add_v.addLayout(add_row1)
 
+        add_row2 = QHBoxLayout()
+        add_row2.setSpacing(8)
         self.combo_app_profile = QComboBox()
-        self.combo_app_profile.setMinimumWidth(200)
+        self.combo_app_profile.setMinimumWidth(190)
         self.combo_app_profile.setFixedHeight(30)
         self._populate_app_rule_profile_combo()
-        add_row.addWidget(self.combo_app_profile)
+        add_row2.addWidget(self.combo_app_profile, stretch=1)
 
         btn_add_rule = QPushButton("Adicionar Regra")
         btn_add_rule.setProperty("class", "primaryButton")
         btn_add_rule.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_add_rule.setFixedHeight(30)
         btn_add_rule.clicked.connect(self._on_add_app_rule)
-        add_row.addWidget(btn_add_rule)
+        add_row2.addWidget(btn_add_rule)
+        add_v.addLayout(add_row2)
 
         rules_layout.addWidget(add_rule_box)
 
@@ -571,8 +586,17 @@ class AutomationTab(QWidget):
             self.sub_stack.setCurrentIndex(first_vis)
 
     def refresh_automation_state(self):
+        game_auto_on = self.backend.get_game_auto_switch()
+        if hasattr(self, "sw_game_auto_master"):
+            self.sw_game_auto_master.blockSignals(True)
+            self.sw_game_auto_master.setChecked(game_auto_on)
+            self.sw_game_auto_master.blockSignals(False)
+
         active_game = self.backend.get_active_game()
-        if active_game:
+        if not game_auto_on:
+            self.app_rules_badge.setText("DESATIVADO")
+            self.app_rules_badge.setColor(ThemeTokens.BG_CARD_HOVER, ThemeTokens.TEXT_WHITE_80)
+        elif active_game:
             self.app_rules_badge.setText(f"ATIVO: {active_game[:22].upper()}")
             self.app_rules_badge.setColor(ThemeTokens.BG_CARD_HOVER, ThemeTokens.ACCENT_STEEL)
         else:
@@ -1036,40 +1060,18 @@ class AutomationTab(QWidget):
         v_layout.setContentsMargins(14, 10, 14, 10)
         v_layout.setSpacing(8)
 
-        top = QHBoxLayout()
-        top.setSpacing(10)
+        row1 = QHBoxLayout()
+        row1.setSpacing(8)
 
         lbl_name = QLabel(str(slot_cfg.get("label", slot_id)))
+        lbl_name.setWordWrap(True)
         lbl_name.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.DemiBold))
-        lbl_name.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; min-width: 185px; border: none;")
-        top.addWidget(lbl_name)
-
-        cap_btn = KeyCaptureButton(
-            str(slot_cfg.get("qt_shortcut", "Meta+Shift+F23")),
-            backend=self.backend,
-            evdev_code=int(slot_cfg.get("evdev_code", 0) or 0),
-            evdev_modifiers=list(slot_cfg.get("evdev_modifiers") or []),
-        )
-        cap_btn.shortcut_captured.connect(lambda _seq, s=slot_id: self._on_slot_modified(s))
-        top.addWidget(cap_btn)
-
-        combo = QComboBox()
-        combo.setMinimumWidth(210)
-        combo.setFixedHeight(30)
-        current_act = str(slot_cfg.get("action", "cycle_profile"))
-        supported_actions = self._get_supported_key_actions(current_act)
-        sel_idx = 0
-        for idx, (act_id, act_label) in enumerate(supported_actions):
-            combo.addItem(act_label, act_id)
-            if act_id == current_act:
-                sel_idx = idx
-        combo.setCurrentIndex(sel_idx)
-        combo.currentIndexChanged.connect(lambda _idx, s=slot_id: self._on_slot_modified(s))
-        top.addWidget(combo, stretch=1)
+        lbl_name.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; border: none;")
+        row1.addWidget(lbl_name, stretch=1)
 
         btn_test = QPushButton("Testar")
         btn_test.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_test.setFixedHeight(30)
+        btn_test.setFixedHeight(28)
         btn_test.setStyleSheet(f"""
             QPushButton {{
                 background-color: {ThemeTokens.BG_CARD_HOVER};
@@ -1086,14 +1088,40 @@ class AutomationTab(QWidget):
             }}
         """)
         btn_test.clicked.connect(lambda _checked, s=slot_id: self._on_test_slot(s))
-        top.addWidget(btn_test)
+        row1.addWidget(btn_test)
 
         sw = ToggleSwitch()
         sw.setChecked(bool(slot_cfg.get("enabled", True)))
         sw.toggled.connect(lambda _checked, s=slot_id: self._on_slot_modified(s))
-        top.addWidget(sw)
+        row1.addWidget(sw)
+        v_layout.addLayout(row1)
 
-        v_layout.addLayout(top)
+        row2 = QHBoxLayout()
+        row2.setSpacing(10)
+
+        cap_btn = KeyCaptureButton(
+            str(slot_cfg.get("qt_shortcut", "Meta+Shift+F23")),
+            backend=self.backend,
+            evdev_code=int(slot_cfg.get("evdev_code", 0) or 0),
+            evdev_modifiers=list(slot_cfg.get("evdev_modifiers") or []),
+        )
+        cap_btn.shortcut_captured.connect(lambda _seq, s=slot_id: self._on_slot_modified(s))
+        row2.addWidget(cap_btn)
+
+        combo = QComboBox()
+        combo.setMinimumWidth(160)
+        combo.setFixedHeight(30)
+        current_act = str(slot_cfg.get("action", "cycle_profile"))
+        supported_actions = self._get_supported_key_actions(current_act)
+        sel_idx = 0
+        for idx, (act_id, act_label) in enumerate(supported_actions):
+            combo.addItem(act_label, act_id)
+            if act_id == current_act:
+                sel_idx = idx
+        combo.setCurrentIndex(sel_idx)
+        combo.currentIndexChanged.connect(lambda _idx, s=slot_id: self._on_slot_modified(s))
+        row2.addWidget(combo, stretch=1)
+        v_layout.addLayout(row2)
 
         cmd_edit = QLineEdit(str(slot_cfg.get("custom_command", "")))
         cmd_edit.setPlaceholderText("Comando ou script (ex: /usr/bin/konsole ou ~/.local/bin/script.sh)")
@@ -1115,7 +1143,7 @@ class AutomationTab(QWidget):
         if not w:
             return
         act_id = w["combo"].currentData()
-        w["cmd_edit"].setVisible(act_id == "custom_command")
+        w["cmd_edit"].setVisible(bool(self._advanced_mode and act_id == "custom_command"))
 
         cap_btn: KeyCaptureButton = w["cap_btn"]
         qt_shortcut = cap_btn.text().strip()

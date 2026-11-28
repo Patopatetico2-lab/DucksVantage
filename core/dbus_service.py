@@ -72,7 +72,7 @@ class DucksvantageCommandRouter:
             prof = low.split(":", 1)[1].strip()
             ok, msg = self.backend.set_platform_profile(prof, allow_elevation=False)
             if ok:
-                self._notify_ui("profile", {"profile": prof})
+                self._notify_ui("profile", {"profile": self.backend.get_platform_profile()})
             return ok, msg
 
         if low.startswith("preset:"):
@@ -136,6 +136,8 @@ class DucksvantageCommandRouter:
         bat_obj = status["battery"]
         bat_txt = f" | Bat {bat_obj['percent']}%" if bat_obj["available"] else ""
 
+        feat = self.backend.features
+        supported_profs = set(self.backend.get_supported_canonical_profiles()) if feat.platform_profile else set()
         catalog: List[Tuple[str, str, str, str, List[str], float]] = [
             (
                 "show_window",
@@ -145,55 +147,61 @@ class DucksvantageCommandRouter:
                 ["dv", "duck", "ducksvantage", "vantage", "temp", "cpu", "gpu", "status"],
                 0.95,
             ),
-            (
+        ]
+        if "low-power" in supported_profs:
+            catalog.append((
                 "profile:low-power",
                 "Ducksvantage: Modo Silencioso (Low-Power)",
                 "Reduz ruído das ventoinhas e economiza bateria",
                 "ducksvantage",
                 ["dv", "silencioso", "quiet", "low-power", "bateria", "silent"],
                 0.85,
-            ),
-            (
+            ))
+        if "balanced" in supported_profs:
+            catalog.append((
                 "profile:balanced",
                 "Ducksvantage: Modo Equilibrado (Balanced)",
                 "Ajuste automático pelo Embedded Controller Lenovo",
                 "ducksvantage",
                 ["dv", "equilibrado", "balanced", "normal"],
                 0.82,
-            ),
-            (
+            ))
+        if "performance" in supported_profs:
+            catalog.append((
                 "profile:performance",
                 "Ducksvantage: Modo Desempenho (Performance)",
                 "Libera envelope térmico para jogos e trabalho pesado",
                 "ducksvantage",
                 ["dv", "desempenho", "performance", "jogo", "game"],
                 0.86,
-            ),
-            (
+            ))
+        if "max-power" in supported_profs or feat.max_power_profile:
+            catalog.append((
                 "profile:max-power",
                 "Ducksvantage: Desempenho Máximo (Max-Power)",
                 "Potência máxima sustentada + ventoinhas no máximo",
                 "ducksvantage",
                 ["dv", "max", "max-power", "extremo", "turbo"],
                 0.88,
-            ),
-            (
+            ))
+        if feat.eco_travel:
+            catalog.append((
                 "eco_toggle",
                 f"Ducksvantage: Alternar Modo Viagem ({'Ativo' if status['eco_mode'] else 'Desativado'})",
-                "Eco-Mode Extremo 1-Clique (80% + D3cold + Turbo Off)",
+                "Eco-Mode Extremo 1-Clique",
                 "ducksvantage",
                 ["dv", "eco", "viagem", "travel"],
                 0.84,
-            ),
-            (
+            ))
+        if feat.refresh_rate and status["display"].get("available"):
+            catalog.append((
                 "cycle_hz",
                 f"Ducksvantage: Alternar Taxa de Tela (Atual: {status['display']['hz']} Hz)",
-                "Alterna frequência do painel (60 Hz ↔ 144 Hz)",
+                "Alterna frequência do painel",
                 "ducksvantage",
                 ["dv", "hz", "refresh", "tela", "60", "144", "display"],
                 0.80,
-            ),
-        ]
+            ))
 
         if self.backend.features.conservation_mode:
             ot_active = self.backend.get_one_time_full_charge_status()["active"]

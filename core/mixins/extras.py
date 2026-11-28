@@ -13,7 +13,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 from core.permissions import PermissionsManager
 
-APP_VERSION = "2.3.1"
+APP_VERSION = "2.4.0"
 GITHUB_REPO = "Patopatetico2-lab/DucksVantage"
 
 
@@ -167,16 +167,21 @@ class PresetsDiagnosticsRgbMixin:
                 errors.append(f"TDP: {msg}")
 
         if "fan_curve_enabled" in target and "fan_curve_points" in target and self.features.fan_control:
-            ok_fc, msg_fc = self.set_custom_fan_curve(
-                target["fan_curve_points"],
-                bool(target["fan_curve_enabled"]),
-                target.get("cpu_temp_limit"),
-                target.get("gpu_temp_limit"),
-            )
-            if ok_fc and target["fan_curve_enabled"]:
-                applied_parts.append("Curva EC")
-            elif not ok_fc:
-                errors.append(f"Fan EC: {msg_fc}")
+            want_curve = bool(target["fan_curve_enabled"])
+            if want_curve or bool(self.settings.get("custom_fan_curve_enabled", False)):
+                if not want_curve and target.get("profile") == "max-power":
+                    self.settings.set("custom_fan_curve_enabled", False)
+                else:
+                    ok_fc, msg_fc = self.set_custom_fan_curve(
+                        target["fan_curve_points"],
+                        want_curve,
+                        target.get("cpu_temp_limit"),
+                        target.get("gpu_temp_limit"),
+                    )
+                    if ok_fc and want_curve:
+                        applied_parts.append("Curva EC")
+                    elif not ok_fc:
+                        errors.append(f"Fan EC: {msg_fc}")
 
         if isinstance(target.get("wmi_custom_power"), dict) and self.features.wmi_custom_power:
             ok_wmi, msg_wmi = self.set_lenovo_custom_power_values(
@@ -483,6 +488,166 @@ class PresetsDiagnosticsRgbMixin:
             self._cached_running_game = None
             self._last_game_scan_time = 0.0
         return ok, msg
+
+    def reset_all_settings_to_default(self, allow_elevation: bool = False) -> Tuple[bool, str]:
+        """
+        Restaura todas as configurações do Ducksvantage e controles ativos de hardware
+        para o padrão de fábrica seguro (sem alterar GPU MUX por exigir reinicialização
+        e preservando o histórico real da bateria).
+        """
+        # 1. Sair do Modo Viagem/Economia antes de zerar as chaves pre_eco_*
+        if self.get_eco_travel_mode() or bool(self.settings.get("eco_applied_actions")):
+            try:
+                self._restore_eco_side_effects(restore_profile=False)
+            except Exception:
+                pass
+
+        # 2. Cancelar Carga 100% Única e Inibidor Clamshell
+        if bool(self.settings.get("one_time_full_charge_active", False)):
+            try:
+                self.cancel_one_time_full_charge(restore_conservation=False)
+            except Exception:
+                pass
+        try:
+            self._stop_dock_lid_inhibit()
+            self._dock_active = None
+        except Exception:
+            pass
+
+        # 3. Restaurar estado caso houvesse jogo ou App Rule ativo
+        if getattr(self, "_active_game_name", None):
+            try:
+                self._restore_active_game_side_effects()
+            except Exception:
+                pass
+            self._active_game_name = None
+            self._active_rule_exec = None
+            self._game_session_start_ts = 0.0
+
+        # 4. Resetar Undervolt e arquivo canário
+        try:
+            self._clear_undervolt_canary()
+            if self.features.cpu_undervolt and (
+                getattr(self, "_undervolt_active_in_hw", False)
+                or int(self.settings.get("undervolt_core_mv", 0) or 0) != 0
+                or int(self.settings.get("undervolt_cache_mv", 0) or 0) != 0
+            ):
+                self.emergency_reset_undervolt(
+                    reason="Restauração de fábrica",
+                    allow_elevation=allow_elevation,
+                )
+        except Exception:
+            pass
+
+        # 5. Restaurar atributos Lenovo WMI Other ao default_value do firmware
+        if self.paths.lenovo_wmi_attr_dir and os.path.isdir(self.paths.lenovo_wmi_attr_dir):
+            wmi_attrs = (
+                "cpu_temp", "gpu_temp", "gpu_nv_ac_offset", "gpu_nv_ctgp",
+                "gpu_nv_ppab", "gpu_nv_cpu_boost", "ppt_pl1_spl", "ppt_pl2_sppt",
+                "ppt_cpu_cl", "ppt_pl1_tau",
+            )
+            wmi_pairs: List[Tuple[str, str]] = []
+            for attr_id in wmi_attrs:
+                cur_p = os.path.join(self.paths.lenovo_wmi_attr_dir, attr_id, "current_value")
+                def_p = os.path.join(self.paths.lenovo_wmi_attr_dir, attr_id, "default_value")
+                if os.path.exists(cur_p) and os.path.exists(def_p):
+                    def_v = (self._read_file_text(def_p) or "").strip()
+                    cur_v = (self._read_file_text(cur_p) or "").strip()
+                    if def_v and cur_v != def_v:
+                        wmi_pairs.append((cur_p, def_v))
+            if wmi_pairs:
+                if self.paths.platform_profile:
+                    choices = [c.lower().strip() for c in self.get_platform_profile_choices()]
+                    if "custom" in choices and self._read_raw_platform_profile() != "custom":
+                        PermissionsManager.write_sysfs_value(
+                            self.paths.platform_profile, "custom", allow_elevation=allow_elevation
+                        )
+                        time.sleep(0.05)
+                PermissionsManager.write_multiple_sysfs_values(wmi_pairs, allow_elevation=allow_elevation)
+
+        # 6. Restaurar ventoinha ao automático do EC
+        try:
+            self._write_fan_speed_pct(None, 40.0, force=True, allow_elevation=allow_elevation)
+        except Exception:
+            pass
+
+        # 7. Perfil Equilibrado + CPU Turbo + Governor padrão + RAPL do boot
+        if self.features.platform_profile:
+            choices = [c.lower().strip() for c in self.get_platform_profile_choices()]
+            target_p = "balanced" if "balanced" in choices else (choices[0] if choices else "balanced")
+            self.set_platform_profile(target_p, allow_elevation=allow_elevation)
+        if self.features.turbo_boost:
+            self.set_cpu_turbo(True, allow_elevation=allow_elevation)
+        if self.features.cpu_governor:
+            avail_g = self.get_available_cpu_governors()
+            def_gov = "powersave" if "powersave" in avail_g else ("schedutil" if "schedutil" in avail_g else (avail_g[0] if avail_g else "powersave"))
+            self.set_cpu_governor(def_gov, allow_elevation=allow_elevation)
+        if self.features.custom_tdp and self.paths.rapl_pl1 and self.paths.rapl_pl2:
+            boot_uw = getattr(self, "_boot_rapl_limits_uw", None)
+            if isinstance(boot_uw, tuple) and len(boot_uw) == 2 and boot_uw[0] > 0 and boot_uw[1] > 0:
+                b_pl1_w = max(15, min(95, int(round(boot_uw[0] / 1_000_000.0))))
+                b_pl2_w = max(b_pl1_w, min(115, int(round(boot_uw[1] / 1_000_000.0))))
+            else:
+                b_pl1_w, b_pl2_w = 45, 70
+            self.set_cpu_tdp_limits(b_pl1_w, b_pl2_w, allow_elevation=allow_elevation)
+
+        # 8. Bateria, Controles EDGE, Wake-on-USB, Wi-Fi, NVIDIA PM e RGB (NUNCA mexe em GPU MUX)
+        if self.features.rapid_charge:
+            self.set_rapid_charge(False, allow_elevation=allow_elevation)
+        if self.features.conservation_mode:
+            self.set_conservation_mode(False, allow_elevation=allow_elevation)
+        if self.features.touchpad_control:
+            self.set_touchpad_status(False, allow_elevation=allow_elevation)
+        if self.features.camera_power:
+            self.set_camera_power(True, allow_elevation=allow_elevation)
+        if self.features.usb_charging:
+            self.set_usb_charging(False, allow_elevation=allow_elevation)
+        if self.features.usb_wakeup and (
+            bool(self.settings.get("usb_wakeup_blocked", False))
+            or bool(self.settings.get("usb_wakeup_disabled_ids"))
+        ):
+            self.set_usb_wakeup_blocked(False, allow_elevation=allow_elevation)
+        if self.features.wifi_power_save:
+            self.set_wifi_power_saving(True, allow_elevation=allow_elevation)
+        if self.paths.nvidia_pci_power_control and os.path.exists(self.paths.nvidia_pci_power_control):
+            if allow_elevation or os.access(self.paths.nvidia_pci_power_control, os.W_OK):
+                PermissionsManager.write_sysfs_value(
+                    self.paths.nvidia_pci_power_control, "auto", allow_elevation=allow_elevation
+                )
+        if self.features.lcd_overdrive:
+            self.set_lcd_overdrive(False, allow_elevation=allow_elevation)
+        if self.features.rgb_keyboard:
+            try:
+                self.set_rgb_keyboard_state("static", ["#00d2ff"] * 4, brightness=2, speed=2)
+            except Exception:
+                pass
+
+        # 9. Desativar Autostart e resetar settings.json preservando histórico da bateria
+        try:
+            if self.get_autostart_enabled():
+                self.set_autostart_enabled(False)
+        except Exception:
+            pass
+
+        live_mux_mode = "hybrid"
+        if self.features.gpu_mux:
+            try:
+                self._cached_gpu_mux_info = None
+                live_mux_mode = self.get_gpu_mux_info().current_mode or "hybrid"
+            except Exception:
+                pass
+
+        self.settings.reset_to_defaults(preserve_keys=("battery_history",))
+        if self.features.gpu_mux:
+            self.settings.set("gpu_mux_mode", live_mux_mode)
+
+        self._cached_running_game = None
+        self._last_game_scan_time = 0.0
+        self._cached_running_app_rule = None
+        self._last_app_rule_scan_time = 0.0
+        self._cached_bios_attrs = None
+        self._cached_nvme_health = None
+        return True, "Todas as configurações e controles de hardware foram restaurados para o padrão de fábrica."
 
     # =========================================================================
     # Teclado RGB 4-Zonas (Auto-Discovery USB ITE hidraw / multicolor sysfs)

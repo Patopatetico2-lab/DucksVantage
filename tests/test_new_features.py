@@ -967,13 +967,275 @@ class TestNewFeatures(unittest.TestCase):
             with open(tgt_file, "r", encoding="utf-8") as fh:
                 self.assertEqual(fh.read().strip(), "0")
 
-            # PerformanceTab exibe slider manual tanto no Básico quanto no Avançado
+            # PerformanceTab exibe manual_fan_box tanto no Básico quanto no Avançado
             tab = PerformanceTab(self.backend)
             tab.set_advanced_mode(False)
             self.assertFalse(tab.manual_fan_box.isHidden())
             tab.set_advanced_mode(True)
             self.assertFalse(tab.manual_fan_box.isHidden())
             tab.close()
+
+    def test_factory_reset_restores_settings_hardware_and_ui(self):
+        """reset_all_settings_to_default restaura configurações/hardware, preserva battery_history e sincroniza toda a UI."""
+        from core.qt_compat import QApplication
+        from ui_main import MainWindow
+
+        _app = QApplication.instance() or QApplication(["ducksvantage", "-platform", "offscreen"])
+
+        with tempfile.TemporaryDirectory() as td:
+            pp_file = os.path.join(td, "profile")
+            pp_choices = os.path.join(td, "choices")
+            fm_file = os.path.join(td, "fan_mode")
+            cons_file = os.path.join(td, "conservation_mode")
+            turbo_file = os.path.join(td, "no_turbo")
+            tp_file = os.path.join(td, "touchpad")
+            pl1_file = os.path.join(td, "pl1")
+            pl2_file = os.path.join(td, "pl2")
+            for p, val in [
+                (pp_file, "performance\n"),
+                (pp_choices, "low-power balanced performance custom\n"),
+                (fm_file, "3\n"),
+                (cons_file, "1\n"),
+                (turbo_file, "1\n"),
+                (tp_file, "1\n"),
+                (pl1_file, "25000000\n"),
+                (pl2_file, "35000000\n"),
+            ]:
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write(val)
+
+            self.backend.paths.platform_profile = pp_file
+            self.backend.paths.platform_profile_choices = pp_choices
+            self.backend._platform_profile_paths = [pp_file]
+            self.backend.paths.fan_mode = fm_file
+            self.backend.paths.conservation_mode = cons_file
+            self.backend.paths.cpu_turbo_intel = turbo_file
+            self.backend.paths.touchpad = tp_file
+            self.backend.paths.rapl_pl1 = pl1_file
+            self.backend.paths.rapl_pl2 = pl2_file
+            self.backend._boot_rapl_limits_uw = (45_000_000, 70_000_000)
+
+            sample_hist = [{"timestamp": "2026-11-01T10:00:00", "health_percent": 98.5, "cycle_count": 12}]
+            self.backend.settings.update_many({
+                "ui_mode": "advanced",
+                "manual_fan_enabled": True,
+                "custom_pl1_w": 25,
+                "custom_pl2_w": 35,
+                "battery_history": sample_hist,
+            })
+
+            win = MainWindow(self.backend)
+            self.assertFalse(win.about_tab.btn_factory_reset.isHidden())
+            win.apply_ui_mode("basic")
+            self.assertFalse(win.about_tab.btn_factory_reset.isHidden())
+            win.apply_ui_mode("advanced")
+
+            with patch.object(self.backend, "set_autostart_enabled", return_value=(True, "OK")), \
+                 patch.object(self.backend, "get_autostart_enabled", return_value=False):
+                ok, msg = self.backend.reset_all_settings_to_default(allow_elevation=False)
+                win._on_factory_reset_completed(msg)
+
+            self.assertTrue(ok)
+            self.assertEqual(self.backend.get_ui_mode(), "basic")
+            self.assertFalse(self.backend.settings.get("manual_fan_enabled"))
+            self.assertEqual(self.backend.settings.get("battery_history"), sample_hist)
+            for p_chk, expected in [
+                (pp_file, "balanced"),
+                (fm_file, "0"),
+                (cons_file, "0"),
+                (turbo_file, "0"),
+                (pl1_file, "45000000"),
+            ]:
+                with open(p_chk, encoding="utf-8") as fh:
+                    self.assertEqual(fh.read().strip(), expected)
+            self.assertEqual(win.performance_tab.slider_pl1.value(), 45)
+            win._quit_app()
+            win.close()
+
+    def test_zero_horizontal_overflow_all_tabs_960x640(self):
+        """Garante 0px de overflow horizontal em todas as 7 abas (Básico e Avançado) em 960x640."""
+        from core.qt_compat import QApplication, QScrollArea
+        from ui_main import MainWindow
+
+        app = QApplication.instance() or QApplication(["ducksvantage", "-platform", "offscreen"])
+        real_backend = HardwareBackend()
+        win = MainWindow(real_backend)
+        win.resize(960, 640)
+        win.show()
+        try:
+            for mode in ("basic", "advanced"):
+                win.apply_ui_mode(mode)
+                app.processEvents()
+                for idx in range(win.stack.count()):
+                    win._switch_tab(idx)
+                    tab = win.stack.widget(idx)
+                    sa = tab.findChild(QScrollArea)
+                    self.assertIsNotNone(sa)
+                    ss = getattr(tab, "sub_stack", None)
+                    sub_indices = range(ss.count()) if ss else [0]
+                    for sub_i in sub_indices:
+                        if ss:
+                            ss.setCurrentIndex(sub_i)
+                        app.processEvents()
+                        hb = sa.horizontalScrollBar()
+                        self.assertEqual(
+                            hb.maximum(),
+                            0,
+                            f"Overflow horizontal detectado em mode={mode} tab={tab.__class__.__name__} sub={sub_i}: hbar={hb.maximum()}",
+                        )
+        finally:
+            win._quit_app()
+            win.close()
+            real_backend.close()
+
+    def test_game_detection_ignores_wine_daemons_and_extracts_steam_exe(self):
+        """detect_running_game ignora lsass.exe/_v2-entry-point e extrai executável real do Proton."""
+        class _FakeProc:
+            def __init__(self, info):
+                self.info = info
+
+        procs = [
+            _FakeProc({
+                "name": "lsass.exe",
+                "exe": "/usr/bin/wine64-preloader",
+                "cmdline": [r"C:\windows\system32\lsass.exe"],
+                "cwd": "/home/user",
+            }),
+            _FakeProc({
+                "name": "reaper",
+                "exe": "/home/user/.local/share/Steam/ubuntu12_32/reaper",
+                "cmdline": [
+                    "reaper", "SteamLaunch", "AppId=2208920", "--",
+                    "/home/user/.local/share/Steam/steamapps/common/SteamLinuxRuntime_sniper/_v2-entry-point",
+                    "--verb=waitforexitandrun", "--",
+                    "/home/user/.local/share/Steam/steamapps/common/Proton/proton", "waitforexitandrun",
+                    "/games/MyCoolGame/Binaries/MyGame.exe",
+                ],
+                "cwd": "/games/MyCoolGame",
+            }),
+        ]
+        with patch("core.mixins.gaming.psutil.process_iter", return_value=procs):
+            detected = self.backend.detect_running_game(force=True)
+        self.assertEqual(detected, "MyGame.exe (Steam #2208920)")
+
+        with patch("core.mixins.gaming.psutil.process_iter", return_value=[procs[0]]):
+            detected_only_daemon = self.backend.detect_running_game(force=True)
+        self.assertIsNone(detected_only_daemon)
+
+    def test_profile_switch_clears_manual_fan_and_cli_close_preserves_settings(self):
+        """Trocar para Silencioso limpa manual_fan_enabled; close() em instância read-only preserva settings."""
+        with tempfile.TemporaryDirectory() as td:
+            pp_file = os.path.join(td, "profile")
+            pp_choices = os.path.join(td, "choices")
+            fm_file = os.path.join(td, "fan_mode")
+            for p, val in [
+                (pp_file, "max-power\n"),
+                (pp_choices, "low-power balanced performance max-power\n"),
+                (fm_file, "3\n"),
+            ]:
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write(val)
+
+            self.backend.paths.platform_profile = pp_file
+            self.backend.paths.platform_profile_choices = pp_choices
+            self.backend._platform_profile_paths = [pp_file]
+            self.backend.paths.fan_mode = fm_file
+            self.backend.settings.set("manual_fan_enabled", True)
+            self.backend._fan_override_applied_by_app = True
+
+            ok, _ = self.backend.set_platform_profile("low-power", allow_elevation=False)
+            self.assertTrue(ok)
+            self.assertFalse(self.backend.settings.get("manual_fan_enabled"))
+            with open(fm_file, encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "0")
+
+            # Instância secundária (como CLI --status) não apaga manual_fan_enabled ao fechar
+            self.backend.settings.set("manual_fan_enabled", True)
+            self.backend._fan_override_applied_by_app = False
+            self.backend.close()
+            self.assertTrue(self.backend.settings.get("manual_fan_enabled"))
+
+    def test_binary_fan_boost_honest_ui_and_wmi_apply_visible(self):
+        """LOQ 15IAX9E (fan_mode binário sem PWM): oculta slider falso, exibe botão boost + WMI apply e pulsa 0->2."""
+        from core.qt_compat import QApplication
+        from ui.tabs.performance_tab import PerformanceTab
+
+        _app = QApplication.instance() or QApplication(["ducksvantage", "-platform", "offscreen"])
+
+        with tempfile.TemporaryDirectory() as td:
+            hw = os.path.join(td, "hwmon7")
+            wmi_dir = os.path.join(td, "wmi_attrs")
+            os.makedirs(hw)
+            os.makedirs(os.path.join(wmi_dir, "cpu_temp"))
+            os.makedirs(os.path.join(wmi_dir, "gpu_temp"))
+            fm_file = os.path.join(td, "fan_mode")
+            pp_file = os.path.join(td, "profile")
+            pp_choices = os.path.join(td, "choices")
+            with open(os.path.join(hw, "name"), "w", encoding="utf-8") as fh:
+                fh.write("lenovo_wmi_other\n")
+            with open(os.path.join(hw, "fan1_input"), "w", encoding="utf-8") as fh:
+                fh.write("2200\n")
+            with open(os.path.join(hw, "fan1_target"), "w", encoding="utf-8") as fh:
+                fh.write("0\n")
+            for p, val in [
+                (fm_file, "133\n"),
+                (pp_file, "balanced\n"),
+                (pp_choices, "low-power balanced performance custom\n"),
+                (os.path.join(wmi_dir, "cpu_temp", "min_value"), "85\n"),
+                (os.path.join(wmi_dir, "cpu_temp", "max_value"), "100\n"),
+                (os.path.join(wmi_dir, "cpu_temp", "current_value"), "94\n"),
+                (os.path.join(wmi_dir, "gpu_temp", "min_value"), "75\n"),
+                (os.path.join(wmi_dir, "gpu_temp", "max_value"), "87\n"),
+                (os.path.join(wmi_dir, "gpu_temp", "current_value"), "87\n"),
+            ]:
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write(val)
+
+            with patch("core.backend.glob.glob", side_effect=lambda p: [hw] if "hwmon" in p else []):
+                self.backend._scan_hwmon()
+            self.assertEqual(self.backend._hwmon_fan_targets, [])
+
+            self.backend.features.fan_control = True
+            self.backend.features.max_power_profile = False
+            self.backend.features.wmi_cpu_temp = True
+            self.backend.features.wmi_gpu_temp = True
+            self.backend.paths.fan_mode = fm_file
+            self.backend.paths.platform_profile = pp_file
+            self.backend.paths.platform_profile_choices = pp_choices
+            self.backend._platform_profile_paths = [pp_file]
+            self.backend.paths.lenovo_wmi_attr_dir = wmi_dir
+            self.backend._hwmon_pwm_nodes = []
+            self.backend.paths.hwmon_pwm1 = None
+
+            self.assertFalse(self.backend.has_continuous_fan_control())
+            self.assertTrue(self.backend.has_binary_fan_boost())
+
+            tab = PerformanceTab(self.backend)
+            tab.set_advanced_mode(True)
+            self.assertFalse(tab.btn_boost_max_fan.isHidden())
+            self.assertTrue(tab.slider_manual_fan.isHidden())
+            self.assertTrue(tab.fan_curve_widget.isHidden())
+            self.assertFalse(tab.btn_apply_wmi_temps.isHidden())
+            tab.close()
+
+            ok_m, _ = self.backend.set_manual_fan_speed(True, 100, allow_elevation=False)
+            self.assertTrue(ok_m)
+            with open(fm_file, encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "2")
+
+            # Simula firmware marcando fan_mode=3 após 5s com RPM baixo -> pulsa novamente para "2"
+            with open(fm_file, "w", encoding="utf-8") as fh:
+                fh.write("3\n")
+            self.backend._last_vpc_boost_pulse_ts -= 5.0
+            eff = self.backend.apply_dynamic_fan_curve_tick()
+            self.assertEqual(eff, 100)
+            with open(fm_file, encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "2")
+
+            ok_a, _ = self.backend.apply_cooling_preset("auto", allow_elevation=False)
+            self.assertTrue(ok_a)
+            with open(fm_file, encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "0")
 
 
 if __name__ == "__main__":

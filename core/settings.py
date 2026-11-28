@@ -88,8 +88,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "dock_mode_enabled": False,
     "dock_target_profile": "performance",
     "dock_keep_max_hz": True,
+    "dock_lid_inhibit": False,
     "dock_inhibit_lid_sleep": False,
     "usb_wakeup_blocked": False,
+    "usb_wakeup_disabled_ids": [],
     "one_time_full_charge_active": False,
     "one_time_full_charge_mode": "until_full",
     "one_time_full_charge_until_ts": 0.0,
@@ -106,6 +108,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "eco_action_wifi_save": False,
     "eco_applied_actions": [],
     "pre_eco_conservation": False,
+    "pre_eco_governor": "",
     "pre_eco_tdp": [],
     "pre_eco_refresh_hz": 0,
     "pre_eco_wifi_power_save": True,
@@ -122,6 +125,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "ui_mode": "basic",
     "custom_pl1_w": 45,
     "custom_pl2_w": 70,
+    "cooling_preset": "auto",
     "manual_fan_enabled": False,
     "manual_fan_speed_pct": 100,
     "custom_fan_curve_enabled": False,
@@ -229,6 +233,23 @@ class SettingsManager:
 
     def set(self, key: str, value: Any):
         self._data[key] = value
+        self.save()
+
+    def update_many(self, mapping: Dict[str, Any]) -> None:
+        """Atualiza múltiplas chaves em memória e grava uma única vez em disco."""
+        if not mapping:
+            return
+        self._data.update(mapping)
+        self.save()
+
+    def reset_to_defaults(self, preserve_keys: Tuple[str, ...] = ("battery_history",)) -> None:
+        """Restaura todas as configurações para o padrão de fábrica preservando chaves seguras."""
+        preserved: Dict[str, Any] = {}
+        for k in preserve_keys:
+            if k in self._data and isinstance(self._data.get(k), list):
+                preserved[k] = json.loads(json.dumps(self._data[k]))
+        self._data = json.loads(json.dumps(DEFAULT_SETTINGS))
+        self._data.update(preserved)
         self.save()
 
     def export_to_file(self, dst_path: str) -> Tuple[bool, str]:

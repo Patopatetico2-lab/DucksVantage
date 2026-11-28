@@ -29,7 +29,7 @@ class CircularGauge(QWidget):
         self.center_sub_text = ""
         self.bottom_sub_text = "Aguardando..."
 
-        self.setMinimumSize(140, 166)
+        self.setMinimumSize(112, 158)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.anim = QVariantAnimation(self)
@@ -76,7 +76,7 @@ class CircularGauge(QWidget):
 
         w = self.width()
         h = self.height()
-        size = max(108.0, min(w, h) - 34.0)
+        size = max(94.0, min(w, h) - 34.0)
         x = (w - size) / 2.0
         y = max(4.0, (h - size) / 2.0 - 10.0)
 
@@ -159,7 +159,7 @@ class HardwareGaugesCard(QFrame):
         """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
 
         header = QHBoxLayout()
@@ -171,7 +171,7 @@ class HardwareGaugesCard(QFrame):
         layout.addLayout(header)
 
         gauges_row = QHBoxLayout()
-        gauges_row.setSpacing(12)
+        gauges_row.setSpacing(6)
 
         self.cpu_gauge = CircularGauge("CPU", ThemeTokens.GRAD_CPU[0], ThemeTokens.GRAD_CPU[1])
         self.gpu_gauge = CircularGauge("GPU", ThemeTokens.GRAD_GPU[0], ThemeTokens.GRAD_GPU[1])

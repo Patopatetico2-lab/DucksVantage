@@ -73,16 +73,17 @@ class GpuDisplayTab(QWidget):
         gpu_titles = QVBoxLayout()
         gpu_titles.setSpacing(2)
         self.gpu_title_lbl = QLabel(f"Placa Gráfica • {self.backend.system_info.gpu_model}")
+        self.gpu_title_lbl.setWordWrap(True)
         self.gpu_title_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.DemiBold))
         self.gpu_title_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         gpu_titles.addWidget(self.gpu_title_lbl)
 
         gpu_sub = QLabel("Consumo em tempo real, memória de vídeo, frequências e economia de energia.")
+        gpu_sub.setWordWrap(True)
         gpu_sub.setToolTip("Inclui suspensão automática PCIe D3cold e estado P-State da GPU")
         gpu_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         gpu_titles.addWidget(gpu_sub)
-        gpu_header.addLayout(gpu_titles)
-        gpu_header.addStretch()
+        gpu_header.addLayout(gpu_titles, stretch=1)
 
         self.gpu_state_badge = StatusBadge("ATIVA", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.STATUS_GREEN)
         gpu_header.addWidget(self.gpu_state_badge)
@@ -212,16 +213,17 @@ class GpuDisplayTab(QWidget):
         mux_titles.addWidget(self.mux_title_lbl)
 
         self.mux_sub_lbl = QLabel("Alterne entre os modos gráficos suportados pelo notebook.")
+        self.mux_sub_lbl.setWordWrap(True)
         self.mux_sub_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         mux_titles.addWidget(self.mux_sub_lbl)
-        mux_header.addLayout(mux_titles)
-        mux_header.addStretch()
+        mux_header.addLayout(mux_titles, stretch=1)
 
         self.mux_backend_badge = StatusBadge("BACKEND: N/A", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.ACCENT_STEEL)
         mux_header.addWidget(self.mux_backend_badge)
         mux_layout.addLayout(mux_header)
 
         self.mux_reboot_banner = QLabel("A alteração de modo de GPU exige reinicialização do sistema ou sessão.")
+        self.mux_reboot_banner.setWordWrap(True)
         self.mux_reboot_banner.setStyleSheet(f"""
             background-color: #2c1d1f;
             color: #fca5a5;
@@ -289,15 +291,16 @@ class GpuDisplayTab(QWidget):
         ref_titles = QVBoxLayout()
         ref_titles.setSpacing(2)
         self.ref_title_lbl = QLabel("Taxa de Atualização do Painel")
+        self.ref_title_lbl.setWordWrap(True)
         self.ref_title_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.DemiBold))
         self.ref_title_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         ref_titles.addWidget(self.ref_title_lbl)
 
         ref_sub = QLabel("Troca de frequência (Hz) compatível com Wayland (KDE / wlroots) e X11.")
+        ref_sub.setWordWrap(True)
         ref_sub.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         ref_titles.addWidget(ref_sub)
-        ref_header.addLayout(ref_titles)
-        ref_header.addStretch()
+        ref_header.addLayout(ref_titles, stretch=1)
 
         self.ref_rate_badge = StatusBadge("-- Hz", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.ACCENT_STEEL)
         ref_header.addWidget(self.ref_rate_badge)
@@ -305,30 +308,35 @@ class GpuDisplayTab(QWidget):
 
         ref_ctrl_box = QFrame()
         ref_ctrl_box.setProperty("class", "subBox")
-        ref_ctrl_row = QHBoxLayout(ref_ctrl_box)
-        ref_ctrl_row.setContentsMargins(14, 10, 14, 10)
+        ref_ctrl_v = QVBoxLayout(ref_ctrl_box)
+        ref_ctrl_v.setContentsMargins(14, 10, 14, 10)
+        ref_ctrl_v.setSpacing(8)
 
+        ref_top_row = QHBoxLayout()
+        ref_top_row.setSpacing(10)
         ref_info = QVBoxLayout()
         self.ref_display_name_lbl = QLabel("Painel Interno (eDP-1)")
+        self.ref_display_name_lbl.setWordWrap(True)
         self.ref_display_name_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.DemiBold))
         self.ref_display_name_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; border: none;")
         ref_info.addWidget(self.ref_display_name_lbl)
 
         ref_desc = QLabel("Selecione a taxa de atualização ou use Fn + R (Alt + R).")
+        ref_desc.setWordWrap(True)
         ref_desc.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px; border: none;")
         ref_info.addWidget(ref_desc)
-        ref_ctrl_row.addLayout(ref_info)
-        ref_ctrl_row.addStretch()
-
-        self.ref_buttons_layout = QHBoxLayout()
-        self.ref_buttons_layout.setSpacing(8)
-        ref_ctrl_row.addLayout(self.ref_buttons_layout)
+        ref_top_row.addLayout(ref_info, stretch=1)
 
         self.btn_cycle_ref = QPushButton("Ciclar Fn + R")
         self.btn_cycle_ref.setProperty("class", "secondaryButton")
         self.btn_cycle_ref.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_cycle_ref.clicked.connect(self._on_cycle_refresh_rate_clicked)
-        ref_ctrl_row.addWidget(self.btn_cycle_ref)
+        ref_top_row.addWidget(self.btn_cycle_ref)
+        ref_ctrl_v.addLayout(ref_top_row)
+
+        self.ref_buttons_layout = QHBoxLayout()
+        self.ref_buttons_layout.setSpacing(8)
+        ref_ctrl_v.addLayout(self.ref_buttons_layout)
         ref_layout.addWidget(ref_ctrl_box)
 
         self.ref_auto_box = QFrame()
@@ -338,15 +346,16 @@ class GpuDisplayTab(QWidget):
 
         ra_info = QVBoxLayout()
         ra_lbl = QLabel("Alternância Automática (Tomada AC vs Bateria)")
+        ra_lbl.setWordWrap(True)
         ra_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.DemiBold))
         ra_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; border: none;")
         ra_info.addWidget(ra_lbl)
 
         self.ra_desc = QLabel("Reduz para a menor taxa na bateria e restaura taxa máxima no AC.")
+        self.ra_desc.setWordWrap(True)
         self.ra_desc.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px; border: none;")
         ra_info.addWidget(self.ra_desc)
-        ref_auto_row.addLayout(ra_info)
-        ref_auto_row.addStretch()
+        ref_auto_row.addLayout(ra_info, stretch=1)
 
         self.ref_auto_switch = ToggleSwitch()
         self.ref_auto_switch.setChecked(self.backend.get_auto_refresh_rate_transition())
@@ -492,15 +501,16 @@ class GpuDisplayTab(QWidget):
         bios_titles = QVBoxLayout()
         bios_titles.setSpacing(2)
         self.bios_title_lbl = QLabel("Firmware Lenovo (BIOS / WMI)")
+        self.bios_title_lbl.setWordWrap(True)
         self.bios_title_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.DemiBold))
         self.bios_title_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         bios_titles.addWidget(self.bios_title_lbl)
 
         self.bios_sub_lbl = QLabel("Nós de BIOS descobertos dinamicamente no hardware.")
+        self.bios_sub_lbl.setWordWrap(True)
         self.bios_sub_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 11px;")
         bios_titles.addWidget(self.bios_sub_lbl)
-        bios_header.addLayout(bios_titles)
-        bios_header.addStretch()
+        bios_header.addLayout(bios_titles, stretch=1)
 
         self.bios_count_badge = StatusBadge("-- ITENS", bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.ACCENT_STEEL)
         bios_header.addWidget(self.bios_count_badge)
@@ -518,6 +528,7 @@ class GpuDisplayTab(QWidget):
         od_info.addWidget(od_lbl)
 
         od_desc = QLabel("Reduz ghosting acelerando a transição cinza-para-cinza do painel.")
+        od_desc.setWordWrap(True)
         od_desc.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px; border: none;")
         od_info.addWidget(od_desc)
         od_row.addLayout(od_info)
@@ -975,16 +986,17 @@ class GpuDisplayTab(QWidget):
             info_layout = QVBoxLayout()
             h_top = QHBoxLayout()
             title_lbl = QLabel(a.display_name)
+            title_lbl.setWordWrap(True)
             title_lbl.setFont(QFont(ThemeTokens.FONT_NAME, 10, QFont.Weight.DemiBold))
             title_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100}; border: none;")
-            h_top.addWidget(title_lbl)
+            h_top.addWidget(title_lbl, stretch=1)
 
             cat_badge = StatusBadge(a.category.upper(), bg_color=ThemeTokens.BG_CARD_HOVER, text_color=ThemeTokens.ACCENT_STEEL)
             h_top.addWidget(cat_badge)
-            h_top.addStretch()
             info_layout.addLayout(h_top)
 
             desc_lbl = QLabel(f"Atributo sysfs: {a.attr_id} • Tipo: {a.attr_type.capitalize()}")
+            desc_lbl.setWordWrap(True)
             desc_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; font-size: 10px; border: none;")
             info_layout.addWidget(desc_lbl)
             r_layout.addLayout(info_layout, stretch=2)
@@ -1003,7 +1015,8 @@ class GpuDisplayTab(QWidget):
             elif a.attr_type == "integer":
                 min_v = a.min_value if a.min_value is not None else 0
                 max_v = a.max_value if a.max_value is not None else 100
-                cur_v = int(a.current_value) if a.current_value.isdigit() else min_v
+                cur_s = str(a.current_value or "").strip()
+                cur_v = int(cur_s) if (cur_s.lstrip("-").isdigit()) else min_v
                 if max_v <= min_v:
                     min_v = 0
                     max_v = max(100, cur_v + 25) if cur_v > 0 else 100
@@ -1104,3 +1117,46 @@ class GpuDisplayTab(QWidget):
             self.bios_title_lbl.setText("Firmware Lenovo (BIOS / WMI)")
             self.bios_sub_lbl.setText("Parâmetros de firmware descobertos dinamicamente na BIOS.")
         self.bios_card.setVisible(bool(is_od_supp or show_dyn))
+        attrs = {a.attr_id: a for a in self.backend.get_bios_attributes()}
+        for aid, widget in self.bios_attr_widgets.items():
+            attr = attrs.get(aid)
+            if not attr:
+                continue
+            if isinstance(widget, ToggleSwitch):
+                widget.blockSignals(True)
+                widget.setChecked(attr.current_value.lower() in ("1", "enabled", "on", "true"))
+                widget.blockSignals(False)
+            elif isinstance(widget, tuple) and len(widget) == 2:
+                sl, lbl = widget
+                if str(attr.current_value).strip().lstrip("-").isdigit():
+                    v = max(sl.minimum(), min(sl.maximum(), int(attr.current_value)))
+                    sl.blockSignals(True)
+                    sl.setValue(v)
+                    sl.blockSignals(False)
+                    lbl.setText(str(v))
+            elif isinstance(widget, QComboBox):
+                idx = widget.findText(attr.current_value)
+                if idx >= 0:
+                    widget.blockSignals(True)
+                    widget.setCurrentIndex(idx)
+                    widget.blockSignals(False)
+
+    def refresh_from_settings(self):
+        """Sincroniza controles de GPU, Dock, VRR, Display e BIOS após reset ou importação."""
+        dock_cfg = self.backend.get_dock_mode_config()
+        self.sw_dock_enabled.blockSignals(True)
+        self.sw_dock_enabled.setChecked(dock_cfg["enabled"])
+        self.sw_dock_enabled.blockSignals(False)
+        d_idx = self.combo_dock_profile.findData(dock_cfg["target_profile"])
+        if d_idx >= 0:
+            self.combo_dock_profile.blockSignals(True)
+            self.combo_dock_profile.setCurrentIndex(d_idx)
+            self.combo_dock_profile.blockSignals(False)
+        self.sw_dock_max_hz.blockSignals(True)
+        self.sw_dock_max_hz.setChecked(dock_cfg["keep_max_hz"])
+        self.sw_dock_max_hz.blockSignals(False)
+        self.sw_dock_lid_inhibit.blockSignals(True)
+        self.sw_dock_lid_inhibit.setChecked(dock_cfg["inhibit_lid_sleep"])
+        self.sw_dock_lid_inhibit.blockSignals(False)
+        self.set_advanced_mode(self.backend.is_advanced_mode())
+        self.refresh_all()

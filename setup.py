@@ -53,7 +53,7 @@ class PostInstallCommand(install):
 
 setup(
     name="ducksvantage",
-    version="2.3.1",
+    version="2.4.0",
     description="Substituto universal do Lenovo Vantage para Linux (Legion, LOQ, IdeaPad e Yoga)",
     py_modules=["main", "ui_main", "test_backend"],
     packages=find_packages(include=["core", "core.*", "ui", "ui.*"]),

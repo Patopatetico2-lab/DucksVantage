@@ -1,5 +1,5 @@
 Name:           ducksvantage
-Version:        %{?_app_version}%{!?_app_version:2.3.1}
+Version:        %{?_app_version}%{!?_app_version:2.4.0}
 Release:        1
 Summary:        Universal Lenovo Vantage replacement for Linux (Legion, LOQ, IdeaPad & Yoga)
 License:        MIT

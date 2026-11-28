@@ -85,6 +85,8 @@ class ThermalBlock(QFrame):
             self.sub_lbl.setStyleSheet(f"color: {ThemeTokens.TEXT_LIGHT_GRAY}; background: transparent;")
 
     def mousePressEvent(self, event):
+        if not self.isEnabled():
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self.mode_id)
         super().mousePressEvent(event)
@@ -268,8 +270,8 @@ class VantageDashboardView(QWidget):
 
         container = QWidget()
         main_layout = QHBoxLayout(container)
-        main_layout.setContentsMargins(16, 14, 16, 14)
-        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(10)
 
         # =====================================================================
         # COLUNA ESQUERDA (65%)
@@ -336,7 +338,7 @@ class VantageDashboardView(QWidget):
         th_layout.addLayout(th_header)
 
         blocks_row = QHBoxLayout()
-        blocks_row.setSpacing(10)
+        blocks_row.setSpacing(6)
 
         self.block_quiet = ThermalBlock(
             "low-power", "Silencioso", "Baixo ruído",
@@ -389,10 +391,10 @@ class VantageDashboardView(QWidget):
         lc_layout.setSpacing(10)
 
         lc_header = QHBoxLayout()
-        lc_header.setSpacing(6)
-        lc_title = QLabel("Histórico Térmico")
+        lc_header.setSpacing(4)
+        lc_title = QLabel("Histórico")
         lc_title.setToolTip("Histórico térmico dos últimos 2 minutos")
-        lc_title.setFont(QFont(ThemeTokens.FONT_NAME, 12, QFont.Weight.DemiBold))
+        lc_title.setFont(QFont(ThemeTokens.FONT_NAME, 11, QFont.Weight.DemiBold))
         lc_title.setStyleSheet(f"color: {ThemeTokens.TEXT_WHITE_100};")
         lc_header.addWidget(lc_title)
         lc_header.addStretch()
@@ -406,7 +408,7 @@ class VantageDashboardView(QWidget):
         lc_header.addWidget(self.throttling_badge)
 
         self.live_peaks_badge = StatusBadge(
-            "PICOS: --°C / --°C",
+            "--°C / --°C",
             bg_color="transparent",
             text_color=ThemeTokens.TEXT_LIGHT_GRAY,
         )
@@ -421,7 +423,7 @@ class VantageDashboardView(QWidget):
                 color: {ThemeTokens.TEXT_LIGHT_GRAY};
                 border: 1px solid {ThemeTokens.BORDER_DEFAULT};
                 border-radius: 5px;
-                padding: 1px 9px;
+                padding: 1px 8px;
                 font-size: 10px;
                 font-weight: 500;
             }}
@@ -445,7 +447,7 @@ class VantageDashboardView(QWidget):
 
         footer_row = QHBoxLayout()
         footer_row.setContentsMargins(2, 2, 2, 0)
-        footer_row.setSpacing(12)
+        footer_row.setSpacing(6)
 
         self.lbl_ssd_model = self._add_inline_stat(footer_row, "SSD", "--")
         footer_row.addWidget(self._make_v_sep())
@@ -607,7 +609,7 @@ class VantageDashboardView(QWidget):
         g_pk = self.live_thermal_chart.peak_gpu
         c_str = f"{c_pk:.0f}°C" if c_pk > 0 else "--°C"
         g_str = f"{g_pk:.0f}°C" if g_pk > 0 else "D3cold"
-        self.live_peaks_badge.setText(f"Picos: {c_str} / {g_str}")
+        self.live_peaks_badge.setText(f"Picos: {c_str}/{g_str}")
 
     def update_telemetry(self):
         """Atualiza todos os sensores e controles do Dashboard."""
@@ -652,17 +654,26 @@ class VantageDashboardView(QWidget):
         # 3. Rodapé Inline Limpo (SSD, Fans, GPU)
         if disks:
             d0 = disks[0]
-            short_ssd = d0.model.split()[0][:16] if d0.model else "NVMe"
+            full_ssd = d0.model or "NVMe"
+            short_ssd = full_ssd.split()[0][:12]
             self.lbl_ssd_model.setText(short_ssd)
+            self.lbl_ssd_model.setToolTip(full_ssd)
             if d0.temperature_c > 0:
                 self.lbl_ssd_temp.setText(f"{d0.temperature_c:.0f}°C")
             else:
                 self.lbl_ssd_temp.setText("N/A")
 
         fan_txt = fan.status_label
-        if "EC" in fan_txt and "RPM" in fan_txt:
-            fan_txt = "Auto (EC)"
+        if fan.rpm > 0 and fan.second_rpm > 0:
+            fan_txt = f"{fan.rpm}/{fan.second_rpm}"
+        elif fan.rpm > 0:
+            fan_txt = f"{fan.rpm} RPM"
+        elif "EC" in fan_txt:
+            fan_txt = "Auto EC"
+        elif "5600" in fan_txt:
+            fan_txt = "Turbo EC"
         self.lbl_fan_rpm.setText(fan_txt)
+        self.lbl_fan_rpm.setToolTip(fan.status_label)
 
         if gpu.available:
             self.lbl_gpu_state.setText(f"{gpu.runtime_state} {gpu.pstate}")

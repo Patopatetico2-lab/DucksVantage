@@ -393,6 +393,7 @@ class MainWindow(QMainWindow):
         self.dashboard_tab.eco_travel_toggled.connect(self._apply_eco_travel)
         self.tray_manager.eco_travel_toggled.connect(self._apply_eco_travel)
         self.dashboard_tab.game_auto_toggled.connect(self._apply_game_auto)
+        self.automation_tab.game_auto_toggled.connect(self._apply_game_auto)
 
         # 3. ELITE 5: Mapeador de Teclas Personalizadas (Tecla Copilot F8/F23 & Atalhos)
         self.automation_tab.shortcuts_updated.connect(self._register_qt_shortcuts)
@@ -418,10 +419,11 @@ class MainWindow(QMainWindow):
         self.about_tab.usb_charging_toggled.connect(self._apply_usb_charging)
         self.about_tab.auto_power_toggled.connect(self._apply_auto_power)
 
-        # 6. Aba Sobre / UDEV / Autostart XDG / Preferências
+        # 6. Aba Sobre / UDEV / Autostart XDG / Preferências / Reset de Fábrica
         self.about_tab.permissions_updated.connect(self.about_tab.update_permission_status)
         self.about_tab.autostart_toggled.connect(self._on_autostart_changed)
         self.about_tab.preferences_changed.connect(self._on_preferences_changed)
+        self.about_tab.settings_reset_completed.connect(self._on_factory_reset_completed)
         self.about_tab.test_osd_requested.connect(self._on_test_osd_requested)
         self.tray_manager.autostart_toggled.connect(self._apply_autostart)
 
@@ -603,21 +605,37 @@ class MainWindow(QMainWindow):
             duration_ms=self.backend.get_osd_duration_ms(),
         )
 
+    def _on_factory_reset_completed(self, msg: str):
+        """Sincroniza toda a UI e bandeja imediatamente após Restauração de Fábrica."""
+        self.apply_ui_mode(self.backend.get_ui_mode())
+        self._on_preferences_changed()
+        self.osd.notify_feature_osd(
+            title="Padrão de Fábrica Restaurado",
+            subtitle=msg[:58],
+            icon_name="gear.svg",
+            accent_color=ThemeTokens.ACCENT_STEEL,
+        )
+
     def _on_preferences_changed(self):
         self._apply_osd_preferences()
         self._register_qt_shortcuts()
+        self._update_header_profile_pill()
+        self.about_tab.refresh_preferences_ui()
         self.automation_tab._rebuild_user_presets_list()
         self.automation_tab._populate_game_preset_combo()
         self.automation_tab._populate_app_rule_profile_combo()
         self.automation_tab._rebuild_app_rules_list()
         self.automation_tab._rebuild_game_ignore_list()
+        self.automation_tab._rebuild_game_session_history()
         self.automation_tab.refresh_automation_state()
-        self.performance_tab.refresh_profile_state()
-        self.gpu_display_tab.refresh_all()
+        self.performance_tab.refresh_from_settings()
+        self.gpu_display_tab.refresh_from_settings()
         self.battery_tab.refresh_display()
+        self.lighting_tab.refresh_from_settings()
         self.dashboard_tab.update_telemetry()
         self.tray_manager.rebuild_presets_menu()
         self.tray_manager.rebuild_refresh_menu()
+        self.tray_manager.update_tray_state()
         self.tray_manager.update_tray_state()
 
     def _on_test_osd_requested(self):
@@ -791,6 +809,8 @@ class MainWindow(QMainWindow):
             accent_color=ThemeTokens.STATUS_GREEN if enable else ThemeTokens.TEXT_LIGHT_GRAY
         )
         self.dashboard_tab.update_telemetry()
+        self.performance_tab.refresh_profile_state()
+        self.automation_tab.refresh_automation_state()
         self.tray_manager.update_tray_state()
 
     def _apply_conservation(self, active: bool):
@@ -903,6 +923,7 @@ class MainWindow(QMainWindow):
                     )
                 self._update_header_profile_pill()
                 self.dashboard_tab.update_telemetry()
+                self.performance_tab.refresh_profile_state()
                 self.battery_tab.refresh_display()
                 self.tray_manager.update_tray_state()
 

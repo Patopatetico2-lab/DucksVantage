@@ -80,6 +80,8 @@ class GpuModeBlock(QFrame):
             """)
 
     def mousePressEvent(self, event):
+        if not self.isEnabled():
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self.mode_id)
         super().mousePressEvent(event)
